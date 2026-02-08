@@ -1,0 +1,22 @@
+# Core Dependencies
+cryptography>=41.0.0
+qrcode[pil]>=7.4.2
+Pillow>=10.0.0
+requests>=2.31.0
+
+# Database
+sqlalchemy>=2.0.0
+
+# GUI
+PyQt5>=5.15.9
+
+# Signal Integration
+# Note: signal-cli or signald will be installed separately as system dependencies
+pysignalcli>=0.1.0
+
+# Monero Integration
+monero>=1.1.0
+
+# Utilities
+python-dotenv>=1.0.0
+pydantic>=2.0.0
