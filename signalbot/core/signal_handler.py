@@ -63,7 +63,7 @@ class SignalHandler:
         Send message via Signal
         
         Args:
-            recipient: Recipient phone number
+            recipient: Recipient phone number or username (e.g., greysklulz.23)
             message: Message text
             attachments: Optional list of file paths to attach
             
@@ -74,13 +74,25 @@ class SignalHandler:
             raise RuntimeError("Signal not configured")
         
         try:
-            cmd = [
-                'signal-cli',
-                '-u', self.phone_number,
-                'send',
-                '-m', message,
-                recipient
-            ]
+            # Check if recipient is a username or phone number
+            if recipient.startswith('+'):
+                # Phone number
+                cmd = [
+                    'signal-cli',
+                    '-u', self.phone_number,
+                    'send',
+                    '-m', message,
+                    recipient
+                ]
+            else:
+                # Username
+                cmd = [
+                    'signal-cli',
+                    '-u', self.phone_number,
+                    'send',
+                    '-m', message,
+                    '--username', recipient
+                ]
             
             if attachments:
                 for attachment in attachments:
@@ -315,3 +327,44 @@ Thank you for your purchase!
         # In actual implementation, would send to group
         # For now, just send to member directly
         self.send_message(member, message)
+    
+    def list_groups(self) -> List[Dict]:
+        """
+        List all Signal groups
+        
+        Returns:
+            List of group dictionaries with 'id', 'name', and 'members'
+        """
+        if not self.phone_number:
+            raise RuntimeError("Signal not configured")
+        
+        try:
+            result = subprocess.run(
+                ['signal-cli', '-u', self.phone_number, 'listGroups', '--detailed'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            groups = []
+            if result.returncode == 0 and result.stdout:
+                # Parse group information
+                # Note: Actual parsing would depend on signal-cli output format
+                for line in result.stdout.strip().split('\n'):
+                    if line:
+                        try:
+                            # Example parsing - adjust based on actual format
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                groups.append({
+                                    'id': parts[0],
+                                    'name': ' '.join(parts[1:]),
+                                    'members': []
+                                })
+                        except:
+                            pass
+            
+            return groups
+        except Exception as e:
+            print(f"Failed to list groups: {e}")
+            return []

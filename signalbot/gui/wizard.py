@@ -130,10 +130,53 @@ class SignalPage(QWizardPage):
         self.generate_btn.clicked.connect(self.generate_qr)
         layout.addWidget(self.generate_btn)
         
-        # QR code display
+        # QR code display in scroll area
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setMinimumHeight(500)
+        
+        qr_container = QWidget()
+        qr_layout = QVBoxLayout()
+        
         self.qr_label = QLabel()
         self.qr_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.qr_label)
+        self.qr_label.setMinimumSize(450, 450)
+        qr_layout.addWidget(self.qr_label)
+        
+        qr_container.setLayout(qr_layout)
+        scroll_area.setWidget(qr_container)
+        layout.addWidget(scroll_area)
+        
+        # Timer label
+        self.timer_label = QLabel("")
+        self.timer_label.setAlignment(Qt.AlignCenter)
+        self.timer_label.setStyleSheet("color: red; font-weight: bold;")
+        layout.addWidget(self.timer_label)
+        
+        # Link text display
+        link_label = QLabel("Link text (for manual entry):")
+        layout.addWidget(link_label)
+        
+        self.link_text = QTextEdit()
+        self.link_text.setReadOnly(True)
+        self.link_text.setMaximumHeight(60)
+        layout.addWidget(self.link_text)
+        
+        # Action buttons
+        button_layout = QHBoxLayout()
+        
+        self.save_qr_btn = QPushButton("Save QR as Image")
+        self.save_qr_btn.clicked.connect(self.save_qr_image)
+        self.save_qr_btn.setEnabled(False)
+        
+        self.copy_link_btn = QPushButton("Copy Link Text")
+        self.copy_link_btn.clicked.connect(self.copy_link_text)
+        self.copy_link_btn.setEnabled(False)
+        
+        button_layout.addWidget(self.save_qr_btn)
+        button_layout.addWidget(self.copy_link_btn)
+        button_layout.addStretch()
+        layout.addLayout(button_layout)
         
         # Phone number input (alternative)
         phone_label = QLabel("\nOr enter your Signal phone number:")
@@ -142,11 +185,13 @@ class SignalPage(QWizardPage):
         
         layout.addWidget(phone_label)
         layout.addWidget(self.phone_input)
-        layout.addStretch()
         
         self.setLayout(layout)
         
         self.registerField("signal_phone", self.phone_input)
+        
+        self.expiration_timer = None
+        self.time_remaining = 300  # 5 minutes in seconds
     
     def generate_qr(self):
         """Generate QR code for linking"""
@@ -158,10 +203,68 @@ class SignalPage(QWizardPage):
             
             pixmap = QPixmap()
             pixmap.loadFromData(qr_data)
-            self.qr_label.setPixmap(pixmap.scaled(300, 300, Qt.KeepAspectRatio))
+            # Larger QR code: 400x400 instead of 300x300
+            self.qr_label.setPixmap(pixmap.scaled(400, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            
+            # Show link text
+            self.link_text.setPlainText(link_data)
+            
+            # Enable buttons
+            self.save_qr_btn.setEnabled(True)
+            self.copy_link_btn.setEnabled(True)
+            
+            # Start expiration timer
+            self.start_expiration_timer()
             
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to generate QR code: {e}")
+    
+    def start_expiration_timer(self):
+        """Start countdown timer for QR code expiration"""
+        self.time_remaining = 300  # Reset to 5 minutes
+        
+        if self.expiration_timer:
+            self.expiration_timer.stop()
+        
+        self.expiration_timer = QTimer()
+        self.expiration_timer.timeout.connect(self.update_timer)
+        self.expiration_timer.start(1000)  # Update every second
+        
+        self.update_timer()
+    
+    def update_timer(self):
+        """Update timer display"""
+        if self.time_remaining > 0:
+            minutes = self.time_remaining // 60
+            seconds = self.time_remaining % 60
+            self.timer_label.setText(f"QR code expires in: {minutes}:{seconds:02d}")
+            self.time_remaining -= 1
+        else:
+            self.timer_label.setText("QR code expired! Please generate a new one.")
+            if self.expiration_timer:
+                self.expiration_timer.stop()
+    
+    def save_qr_image(self):
+        """Save QR code as image to desktop"""
+        if not self.qr_label.pixmap():
+            return
+        
+        import os
+        save_path = os.path.expanduser("~/Desktop/signal_qr.png")
+        
+        try:
+            self.qr_label.pixmap().save(save_path)
+            QMessageBox.information(self, "Saved", f"QR code saved to:\n{save_path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to save QR code: {e}")
+    
+    def copy_link_text(self):
+        """Copy link text to clipboard"""
+        from PyQt5.QtWidgets import QApplication
+        link = self.link_text.toPlainText()
+        if link:
+            QApplication.clipboard().setText(link)
+            QMessageBox.information(self, "Copied", "Link copied to clipboard!")
 
 
 class WalletPage(QWizardPage):
@@ -174,46 +277,89 @@ class WalletPage(QWizardPage):
         
         layout = QVBoxLayout()
         
-        # Wallet type selection
-        type_label = QLabel("Select wallet type:")
-        layout.addWidget(type_label)
+        # Wallet mode selection
+        mode_label = QLabel("Select wallet setup mode:")
+        mode_label.setFont(QFont("Arial", 10, QFont.Bold))
+        layout.addWidget(mode_label)
         
-        self.type_group = QButtonGroup()
-        self.rpc_radio = QRadioButton("RPC Wallet (remote)")
-        self.file_radio = QRadioButton("Wallet File (local)")
-        self.rpc_radio.setChecked(True)
+        self.mode_group = QButtonGroup()
+        self.simple_radio = QRadioButton("Simple Setup (Recommended) - View-Only Wallet")
+        self.advanced_radio = QRadioButton("Advanced Setup - RPC Wallet Connection")
+        self.simple_radio.setChecked(True)
         
-        self.type_group.addButton(self.rpc_radio, 1)
-        self.type_group.addButton(self.file_radio, 2)
+        self.mode_group.addButton(self.simple_radio, 1)
+        self.mode_group.addButton(self.advanced_radio, 2)
         
-        layout.addWidget(self.rpc_radio)
-        layout.addWidget(self.file_radio)
+        layout.addWidget(self.simple_radio)
+        layout.addWidget(self.advanced_radio)
         
-        # RPC configuration
+        # Simple mode section
+        self.simple_group = QGroupBox("Simple Setup")
+        simple_layout = QVBoxLayout()
+        
+        info_label = QLabel(
+            "Enter your Monero wallet address and private view key.\n"
+            "This creates a view-only wallet that can monitor incoming payments.\n"
+            "Get your view key from Monero GUI: Settings → Show Keys"
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #666; font-size: 9pt;")
+        simple_layout.addWidget(info_label)
+        
+        self.wallet_address = QLineEdit()
+        self.wallet_address.setPlaceholderText("4...")
+        simple_layout.addWidget(QLabel("Monero Wallet Address*:"))
+        simple_layout.addWidget(self.wallet_address)
+        
+        self.view_key = QLineEdit()
+        self.view_key.setEchoMode(QLineEdit.Password)
+        self.view_key.setPlaceholderText("Private view key")
+        simple_layout.addWidget(QLabel("Private View Key*:"))
+        simple_layout.addWidget(self.view_key)
+        
+        self.auto_start_checkbox = QCheckBox("Auto-start wallet-RPC for me (Recommended)")
+        self.auto_start_checkbox.setChecked(True)
+        simple_layout.addWidget(self.auto_start_checkbox)
+        
+        self.simple_group.setLayout(simple_layout)
+        layout.addWidget(self.simple_group)
+        
+        # Advanced mode section (RPC configuration)
+        self.advanced_group = QGroupBox("Advanced Setup")
+        advanced_layout = QVBoxLayout()
+        
+        adv_info_label = QLabel(
+            "Connect to an existing monero-wallet-rpc instance.\n"
+            "Ensure your wallet-RPC is running before testing connection."
+        )
+        adv_info_label.setWordWrap(True)
+        adv_info_label.setStyleSheet("color: #666; font-size: 9pt;")
+        advanced_layout.addWidget(adv_info_label)
+        
         self.rpc_host = QLineEdit()
         self.rpc_host.setPlaceholderText("127.0.0.1")
+        advanced_layout.addWidget(QLabel("RPC Host:"))
+        advanced_layout.addWidget(self.rpc_host)
         
         self.rpc_port = QLineEdit()
         self.rpc_port.setPlaceholderText("18083")
+        advanced_layout.addWidget(QLabel("RPC Port:"))
+        advanced_layout.addWidget(self.rpc_port)
         
         self.rpc_user = QLineEdit()
         self.rpc_user.setPlaceholderText("(optional)")
+        advanced_layout.addWidget(QLabel("RPC Username:"))
+        advanced_layout.addWidget(self.rpc_user)
         
         self.rpc_password = QLineEdit()
         self.rpc_password.setEchoMode(QLineEdit.Password)
         self.rpc_password.setPlaceholderText("(optional)")
+        advanced_layout.addWidget(QLabel("RPC Password:"))
+        advanced_layout.addWidget(self.rpc_password)
         
-        rpc_layout = QVBoxLayout()
-        rpc_layout.addWidget(QLabel("RPC Host:"))
-        rpc_layout.addWidget(self.rpc_host)
-        rpc_layout.addWidget(QLabel("RPC Port:"))
-        rpc_layout.addWidget(self.rpc_port)
-        rpc_layout.addWidget(QLabel("RPC Username:"))
-        rpc_layout.addWidget(self.rpc_user)
-        rpc_layout.addWidget(QLabel("RPC Password:"))
-        rpc_layout.addWidget(self.rpc_password)
-        
-        layout.addLayout(rpc_layout)
+        self.advanced_group.setLayout(advanced_layout)
+        self.advanced_group.setVisible(False)
+        layout.addWidget(self.advanced_group)
         
         # Test connection button
         self.test_btn = QPushButton("Test Connection")
@@ -223,26 +369,64 @@ class WalletPage(QWizardPage):
         layout.addStretch()
         self.setLayout(layout)
         
-        self.registerField("wallet_type", self.rpc_radio)
+        # Connect mode switching
+        self.simple_radio.toggled.connect(self._toggle_mode)
+        
+        # Register fields
+        self.registerField("wallet_mode", self.simple_radio)
+        self.registerField("wallet_address", self.wallet_address)
+        self.registerField("view_key", self.view_key)
+        self.registerField("auto_start_rpc", self.auto_start_checkbox)
         self.registerField("rpc_host", self.rpc_host)
         self.registerField("rpc_port", self.rpc_port)
+    
+    def _toggle_mode(self, checked):
+        """Toggle between simple and advanced mode"""
+        if checked:
+            self.simple_group.setVisible(True)
+            self.advanced_group.setVisible(False)
+        else:
+            self.simple_group.setVisible(False)
+            self.advanced_group.setVisible(True)
     
     def test_connection(self):
         """Test wallet connection"""
         try:
-            wallet = MoneroWallet(
-                wallet_type='rpc',
-                rpc_host=self.rpc_host.text() or '127.0.0.1',
-                rpc_port=int(self.rpc_port.text() or '18083'),
-                rpc_user=self.rpc_user.text() or None,
-                rpc_password=self.rpc_password.text() or None
-            )
-            
-            if wallet.test_connection():
-                QMessageBox.information(self, "Success", "Wallet connection successful!")
-            else:
-                QMessageBox.warning(self, "Failed", "Could not connect to wallet")
+            if self.simple_radio.isChecked():
+                # Validate simple mode inputs
+                address = self.wallet_address.text().strip()
+                view_key = self.view_key.text().strip()
                 
+                if not address or not view_key:
+                    QMessageBox.warning(self, "Validation Error", "Please enter wallet address and view key")
+                    return
+                
+                # Basic address validation
+                if not address.startswith('4') or len(address) < 95:
+                    QMessageBox.warning(self, "Invalid Address", "Please enter a valid Monero wallet address")
+                    return
+                
+                # Basic view key validation
+                if len(view_key) != 64:
+                    QMessageBox.warning(self, "Invalid View Key", "Private view key should be 64 characters")
+                    return
+                
+                QMessageBox.information(self, "Validation Passed", "Wallet address and view key format are valid!\n\nNote: Full validation will occur when wallet-RPC starts.")
+            else:
+                # Test RPC connection
+                wallet = MoneroWallet(
+                    wallet_type='rpc',
+                    rpc_host=self.rpc_host.text() or '127.0.0.1',
+                    rpc_port=int(self.rpc_port.text() or '18083'),
+                    rpc_user=self.rpc_user.text() or None,
+                    rpc_password=self.rpc_password.text() or None
+                )
+                
+                if wallet.test_connection():
+                    QMessageBox.information(self, "Success", "Wallet connection successful!")
+                else:
+                    QMessageBox.warning(self, "Failed", "Could not connect to wallet")
+                    
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Connection failed: {e}")
 
@@ -288,7 +472,7 @@ class SetupWizard(QWizard):
         
         self.setWindowTitle("Signal Shop Bot - Setup Wizard")
         self.setWizardStyle(QWizard.ModernStyle)
-        self.setMinimumSize(600, 500)
+        self.setMinimumSize(800, 700)
         
         # Add pages
         self.addPage(WelcomePage())
@@ -308,19 +492,35 @@ class SetupWizard(QWizard):
             signal_phone = self.field("signal_phone")
             currency = self.field("currency")
             
-            # Create wallet config
-            wallet_config = {
-                'type': 'rpc',
-                'rpc_host': self.field("rpc_host") or '127.0.0.1',
-                'rpc_port': int(self.field("rpc_port") or 18083),
-                'rpc_user': None,  # Would get from form
-                'rpc_password': None  # Would get from form
-            }
+            # Get wallet configuration based on mode
+            is_simple_mode = self.field("wallet_mode")
+            
+            if is_simple_mode:
+                # Simple mode: view-only wallet
+                wallet_address = self.field("wallet_address")
+                view_key = self.field("view_key")
+                auto_start = self.field("auto_start_rpc")
+                
+                wallet_config = {
+                    'type': 'view_only',
+                    'address': wallet_address,
+                    'view_key': view_key,
+                    'auto_start_rpc': auto_start
+                }
+            else:
+                # Advanced mode: RPC wallet
+                wallet_config = {
+                    'type': 'rpc',
+                    'rpc_host': self.field("rpc_host") or '127.0.0.1',
+                    'rpc_port': int(self.field("rpc_port") or 18083),
+                    'rpc_user': None,  # Would get from form
+                    'rpc_password': None  # Would get from form
+                }
             
             # Create seller
             seller = Seller(
                 signal_id=signal_phone,
-                wallet_type='rpc',
+                wallet_type='view_only' if is_simple_mode else 'rpc',
                 wallet_config=wallet_config,
                 default_currency=currency
             )

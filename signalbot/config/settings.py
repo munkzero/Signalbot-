@@ -33,7 +33,7 @@ LOW_STOCK_THRESHOLD = 5  # Alert when stock falls below this
 
 # Currency conversion
 DEFAULT_CURRENCY = "USD"
-SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "CAD", "AUD", "JPY"]
+SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "CAD", "AUD", "NZD", "JPY"]
 
 # Monero settings
 MONERO_CONFIRMATIONS_REQUIRED = 10  # Number of confirmations for payment
