@@ -413,6 +413,175 @@ class ComposeMessageDialog(QDialog):
             QMessageBox.critical(self, "Error", f"Failed to send message: {e}")
 
 
+class SignalRelinkDialog(QDialog):
+    """Dialog for re-linking Signal account"""
+    
+    def __init__(self, signal_handler: SignalHandler, parent=None):
+        super().__init__(parent)
+        self.signal_handler = signal_handler
+        self.setWindowTitle("Re-link Signal Account")
+        self.setModal(True)
+        self.setMinimumSize(800, 700)
+        
+        layout = QVBoxLayout()
+        
+        # Instructions
+        instructions = QLabel(
+            "Re-link your Signal account:\n"
+            "1. Click 'Generate QR Code' below\n"
+            "2. Open Signal on your phone\n"
+            "3. Go to Settings → Linked Devices\n"
+            "4. Tap 'Link New Device'\n"
+            "5. Scan the QR code shown below\n\n"
+            "Note: This will unlink your current device and link a new one."
+        )
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+        
+        # Generate QR button
+        self.generate_btn = QPushButton("Generate QR Code")
+        self.generate_btn.clicked.connect(self.generate_qr)
+        layout.addWidget(self.generate_btn)
+        
+        # QR code display (scrollable)
+        scroll_area = QScrollArea()
+        self.qr_label = QLabel()
+        self.qr_label.setAlignment(Qt.AlignCenter)
+        self.qr_label.setMinimumSize(450, 450)
+        scroll_area.setWidget(self.qr_label)
+        scroll_area.setWidgetResizable(True)
+        layout.addWidget(scroll_area)
+        
+        # Action buttons
+        button_layout = QHBoxLayout()
+        self.save_qr_btn = QPushButton("Save QR as Image")
+        self.save_qr_btn.clicked.connect(self.save_qr_image)
+        self.save_qr_btn.setEnabled(False)
+        
+        self.copy_link_btn = QPushButton("Copy Link")
+        self.copy_link_btn.clicked.connect(self.copy_link_text)
+        self.copy_link_btn.setEnabled(False)
+        
+        button_layout.addWidget(self.save_qr_btn)
+        button_layout.addWidget(self.copy_link_btn)
+        layout.addLayout(button_layout)
+        
+        # Link text display
+        link_label = QLabel("Or copy link text:")
+        self.link_text = QTextEdit()
+        self.link_text.setReadOnly(True)
+        self.link_text.setMaximumHeight(80)
+        layout.addWidget(link_label)
+        layout.addWidget(self.link_text)
+        
+        # Timer label for expiration
+        self.timer_label = QLabel("")
+        self.timer_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.timer_label)
+        
+        # Phone number input (alternative)
+        phone_label = QLabel("\nOr enter new Signal phone number:")
+        self.phone_input = QLineEdit()
+        self.phone_input.setPlaceholderText("+15555550123")
+        layout.addWidget(phone_label)
+        layout.addWidget(self.phone_input)
+        
+        # Dialog buttons
+        dialog_buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        dialog_buttons.accepted.connect(self.accept)
+        dialog_buttons.rejected.connect(self.reject)
+        layout.addWidget(dialog_buttons)
+        
+        self.setLayout(layout)
+        self.link_uri = None
+        self.expiration_timer = None
+    
+    def generate_qr(self):
+        """Generate QR code for linking"""
+        try:
+            # Generate link using signal-cli
+            self.link_uri = self.signal_handler.link_device()
+            
+            # Generate QR code
+            from ..utils.qr_generator import qr_generator
+            qr_data = qr_generator.generate_simple_qr(self.link_uri)
+            
+            # Display QR code (larger size)
+            pixmap = QPixmap()
+            pixmap.loadFromData(qr_data)
+            self.qr_label.setPixmap(pixmap.scaled(400, 400, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            
+            # Show link text
+            self.link_text.setPlainText(self.link_uri)
+            
+            # Enable buttons
+            self.save_qr_btn.setEnabled(True)
+            self.copy_link_btn.setEnabled(True)
+            
+            # Start expiration countdown (5 minutes)
+            self.start_expiration_timer()
+            
+            QMessageBox.information(
+                self,
+                "QR Code Generated",
+                "Scan the QR code with Signal on your phone within 5 minutes."
+            )
+            
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Error",
+                f"Failed to generate QR code: {e}"
+            )
+    
+    def save_qr_image(self):
+        """Save QR code as image file"""
+        save_path = os.path.expanduser("~/Desktop/signal_relink_qr.png")
+        if self.qr_label.pixmap():
+            self.qr_label.pixmap().save(save_path)
+            QMessageBox.information(
+                self,
+                "Saved",
+                f"QR code saved to:\n{save_path}"
+            )
+    
+    def copy_link_text(self):
+        """Copy link text to clipboard"""
+        from PyQt5.QtWidgets import QApplication
+        QApplication.clipboard().setText(self.link_uri)
+        QMessageBox.information(
+            self,
+            "Copied",
+            "Link copied to clipboard!"
+        )
+    
+    def start_expiration_timer(self):
+        """Start countdown timer for QR expiration"""
+        self.remaining_seconds = 300  # 5 minutes
+        self.expiration_timer = QTimer()
+        self.expiration_timer.timeout.connect(self.update_timer)
+        self.expiration_timer.start(1000)  # Update every second
+    
+    def update_timer(self):
+        """Update expiration timer display"""
+        self.remaining_seconds -= 1
+        minutes = self.remaining_seconds // 60
+        seconds = self.remaining_seconds % 60
+        self.timer_label.setText(f"⏰ QR code expires in: {minutes}:{seconds:02d}")
+        
+        if self.remaining_seconds <= 0:
+            self.expiration_timer.stop()
+            self.timer_label.setText("❌ QR code expired - click Generate QR Code again")
+            self.save_qr_btn.setEnabled(False)
+            self.copy_link_btn.setEnabled(False)
+    
+    def get_new_phone(self):
+        """Get the new phone number if entered manually"""
+        return self.phone_input.text() if self.phone_input.text() else None
+
+
 class ProductsTab(QWidget):
     """Products management tab"""
     
@@ -842,18 +1011,40 @@ class SettingsTab(QWidget):
         signal_layout = QVBoxLayout()
         
         seller = self.seller_manager.get_seller(1)
-        phone_number = seller.signal_id if seller else "Not configured"
         
-        phone_label = QLabel(f"Linked Phone: {phone_number}")
-        signal_layout.addWidget(phone_label)
+        # Display current number
+        current_number_layout = QHBoxLayout()
+        current_number_layout.addWidget(QLabel("Current Number:"))
+        self.phone_label = QLabel(seller.signal_id if seller and seller.signal_id else "Not linked")
+        current_number_layout.addWidget(self.phone_label)
+        current_number_layout.addStretch()
+        signal_layout.addLayout(current_number_layout)
         
-        signal_btn_layout = QHBoxLayout()
-        relink_btn = QPushButton("Re-link Account")
-        unlink_btn = QPushButton("Unlink Account")
-        signal_btn_layout.addWidget(relink_btn)
-        signal_btn_layout.addWidget(unlink_btn)
-        signal_btn_layout.addStretch()
-        signal_layout.addLayout(signal_btn_layout)
+        # Status indicator
+        status_layout = QHBoxLayout()
+        status_layout.addWidget(QLabel("Status:"))
+        if seller and seller.signal_id:
+            self.status_label = QLabel("✅ Linked")
+        else:
+            self.status_label = QLabel("❌ Not Linked")
+        status_layout.addWidget(self.status_label)
+        status_layout.addStretch()
+        signal_layout.addLayout(status_layout)
+        
+        # Buttons
+        signal_buttons = QHBoxLayout()
+        relink_btn = QPushButton("Change Number / Re-link")
+        relink_btn.clicked.connect(self.relink_signal)
+        test_signal_btn = QPushButton("Test Connection")
+        test_signal_btn.clicked.connect(self.test_signal_connection)
+        unlink_btn = QPushButton("Unlink")
+        unlink_btn.clicked.connect(self.unlink_signal)
+        
+        signal_buttons.addWidget(relink_btn)
+        signal_buttons.addWidget(test_signal_btn)
+        signal_buttons.addWidget(unlink_btn)
+        signal_buttons.addStretch()
+        signal_layout.addLayout(signal_buttons)
         
         signal_group.setLayout(signal_layout)
         layout.addWidget(signal_group)
@@ -969,6 +1160,61 @@ class SettingsTab(QWidget):
                 QMessageBox.warning(self, "Error", "Seller not found")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save settings: {e}")
+    
+    def relink_signal(self):
+        """Open re-link dialog"""
+        dialog = SignalRelinkDialog(self.signal_handler, self)
+        if dialog.exec_() == QDialog.Accepted:
+            new_phone = dialog.get_new_phone()
+            if new_phone:
+                # Update database with new phone
+                seller = self.seller_manager.get_seller(1)
+                seller.signal_id = new_phone
+                self.seller_manager.update_seller(seller)
+                self.phone_label.setText(new_phone)
+                self.status_label.setText("✅ Linked")
+                QMessageBox.information(
+                    self,
+                    "Success",
+                    "Signal account re-linked successfully!"
+                )
+
+    def test_signal_connection(self):
+        """Test Signal connection"""
+        try:
+            # Try sending a test message to self
+            if not self.signal_handler.phone_number:
+                QMessageBox.warning(self, "Error", "Signal not configured. Please link an account first.")
+                return
+                
+            result = self.signal_handler.send_message(
+                self.signal_handler.phone_number,
+                "Signal connection test"
+            )
+            if result:
+                QMessageBox.information(self, "Success", "Signal connection is working!")
+            else:
+                QMessageBox.warning(self, "Failed", "Signal connection test failed")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Connection test failed: {e}")
+
+    def unlink_signal(self):
+        """Unlink Signal account"""
+        reply = QMessageBox.question(
+            self,
+            "Confirm Unlink",
+            "Are you sure you want to unlink your Signal account?\n"
+            "You will need to re-link to send/receive messages.",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            # Clear Signal data
+            seller = self.seller_manager.get_seller(1)
+            seller.signal_id = None
+            self.seller_manager.update_seller(seller)
+            self.phone_label.setText("Not linked")
+            self.status_label.setText("❌ Not Linked")
+            QMessageBox.information(self, "Unlinked", "Signal account unlinked")
 
 
 class DashboardWindow(QMainWindow):

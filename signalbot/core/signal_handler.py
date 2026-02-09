@@ -63,7 +63,7 @@ class SignalHandler:
         Send message via Signal
         
         Args:
-            recipient: Recipient phone number or username (e.g., greysklulz.23)
+            recipient: Recipient phone number (e.g., "+15555550123") or username (e.g., "randomuser.01")
             message: Message text
             attachments: Optional list of file paths to attach
             
