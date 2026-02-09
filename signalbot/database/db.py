@@ -79,6 +79,34 @@ class Order(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class Contact(Base):
+    """Contact information"""
+    __tablename__ = 'contacts'
+    
+    id = Column(Integer, primary_key=True)
+    signal_id = Column(Text, nullable=False, unique=True)  # Encrypted
+    signal_id_salt = Column(String(255), nullable=False)
+    name = Column(String(255), nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Message(Base):
+    """Message history"""
+    __tablename__ = 'messages'
+    
+    id = Column(Integer, primary_key=True)
+    sender_signal_id = Column(Text, nullable=False)  # Encrypted
+    sender_signal_id_salt = Column(String(255), nullable=False)
+    recipient_signal_id = Column(Text, nullable=False)  # Encrypted
+    recipient_signal_id_salt = Column(String(255), nullable=False)
+    message_body = Column(Text, nullable=True)
+    is_outgoing = Column(Boolean, nullable=False)
+    sent_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class DatabaseManager:
     """Manages database operations with encryption support"""
     
