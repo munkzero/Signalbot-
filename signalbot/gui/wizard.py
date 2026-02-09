@@ -181,7 +181,7 @@ class SignalPage(QWizardPage):
         # Phone number input (alternative)
         phone_label = QLabel("\nOr enter your Signal phone number:")
         self.phone_input = QLineEdit()
-        self.phone_input.setPlaceholderText("+1234567890")
+        self.phone_input.setPlaceholderText("+15555550123")
         
         layout.addWidget(phone_label)
         layout.addWidget(self.phone_input)

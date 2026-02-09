@@ -102,13 +102,13 @@ The dashboard now has 4 tabs instead of 3:
 │ Messages                                    [Compose Message]       │
 ├──────────────────────┬──────────────────────────────────────────────┤
 │                      │                                              │
-│  Search:             │  Chat with +64274268090                      │
+│  Search:             │  Chat with +15555550123                      │
 │  [Search...]         │ ─────────────────────────────────────────── │
 │                      │                                              │
 │  Conversations:      │  Message History:                            │
 │ ┌──────────────────┐ │ ┌──────────────────────────────────────────┐│
-│ │ +64274268090     │ │ │ [10:30] You: Hello!                      ││
-│ │ greysklulz.23    │ │ │ [10:31] Buyer: Hi, product info?         ││
+│ │ +15555550123     │ │ │ [10:30] You: Hello!                      ││
+│ │ randomuser.01    │ │ │ [10:31] Buyer: Hi, product info?         ││
 │ │ Group: Shop Chat │ │ │ [10:32] You: Sure, which one?            ││
 │ └──────────────────┘ │ │                                          ││
 │                      │ └──────────────────────────────────────────┘│
@@ -133,7 +133,7 @@ The dashboard now has 4 tabs instead of 3:
 │    ○ Group                                          │
 │                                                     │
 │  Contact:                                           │
-│  [+64274268090 or greysklulz.23]                   │
+│  [+15555550123 or randomuser.01]                   │
 │                                                     │
 │  Group:                                             │
 │  [Select Group ▼]                                   │
@@ -152,8 +152,8 @@ The dashboard now has 4 tabs instead of 3:
 ```
 
 **Features:**
-- ✓ Send to phone numbers (e.g., +64274268090)
-- ✓ Send to usernames (e.g., greysklulz.23)
+- ✓ Send to phone numbers (e.g., +15555550123)
+- ✓ Send to usernames (e.g., randomuser.01)
 - ✓ Send to groups (dropdown populated automatically)
 - ✓ Attach images
 - ✓ Input validation
@@ -166,7 +166,7 @@ The dashboard now has 4 tabs instead of 3:
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
 │  ┌─ Signal Account ─────────────────────────────────────────────┐  │
-│  │  Linked Phone: +64274268090                                  │  │
+│  │  Linked Phone: +15555550123                                  │  │
 │  │  [Re-link Account]  [Unlink Account]                         │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 │                                                                     │
@@ -252,7 +252,7 @@ The dashboard now has 4 tabs instead of 3:
 │  [Save QR as Image]  [Copy Link Text]                   │
 │                                                          │
 │  Or enter your Signal phone number:                      │
-│  [+64274268090]                                          │
+│  [+15555550123]                                          │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -383,7 +383,7 @@ signal-cli -u +1234567890 send -m "Hello" +9876543210
 
 **Username (NEW):**
 ```bash
-signal-cli -u +1234567890 send -m "Hello" --username greysklulz.23
+signal-cli -u +1234567890 send -m "Hello" --username randomuser.01
 ```
 
 ### Group Messaging

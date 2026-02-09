@@ -14,8 +14,8 @@ This document details the complete implementation of critical features for the S
 - **File**: `signalbot/core/signal_handler.py`
 - **Method**: `send_message(recipient, message, attachments)`
 - **Feature**: Automatically detects if recipient is phone number or username
-  - Phone numbers: Start with `+` (e.g., `+64274268090`)
-  - Usernames: No `+` prefix (e.g., `greysklulz.23`)
+  - Phone numbers: Start with `+` (e.g., `+15555550123`)
+  - Usernames: No `+` prefix (e.g., `randomuser.01`)
   - Adds `--username` flag to signal-cli command when needed
 
 ### 3. Group Messaging Support ✅
