@@ -538,14 +538,27 @@ class SignalRelinkDialog(QDialog):
     
     def save_qr_image(self):
         """Save QR code as image file"""
-        save_path = os.path.expanduser("~/Desktop/signal_relink_qr.png")
+        # Try Desktop first, fall back to home directory
+        desktop_path = os.path.expanduser("~/Desktop")
+        if os.path.exists(desktop_path):
+            save_path = os.path.join(desktop_path, "signal_relink_qr.png")
+        else:
+            save_path = os.path.expanduser("~/signal_relink_qr.png")
+            
         if self.qr_label.pixmap():
-            self.qr_label.pixmap().save(save_path)
-            QMessageBox.information(
-                self,
-                "Saved",
-                f"QR code saved to:\n{save_path}"
-            )
+            try:
+                self.qr_label.pixmap().save(save_path)
+                QMessageBox.information(
+                    self,
+                    "Saved",
+                    f"QR code saved to:\n{save_path}"
+                )
+            except Exception as e:
+                QMessageBox.warning(
+                    self,
+                    "Error",
+                    f"Failed to save QR code: {e}"
+                )
     
     def copy_link_text(self):
         """Copy link text to clipboard"""
@@ -1184,7 +1197,11 @@ class SettingsTab(QWidget):
         try:
             # Try sending a test message to self
             if not self.signal_handler.phone_number:
-                QMessageBox.warning(self, "Error", "Signal not configured. Please link an account first.")
+                QMessageBox.warning(
+                    self, 
+                    "Not Configured", 
+                    "Signal not configured. Please link an account first."
+                )
                 return
                 
             result = self.signal_handler.send_message(
@@ -1194,9 +1211,22 @@ class SettingsTab(QWidget):
             if result:
                 QMessageBox.information(self, "Success", "Signal connection is working!")
             else:
-                QMessageBox.warning(self, "Failed", "Signal connection test failed")
+                QMessageBox.warning(
+                    self, 
+                    "Failed", 
+                    "Signal connection test failed.\n\n"
+                    "Please check your Signal configuration:\n"
+                    "- Ensure signal-cli is installed and configured\n"
+                    "- Verify your account is properly linked\n"
+                    "- Try re-linking your account"
+                )
         except Exception as e:
-            QMessageBox.warning(self, "Error", f"Connection test failed: {e}")
+            QMessageBox.warning(
+                self, 
+                "Error", 
+                f"Connection test failed: {e}\n\n"
+                "Please verify signal-cli is installed and your account is linked."
+            )
 
     def unlink_signal(self):
         """Unlink Signal account"""
