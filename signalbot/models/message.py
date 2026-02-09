@@ -47,7 +47,7 @@ class Message:
                     db_message.sender_signal_id,
                     db_message.sender_signal_id_salt
                 )
-            except:
+            except Exception:
                 sender_signal_id = None
         
         recipient_signal_id = None
@@ -57,7 +57,7 @@ class Message:
                     db_message.recipient_signal_id,
                     db_message.recipient_signal_id_salt
                 )
-            except:
+            except Exception:
                 recipient_signal_id = None
         
         return cls(
@@ -172,7 +172,7 @@ class MessageManager:
                 if (sender == my_signal_id and recipient == contact_signal_id) or \
                    (sender == contact_signal_id and recipient == my_signal_id):
                     conversation_messages.append(Message.from_db_model(db_msg, self.db))
-            except:
+            except Exception:
                 continue
         
         return conversation_messages
@@ -212,7 +212,7 @@ class MessageManager:
                 
                 if contact_id:
                     conversations[contact_id]['count'] += 1
-            except:
+            except Exception:
                 continue
         
         return conversations
@@ -241,7 +241,7 @@ class MessageManager:
                    (sender == contact_signal_id and recipient == my_signal_id):
                     self.db.session.delete(db_msg)
                     deleted = True
-            except:
+            except Exception:
                 continue
         
         if deleted:

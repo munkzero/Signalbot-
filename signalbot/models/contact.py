@@ -45,7 +45,7 @@ class Contact:
                     db_contact.signal_id,
                     db_contact.signal_id_salt
                 )
-            except:
+            except Exception:
                 signal_id = None
         
         return cls(
@@ -144,7 +144,7 @@ class ContactManager:
                 )
                 if decrypted_id == signal_id:
                     return Contact.from_db_model(db_contact, self.db)
-            except:
+            except Exception:
                 continue
         return None
     
