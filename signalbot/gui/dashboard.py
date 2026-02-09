@@ -22,6 +22,8 @@ from ..database.db import DatabaseManager
 from ..models.seller import SellerManager
 from ..models.product import ProductManager, Product
 from ..models.order import OrderManager, Order
+from ..models.contact import ContactManager
+from ..models.message import MessageManager
 from ..config.settings import (
     WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT,
     SUPPORTED_CURRENCIES, MAX_IMAGE_SIZE, IMAGES_DIR,
@@ -767,11 +769,20 @@ class OrdersTab(QWidget):
 class MessagesTab(QWidget):
     """Messaging tab with conversation list and chat window"""
     
-    def __init__(self, signal_handler: SignalHandler):
+    def __init__(self, signal_handler: SignalHandler, contact_manager, message_manager, seller_manager):
         super().__init__()
         self.signal_handler = signal_handler
+        self.contact_manager = contact_manager
+        self.message_manager = message_manager
+        self.seller_manager = seller_manager
         self.conversations = {}  # Dict to store conversations
         self.current_recipient = None
+        self.my_signal_id = None
+        
+        # Get seller's Signal ID
+        seller = self.seller_manager.get_seller(1)
+        if seller:
+            self.my_signal_id = seller.signal_id
         
         layout = QVBoxLayout()
         
@@ -876,18 +887,32 @@ class MessagesTab(QWidget):
         self.attachment_path = None
     
     def load_conversations(self):
-        """Load conversation list"""
-        # In a real implementation, this would load from a database
-        # For now, show placeholder
+        """Load conversation list from database"""
         self.conversations_list.clear()
         
-        # Example conversations (in real app, load from database/history)
-        sample_conversations = []
+        if not self.my_signal_id:
+            item = QListWidgetItem("No Signal ID configured")
+            item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+            self.conversations_list.addItem(item)
+            return
         
-        if not sample_conversations:
+        # Get all conversations from database
+        conversations = self.message_manager.get_all_conversations(self.my_signal_id)
+        
+        if not conversations:
             item = QListWidgetItem("No conversations yet")
             item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
             self.conversations_list.addItem(item)
+        else:
+            for contact_id, conv_data in conversations.items():
+                # Try to get contact name
+                contact = self.contact_manager.get_contact_by_signal_id(contact_id)
+                display_name = contact.name if contact else contact_id
+                
+                last_msg = conv_data['last_message'][:30] if conv_data['last_message'] else ''
+                item = QListWidgetItem(f"{display_name} - {last_msg}...")
+                item.setData(Qt.UserRole, contact_id)
+                self.conversations_list.addItem(item)
     
     def filter_conversations(self, text):
         """Filter conversations based on search text"""
@@ -900,24 +925,28 @@ class MessagesTab(QWidget):
                 item.setHidden(True)
     
     def load_conversation(self, item):
-        """Load selected conversation"""
+        """Load selected conversation from database"""
         if not item or not item.flags() & Qt.ItemIsSelectable:
             return
         
         recipient = item.data(Qt.UserRole)
-        if recipient:
+        if recipient and self.my_signal_id:
             self.current_recipient = recipient
-            self.chat_header.setText(f"Chat with {recipient}")
             
-            # Load message history (placeholder)
+            # Try to get contact name
+            contact = self.contact_manager.get_contact_by_signal_id(recipient)
+            display_name = contact.name if contact else recipient
+            self.chat_header.setText(f"Chat with {display_name}")
+            
+            # Load message history from database
             self.message_history.clear()
-            messages = self.conversations.get(recipient, [])
+            messages = self.message_manager.get_conversation(recipient, self.my_signal_id)
             
             for msg in messages:
-                timestamp = msg.get('timestamp', '')
-                sender = msg.get('sender', '')
-                text = msg.get('text', '')
-                self.message_history.append(f"[{timestamp}] {sender}: {text}\n")
+                timestamp = msg.sent_at.strftime("%H:%M") if msg.sent_at else "??:??"
+                sender_name = "You" if msg.is_outgoing else display_name
+                text = msg.message_body or "[Attachment]"
+                self.message_history.append(f"[{timestamp}] {sender_name}: {text}\n")
     
     def compose_message(self):
         """Open compose message dialog"""
@@ -949,6 +978,19 @@ class MessagesTab(QWidget):
                 self.message_history.append(f"[{timestamp}] You: {message}\n")
                 self.message_input.clear()
                 self.attachment_path = None
+                
+                # Save to database
+                if self.my_signal_id:
+                    self.message_manager.add_message(
+                        sender_signal_id=self.my_signal_id,
+                        recipient_signal_id=self.current_recipient,
+                        message_body=message,
+                        is_outgoing=True
+                    )
+                    # Ensure contact exists
+                    self.contact_manager.get_or_create_contact(self.current_recipient)
+                    # Refresh conversations list
+                    self.load_conversations()
             else:
                 QMessageBox.warning(self, "Send Failed", "Failed to send message")
         except Exception as e:
@@ -985,13 +1027,22 @@ class MessagesTab(QWidget):
         text = message.get('text', '')
         timestamp = datetime.fromtimestamp(message.get('timestamp', 0) / 1000).strftime("%H:%M")
         
+        # Save to database
+        if self.my_signal_id and sender:
+            self.message_manager.add_message(
+                sender_signal_id=sender,
+                recipient_signal_id=self.my_signal_id,
+                message_body=text,
+                is_outgoing=False
+            )
+            # Ensure contact exists
+            self.contact_manager.get_or_create_contact(sender)
+        
         # Add to conversations
         if sender not in self.conversations:
             self.conversations[sender] = []
-            # Add to list
-            item = QListWidgetItem(sender)
-            item.setData(Qt.UserRole, sender)
-            self.conversations_list.addItem(item)
+            # Reload conversations to show new one
+            self.load_conversations()
         
         self.conversations[sender].append(message)
         
@@ -1257,6 +1308,8 @@ class DashboardWindow(QMainWindow):
         self.seller_manager = SellerManager(db_manager)
         self.product_manager = ProductManager(db_manager)
         self.order_manager = OrderManager(db_manager)
+        self.contact_manager = ContactManager(db_manager)
+        self.message_manager = MessageManager(db_manager)
         
         # Initialize SignalHandler if not provided
         if signal_handler is None:
@@ -1275,7 +1328,7 @@ class DashboardWindow(QMainWindow):
         # Add tabs
         tabs.addTab(ProductsTab(self.product_manager), "Products")
         tabs.addTab(OrdersTab(self.order_manager), "Orders")
-        tabs.addTab(MessagesTab(self.signal_handler), "Messages")
+        tabs.addTab(MessagesTab(self.signal_handler, self.contact_manager, self.message_manager, self.seller_manager), "Messages")
         tabs.addTab(SettingsTab(self.seller_manager, self.signal_handler), "Settings")
         
         self.setCentralWidget(tabs)
