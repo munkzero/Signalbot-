@@ -1037,6 +1037,12 @@ class MessagesTab(QWidget):
                 QTimer.singleShot(0, lambda: self._save_message_to_db(message_text))
         else:
             QMessageBox.warning(self, "Send Failed", status_message)
+        
+        # Clean up thread
+        if self.send_thread:
+            self.send_thread.finished.disconnect()
+            self.send_thread.deleteLater()
+            self.send_thread = None
     
     def _save_message_to_db(self, message_text):
         """Save message to database asynchronously"""
@@ -1053,6 +1059,12 @@ class MessagesTab(QWidget):
             self.load_conversations(force_refresh=True)
         except Exception as e:
             print(f"Error saving message to database: {e}")
+            # Show warning to user if database save fails
+            QMessageBox.warning(
+                self, 
+                "Database Error", 
+                "Message was sent but could not be saved to history."
+            )
     
     def send_product(self):
         """Open product picker and send product info"""
