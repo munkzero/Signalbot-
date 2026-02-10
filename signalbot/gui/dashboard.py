@@ -710,6 +710,373 @@ class SignalRelinkDialog(QDialog):
         return self.phone_input.text() if self.phone_input.text() else None
 
 
+class ContactDialog(QDialog):
+    """Dialog for adding/editing contacts"""
+    
+    def __init__(self, contact_manager, contact=None, parent=None):
+        super().__init__(parent)
+        self.contact_manager = contact_manager
+        self.contact = contact
+        
+        self.setWindowTitle("Edit Contact" if contact else "Add Contact")
+        self.setModal(True)
+        self.setMinimumWidth(400)
+        
+        layout = QVBoxLayout()
+        form_layout = QFormLayout()
+        
+        # Name
+        self.name_input = QLineEdit()
+        if contact:
+            self.name_input.setText(contact.name or "")
+        form_layout.addRow("Name*:", self.name_input)
+        
+        # Signal ID
+        self.signal_id_input = QLineEdit()
+        self.signal_id_input.setPlaceholderText("+1234567890 or username.123")
+        if contact:
+            self.signal_id_input.setText(contact.signal_id or "")
+            self.signal_id_input.setEnabled(False)  # Don't allow editing Signal ID
+        form_layout.addRow("Signal ID*:", self.signal_id_input)
+        
+        # Notes
+        self.notes_input = QTextEdit()
+        self.notes_input.setMaximumHeight(100)
+        if contact:
+            self.notes_input.setPlainText(contact.notes or "")
+        form_layout.addRow("Notes:", self.notes_input)
+        
+        layout.addLayout(form_layout)
+        
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Save | QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.save_contact)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        
+        self.setLayout(layout)
+    
+    def save_contact(self):
+        """Validate and save contact"""
+        name = self.name_input.text().strip()
+        signal_id = self.signal_id_input.text().strip()
+        notes = self.notes_input.toPlainText().strip()
+        
+        if not name:
+            QMessageBox.warning(self, "Validation Error", "Name is required")
+            return
+        
+        if not signal_id:
+            QMessageBox.warning(self, "Validation Error", "Signal ID is required")
+            return
+        
+        try:
+            if self.contact:
+                # Update existing contact
+                self.contact.name = name
+                self.contact.notes = notes
+                self.contact_manager.update_contact(self.contact)
+            else:
+                # Create new contact
+                from ..models.contact import Contact
+                contact = Contact(
+                    signal_id=signal_id,
+                    name=name,
+                    notes=notes
+                )
+                self.contact_manager.create_contact(contact)
+            
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save contact: {e}")
+
+
+class ContactPickerDialog(QDialog):
+    """Dialog for selecting a contact to message"""
+    
+    def __init__(self, contact_manager, parent=None):
+        super().__init__(parent)
+        self.contact_manager = contact_manager
+        self.selected_contact = None
+        
+        self.setWindowTitle("Select Contact")
+        self.setModal(True)
+        self.setMinimumSize(500, 400)
+        
+        layout = QVBoxLayout()
+        
+        # Search bar
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search contacts...")
+        self.search_input.textChanged.connect(self.filter_contacts)
+        layout.addWidget(self.search_input)
+        
+        # Contact list
+        self.contact_list = QListWidget()
+        self.contact_list.itemDoubleClicked.connect(self.select_contact)
+        layout.addWidget(self.contact_list)
+        
+        # Load contacts
+        self._load_contacts()
+        
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        
+        self.setLayout(layout)
+    
+    def _load_contacts(self):
+        """Load contacts into list"""
+        self.contact_list.clear()
+        contacts = self.contact_manager.list_contacts()
+        
+        for contact in contacts:
+            item = QListWidgetItem(f"{contact.name} ({contact.signal_id})")
+            item.setData(Qt.UserRole, contact)
+            self.contact_list.addItem(item)
+    
+    def filter_contacts(self, text):
+        """Filter contacts based on search text"""
+        search_text = text.lower()
+        for i in range(self.contact_list.count()):
+            item = self.contact_list.item(i)
+            if search_text in item.text().lower():
+                item.setHidden(False)
+            else:
+                item.setHidden(True)
+    
+    def select_contact(self, item):
+        """Select contact on double-click"""
+        self.selected_contact = item.data(Qt.UserRole)
+        self.accept()
+    
+    def get_selected_contact(self):
+        """Get selected contact"""
+        if self.selected_contact:
+            return self.selected_contact
+        
+        # Get from current selection
+        current_item = self.contact_list.currentItem()
+        if current_item:
+            return current_item.data(Qt.UserRole)
+        
+        return None
+
+
+class ContactsTab(QWidget):
+    """Contacts management tab"""
+    
+    def __init__(self, contact_manager, message_manager, signal_handler):
+        super().__init__()
+        self.contact_manager = contact_manager
+        self.message_manager = message_manager
+        self.signal_handler = signal_handler
+        
+        layout = QVBoxLayout()
+        
+        # Header
+        header_layout = QHBoxLayout()
+        header = QLabel("Contacts")
+        header.setFont(QFont("Arial", 16, QFont.Bold))
+        header_layout.addWidget(header)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
+        
+        # Buttons and search
+        controls_layout = QHBoxLayout()
+        add_btn = QPushButton("Add Contact")
+        refresh_btn = QPushButton("Refresh")
+        
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search contacts...")
+        self.search_input.textChanged.connect(self.filter_contacts)
+        
+        controls_layout.addWidget(add_btn)
+        controls_layout.addWidget(refresh_btn)
+        controls_layout.addWidget(QLabel("Search:"))
+        controls_layout.addWidget(self.search_input)
+        controls_layout.addStretch()
+        layout.addLayout(controls_layout)
+        
+        # Contacts table
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels([
+            "Name", "Signal ID", "Last Message", "Actions"
+        ])
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.show_context_menu)
+        self.table.doubleClicked.connect(self.open_chat)
+        layout.addWidget(self.table)
+        
+        # Connect signals
+        add_btn.clicked.connect(self.add_contact)
+        refresh_btn.clicked.connect(self.load_contacts)
+        
+        self.setLayout(layout)
+        self.load_contacts()
+    
+    def load_contacts(self):
+        """Load contacts into table"""
+        self.table.setRowCount(0)
+        contacts = self.contact_manager.list_contacts()
+        
+        # Get seller's Signal ID for conversation lookup
+        seller_id = None
+        try:
+            from ..models.seller import SellerManager
+            # Note: This would need seller_manager passed in, or get from parent
+            # For now, we'll skip last message lookup
+        except:
+            pass
+        
+        self.table.setRowCount(len(contacts))
+        
+        for row, contact in enumerate(contacts):
+            # Name
+            self.table.setItem(row, 0, QTableWidgetItem(contact.name or ""))
+            
+            # Signal ID
+            self.table.setItem(row, 1, QTableWidgetItem(contact.signal_id or ""))
+            
+            # Last message (placeholder for now)
+            self.table.setItem(row, 2, QTableWidgetItem("--"))
+            
+            # Actions button
+            actions_widget = QWidget()
+            actions_layout = QHBoxLayout(actions_widget)
+            actions_layout.setContentsMargins(0, 0, 0, 0)
+            
+            message_btn = QPushButton("Message")
+            message_btn.clicked.connect(lambda checked, c=contact: self.message_contact(c))
+            edit_btn = QPushButton("Edit")
+            edit_btn.clicked.connect(lambda checked, c=contact: self.edit_contact(c))
+            delete_btn = QPushButton("Delete")
+            delete_btn.clicked.connect(lambda checked, c=contact: self.delete_contact(c))
+            
+            actions_layout.addWidget(message_btn)
+            actions_layout.addWidget(edit_btn)
+            actions_layout.addWidget(delete_btn)
+            
+            self.table.setCellWidget(row, 3, actions_widget)
+        
+        self.table.resizeColumnsToContents()
+    
+    def filter_contacts(self, text):
+        """Filter contacts based on search text"""
+        search_text = text.lower()
+        for row in range(self.table.rowCount()):
+            name_item = self.table.item(row, 0)
+            signal_id_item = self.table.item(row, 1)
+            
+            match = False
+            if name_item and search_text in name_item.text().lower():
+                match = True
+            if signal_id_item and search_text in signal_id_item.text().lower():
+                match = True
+            
+            self.table.setRowHidden(row, not match)
+    
+    def add_contact(self):
+        """Open dialog to add new contact"""
+        dialog = ContactDialog(self.contact_manager, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.load_contacts()
+    
+    def edit_contact(self, contact):
+        """Open dialog to edit contact"""
+        dialog = ContactDialog(self.contact_manager, contact, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.load_contacts()
+    
+    def delete_contact(self, contact):
+        """Delete a contact"""
+        reply = QMessageBox.question(
+            self,
+            "Confirm Delete",
+            f"Are you sure you want to delete '{contact.name}'?\nThis will not delete message history.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.contact_manager.delete_contact(contact.id):
+                QMessageBox.information(self, "Success", "Contact deleted")
+                self.load_contacts()
+            else:
+                QMessageBox.warning(self, "Error", "Failed to delete contact")
+    
+    def message_contact(self, contact):
+        """Open message dialog for contact"""
+        # Emit signal to switch to Messages tab and start conversation
+        # For now, show a message box
+        QMessageBox.information(
+            self,
+            "Message Contact",
+            f"This will open a chat with {contact.name} in the Messages tab.\n\n"
+            "Feature partially implemented - please use Messages tab to start conversation."
+        )
+    
+    def open_chat(self, index):
+        """Open chat on double-click"""
+        row = index.row()
+        name_item = self.table.item(row, 0)
+        if name_item:
+            # Get contact by name (not ideal, but works for now)
+            name = name_item.text()
+            contacts = self.contact_manager.list_contacts()
+            for contact in contacts:
+                if contact.name == name:
+                    self.message_contact(contact)
+                    break
+    
+    def show_context_menu(self, position):
+        """Show context menu for contact table"""
+        item = self.table.itemAt(position)
+        if not item:
+            return
+        
+        row = item.row()
+        name_item = self.table.item(row, 0)
+        if not name_item:
+            return
+        
+        # Get contact
+        name = name_item.text()
+        contacts = self.contact_manager.list_contacts()
+        contact = None
+        for c in contacts:
+            if c.name == name:
+                contact = c
+                break
+        
+        if not contact:
+            return
+        
+        menu = QMenu(self)
+        message_action = QAction("💬 Message", self)
+        message_action.triggered.connect(lambda: self.message_contact(contact))
+        edit_action = QAction("✏️ Edit", self)
+        edit_action.triggered.connect(lambda: self.edit_contact(contact))
+        delete_action = QAction("🗑️ Delete", self)
+        delete_action.triggered.connect(lambda: self.delete_contact(contact))
+        
+        menu.addAction(message_action)
+        menu.addAction(edit_action)
+        menu.addSeparator()
+        menu.addAction(delete_action)
+        
+        menu.exec_(self.table.mapToGlobal(position))
+
+
 class ProductsTab(QWidget):
     """Products management tab"""
     
@@ -937,6 +1304,11 @@ class MessagesTab(QWidget):
         compose_btn = QPushButton("Compose Message")
         compose_btn.clicked.connect(self.compose_message)
         header_layout.addWidget(compose_btn)
+        
+        message_contact_btn = QPushButton("Message Contact")
+        message_contact_btn.clicked.connect(self.message_from_contacts)
+        header_layout.addWidget(message_contact_btn)
+        
         header_layout.addStretch()
         
         layout.addLayout(header_layout)
@@ -1109,6 +1481,29 @@ class MessagesTab(QWidget):
         )
         if dialog.exec_() == QDialog.Accepted:
             self.load_conversations(force_refresh=True)
+    
+    def message_from_contacts(self):
+        """Open contact picker and start conversation"""
+        dialog = ContactPickerDialog(self.contact_manager, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            contact = dialog.get_selected_contact()
+            if contact:
+                # Set current recipient and load conversation
+                self.current_recipient = contact.signal_id
+                self.chat_header.setText(f"Chat with {contact.name}")
+                
+                # Load message history
+                self.message_history.clear()
+                messages = self.message_manager.get_conversation(contact.signal_id, self.my_signal_id)
+                
+                for msg in messages:
+                    timestamp = msg.sent_at.strftime("%H:%M") if msg.sent_at else "??:??"
+                    sender_name = "You" if msg.is_outgoing else contact.name
+                    text = msg.message_body or "[Attachment]"
+                    self.message_history.append(f"[{timestamp}] {sender_name}: {text}\n")
+                
+                # Focus on message input
+                self.message_input.setFocus()
     
     def send_message(self):
         """Send message to current recipient using background thread"""
@@ -1670,6 +2065,7 @@ class DashboardWindow(QMainWindow):
         tabs.addTab(ProductsTab(self.product_manager), "Products")
         tabs.addTab(OrdersTab(self.order_manager), "Orders")
         tabs.addTab(MessagesTab(self.signal_handler, self.contact_manager, self.message_manager, self.seller_manager, self.product_manager), "Messages")
+        tabs.addTab(ContactsTab(self.contact_manager, self.message_manager, self.signal_handler), "Contacts")
         tabs.addTab(SettingsTab(self.seller_manager, self.signal_handler), "Settings")
         
         self.setCentralWidget(tabs)
