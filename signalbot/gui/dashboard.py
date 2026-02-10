@@ -4,6 +4,7 @@ Main seller dashboard GUI
 
 import sys
 import os
+import time
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLabel, QPushButton, QTableWidget,
@@ -12,7 +13,7 @@ from PyQt5.QtWidgets import (
     QSplitter, QFileDialog, QCheckBox, QDoubleSpinBox,
     QSpinBox, QComboBox, QScrollArea, QRadioButton,
     QButtonGroup, QGroupBox, QGridLayout, QListWidgetItem,
-    QMenu, QAction, QApplication
+    QMenu, QAction, QApplication, QProgressDialog
 )
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QPixmap, QCursor
@@ -87,6 +88,17 @@ class AddProductDialog(QDialog):
         if product:
             self.name_input.setText(product.name)
         form_layout.addRow("Product Name*:", self.name_input)
+        
+        # Product ID
+        self.product_id_input = QLineEdit()
+        self.product_id_input.setPlaceholderText("#1, SKU-001, LAP-123, etc.")
+        if product and product.product_id:
+            self.product_id_input.setText(product.product_id)
+        else:
+            # Auto-suggest next ID for new products
+            next_id = self._get_next_product_id()
+            self.product_id_input.setText(f"#{next_id}")
+        form_layout.addRow("Product ID*:", self.product_id_input)
         
         # Description
         self.description_input = QTextEdit()
@@ -202,12 +214,53 @@ class AddProductDialog(QDialog):
         except Exception as e:
             self.image_label.setText(f"Error: {str(e)}")
     
+    def _get_next_product_id(self):
+        """Auto-suggest next available numeric ID"""
+        products = self.product_manager.list_products(active_only=False)
+        numeric_ids = []
+        for p in products:
+            if p.product_id:
+                try:
+                    # Extract number from IDs like "#1", "#2", etc.
+                    if p.product_id.startswith('#'):
+                        num = int(p.product_id[1:])
+                        numeric_ids.append(num)
+                except:
+                    pass
+        
+        if numeric_ids:
+            return max(numeric_ids) + 1
+        return 1
+    
+    def _is_duplicate_id(self, product_id: str) -> bool:
+        """Check if product ID already exists"""
+        # Skip check if editing and ID hasn't changed
+        if self.product and self.product.product_id == product_id:
+            return False
+        
+        existing = self.product_manager.get_product_by_product_id(product_id)
+        return existing is not None
+    
     def save_product(self):
         """Validate and save product"""
         # Validate required fields
         name = self.name_input.text().strip()
         if not name:
             QMessageBox.warning(self, "Validation Error", "Product name is required")
+            return
+        
+        product_id = self.product_id_input.text().strip()
+        if not product_id:
+            QMessageBox.warning(self, "Validation Error", "Product ID is required")
+            return
+        
+        # Check for duplicate ID
+        if self._is_duplicate_id(product_id):
+            QMessageBox.warning(
+                self, 
+                "Duplicate ID", 
+                f"Product ID '{product_id}' already exists. Choose another."
+            )
             return
         
         price = self.price_input.value()
@@ -218,6 +271,7 @@ class AddProductDialog(QDialog):
         # Create or update product
         if self.product:
             # Update existing
+            self.product.product_id = product_id
             self.product.name = name
             self.product.description = self.description_input.toPlainText().strip()
             self.product.price = price
@@ -247,6 +301,7 @@ class AddProductDialog(QDialog):
         else:
             # Create new
             new_product = Product(
+                product_id=product_id,
                 name=name,
                 description=self.description_input.toPlainText().strip(),
                 price=price,
@@ -1928,9 +1983,11 @@ class MessagesTab(QWidget):
             # Send each selected product
             sent_count = 0
             for product in products:
-                # Format product message
-                message = f"""📦 {product.name}
-
+                # Format product message with ID
+                product_id_str = f"#{product.product_id}" if product.product_id and not product.product_id.startswith('#') else (product.product_id or "N/A")
+                message = f"""━━━━━━━━━━━━━━━━━
+{product_id_str} - {product.name}
+━━━━━━━━━━━━━━━━━
 {product.description}
 
 💰 Price: {product.price} {product.currency}
@@ -1938,10 +1995,16 @@ class MessagesTab(QWidget):
 🏷️ Category: {product.category or 'N/A'}
 """
                 
-                # Send with product image if available
+                # CRITICAL: Attach product image
                 attachments = []
                 if product.image_path and os.path.exists(product.image_path):
                     attachments.append(product.image_path)
+                else:
+                    QMessageBox.warning(
+                        self, 
+                        "No Image", 
+                        f"Product '{product.name}' has no image. Sending text only."
+                    )
                 
                 # Send via Signal
                 try:
@@ -1979,12 +2042,78 @@ class MessagesTab(QWidget):
                 QMessageBox.warning(self, "Failed", "Failed to send products")
     
     def send_catalog(self):
-        """Send full catalog to current recipient"""
+        """Send all active products to buyer with images"""
         if not self.current_recipient:
-            QMessageBox.warning(self, "No Recipient", "Please select a conversation first")
+            QMessageBox.warning(self, "No Recipient", "Select a conversation first")
             return
         
-        QMessageBox.information(self, "Feature", "Send catalog functionality to be implemented")
+        if not self.product_manager:
+            QMessageBox.warning(self, "Error", "Product manager not available")
+            return
+        
+        # Get all active products
+        products = self.product_manager.list_products(active_only=True)
+        
+        if not products:
+            QMessageBox.warning(self, "No Products", "No products available to send")
+            return
+        
+        # Show progress dialog
+        progress = QProgressDialog(f"Sending {len(products)} products...", "Cancel", 0, len(products), self)
+        progress.setWindowModality(Qt.WindowModal)
+        
+        sent_count = 0
+        for i, product in enumerate(products):
+            if progress.wasCanceled():
+                break
+            
+            # Format product message with ID
+            product_id_str = f"#{product.product_id}" if product.product_id and not product.product_id.startswith('#') else (product.product_id or "N/A")
+            message = f"""━━━━━━━━━━━━━━━━━
+{product_id_str} - {product.name}
+━━━━━━━━━━━━━━━━━
+{product.description}
+
+💰 Price: {product.price} {product.currency}
+📊 Stock: {product.stock} available
+🏷️ Category: {product.category or 'N/A'}
+"""
+            
+            # Attach product image if exists
+            attachments = []
+            if product.image_path and os.path.exists(product.image_path):
+                attachments.append(product.image_path)
+            
+            # Send via Signal
+            try:
+                success = self.signal_handler.send_message(
+                    recipient=self.current_recipient,
+                    message=message.strip(),
+                    attachments=attachments if attachments else None
+                )
+                
+                if success:
+                    # Save to message history
+                    if self.my_signal_id:
+                        try:
+                            self.message_manager.add_message(
+                                sender_signal_id=self.my_signal_id,
+                                recipient_signal_id=self.current_recipient,
+                                message_body=message.strip(),
+                                is_outgoing=True
+                            )
+                        except Exception as e:
+                            print(f"Error saving catalog message: {e}")
+                    sent_count += 1
+            except Exception as e:
+                print(f"Error sending product {product.name}: {e}")
+            
+            progress.setValue(i + 1)
+            time.sleep(1)  # Avoid rate limiting
+        
+        progress.close()
+        QMessageBox.information(self, "Success", f"Sent {sent_count} of {len(products)} products")
+        self.load_conversations(force_refresh=True)
     
     def attach_image(self):
         """Attach image to message"""

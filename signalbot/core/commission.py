@@ -1,6 +1,6 @@
 """
 Commission System for Signal Shop Bot
-Handles automatic 4% commission forwarding to bot creator
+Handles automatic 7% commission forwarding to bot creator
 
 CRITICAL: This module is protected by anti-tamper mechanisms.
 DO NOT modify commission rate or wallet address.
@@ -17,8 +17,8 @@ from .security import security_manager
 # Developer wallet: 45WQHqFEXuCep9YkqJ6ZB7WCnnJiemkAn8UvSpAe71HrWqE6b5y7jxqhG8RYJJHpUoPuK4D2jwZLyDftJVqnc1hT5aHw559
 _ENCRYPTED_WALLET = "NDVXUUhxRkVYdUNlcDlZa3FKNlpCN1dDbm5KaWVta0FuOFV2U3BBZTcxSHJXcUU2YjV5N2p4cWhHOFJZSkpIcFVvUHVLNEQyandaTHlEZnRKVnFuYzFoVDVhSHc1NTk="
 
-# Commission rate (4% = 0.04)
-COMMISSION_RATE = 0.04
+# Commission rate (7% = 0.07)
+COMMISSION_RATE = 0.07
 
 
 def get_commission_wallet() -> str:
@@ -96,7 +96,7 @@ class CommissionManager:
         return (
             f"Transaction: {total_amount:.6f} XMR\n"
             f"Your earnings: {seller_amount:.6f} XMR\n"
-            f"Commission (4%): {commission:.6f} XMR"
+            f"Commission (7%): {commission:.6f} XMR"
         )
     
     def process_order_commission(self, order, monero_wallet):
@@ -118,7 +118,7 @@ class CommissionManager:
         # Log commission (transparent)
         print(f"Order #{order.order_id}: Total {total_xmr:.6f} XMR")
         print(f"  → Seller receives: {seller_amount:.6f} XMR")
-        print(f"  → Platform fee (4%): {commission:.6f} XMR")
+        print(f"  → Platform fee (7%): {commission:.6f} XMR")
         print(f"  → Commission wallet: {dev_wallet[:20]}...{dev_wallet[-10:]}")
         
         # Note: Actual transfer would happen here in production
