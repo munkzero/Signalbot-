@@ -281,9 +281,12 @@ class AddProductDialog(QDialog):
 class ComposeMessageDialog(QDialog):
     """Dialog for composing new messages"""
     
-    def __init__(self, signal_handler: SignalHandler, parent=None):
+    def __init__(self, signal_handler: SignalHandler, message_manager=None, contact_manager=None, my_signal_id=None, parent=None):
         super().__init__(parent)
         self.signal_handler = signal_handler
+        self.message_manager = message_manager
+        self.contact_manager = contact_manager
+        self.my_signal_id = my_signal_id
         
         self.setWindowTitle("Compose Message")
         self.setModal(True)
@@ -408,12 +411,121 @@ class ComposeMessageDialog(QDialog):
             success = self.signal_handler.send_message(recipient, message, attachments)
             
             if success:
+                # Save outgoing message to database
+                if self.my_signal_id and self.message_manager:
+                    try:
+                        self.message_manager.add_message(
+                            sender_signal_id=self.my_signal_id,
+                            recipient_signal_id=recipient,
+                            message_body=message,
+                            is_outgoing=True
+                        )
+                        
+                        # Create or update contact
+                        if self.contact_manager:
+                            # Use recipient as display name if it's a phone number, otherwise use as-is
+                            display_name = recipient
+                            self.contact_manager.get_or_create_contact(
+                                signal_id=recipient,
+                                name=display_name
+                            )
+                    except Exception as e:
+                        print(f"Error saving message to database: {e}")
+                
                 QMessageBox.information(self, "Success", "Message sent successfully!")
                 self.accept()
             else:
                 QMessageBox.warning(self, "Send Failed", "Failed to send message. Check Signal configuration.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to send message: {e}")
+
+
+class ProductPickerDialog(QDialog):
+    """Dialog for selecting products to send to buyer"""
+    
+    def __init__(self, product_manager, parent=None):
+        super().__init__(parent)
+        self.product_manager = product_manager
+        self.selected_products = []
+        
+        self.setWindowTitle("Select Products to Send")
+        self.setModal(True)
+        self.setMinimumSize(700, 500)
+        
+        layout = QVBoxLayout()
+        
+        # Instructions
+        instructions = QLabel("Select one or more products to send to the buyer:")
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+        
+        # Product list
+        self.product_list = QTableWidget()
+        self.product_list.setColumnCount(6)
+        self.product_list.setHorizontalHeaderLabels([
+            "Select", "Name", "Price", "Currency", "Stock", "Category"
+        ])
+        self.product_list.horizontalHeader().setStretchLastSection(True)
+        self.product_list.setSelectionMode(QTableWidget.NoSelection)
+        
+        # Load products
+        self._load_products()
+        
+        layout.addWidget(self.product_list)
+        
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        
+        self.setLayout(layout)
+    
+    def _load_products(self):
+        """Load products into table"""
+        products = self.product_manager.list_products()
+        active_products = [p for p in products if p.active and p.stock > 0]
+        
+        self.product_list.setRowCount(len(active_products))
+        
+        for row, product in enumerate(active_products):
+            # Checkbox
+            checkbox = QCheckBox()
+            checkbox.setProperty("product_id", product.id)
+            checkbox_widget = QWidget()
+            checkbox_layout = QHBoxLayout(checkbox_widget)
+            checkbox_layout.addWidget(checkbox)
+            checkbox_layout.setAlignment(Qt.AlignCenter)
+            checkbox_layout.setContentsMargins(0, 0, 0, 0)
+            self.product_list.setCellWidget(row, 0, checkbox_widget)
+            
+            # Product details
+            self.product_list.setItem(row, 1, QTableWidgetItem(product.name))
+            self.product_list.setItem(row, 2, QTableWidgetItem(f"{product.price:.2f}"))
+            self.product_list.setItem(row, 3, QTableWidgetItem(product.currency))
+            self.product_list.setItem(row, 4, QTableWidgetItem(str(product.stock)))
+            self.product_list.setItem(row, 5, QTableWidgetItem(product.category or "N/A"))
+    
+    def get_selected_products(self):
+        """Get list of selected products"""
+        selected = []
+        products = self.product_manager.list_products()
+        
+        for row in range(self.product_list.rowCount()):
+            checkbox_widget = self.product_list.cellWidget(row, 0)
+            if checkbox_widget:
+                checkbox = checkbox_widget.findChild(QCheckBox)
+                if checkbox and checkbox.isChecked():
+                    product_id = checkbox.property("product_id")
+                    # Find product by ID
+                    for product in products:
+                        if product.id == product_id:
+                            selected.append(product)
+                            break
+        
+        return selected
 
 
 class SignalRelinkDialog(QDialog):
@@ -797,12 +909,13 @@ class MessageSendThread(QThread):
 class MessagesTab(QWidget):
     """Messaging tab with conversation list and chat window"""
     
-    def __init__(self, signal_handler: SignalHandler, contact_manager, message_manager, seller_manager):
+    def __init__(self, signal_handler: SignalHandler, contact_manager, message_manager, seller_manager, product_manager=None):
         super().__init__()
         self.signal_handler = signal_handler
         self.contact_manager = contact_manager
         self.message_manager = message_manager
         self.seller_manager = seller_manager
+        self.product_manager = product_manager
         self.conversations = {}  # Dict to store conversations
         self.conversations_cache = {}  # Cache for conversation data
         self.current_recipient = None
@@ -987,7 +1100,13 @@ class MessagesTab(QWidget):
     
     def compose_message(self):
         """Open compose message dialog"""
-        dialog = ComposeMessageDialog(self.signal_handler, parent=self)
+        dialog = ComposeMessageDialog(
+            self.signal_handler,
+            message_manager=self.message_manager,
+            contact_manager=self.contact_manager,
+            my_signal_id=self.my_signal_id,
+            parent=self
+        )
         if dialog.exec_() == QDialog.Accepted:
             self.load_conversations(force_refresh=True)
     
@@ -1068,7 +1187,74 @@ class MessagesTab(QWidget):
     
     def send_product(self):
         """Open product picker and send product info"""
-        QMessageBox.information(self, "Feature", "Product picker dialog would open here")
+        if not self.current_recipient:
+            QMessageBox.warning(self, "No Recipient", "Please select a conversation first")
+            return
+        
+        if not self.product_manager:
+            QMessageBox.warning(self, "Error", "Product manager not available")
+            return
+        
+        dialog = ProductPickerDialog(self.product_manager, self)
+        if dialog.exec_() == QDialog.Accepted:
+            products = dialog.get_selected_products()
+            
+            if not products:
+                QMessageBox.warning(self, "No Selection", "Please select at least one product")
+                return
+            
+            # Send each selected product
+            sent_count = 0
+            for product in products:
+                # Format product message
+                message = f"""📦 {product.name}
+
+{product.description}
+
+💰 Price: {product.price} {product.currency}
+📊 Stock: {product.stock} available
+🏷️ Category: {product.category or 'N/A'}
+"""
+                
+                # Send with product image if available
+                attachments = []
+                if product.image_path and os.path.exists(product.image_path):
+                    attachments.append(product.image_path)
+                
+                # Send via Signal
+                try:
+                    success = self.signal_handler.send_message(
+                        recipient=self.current_recipient,
+                        message=message,
+                        attachments=attachments if attachments else None
+                    )
+                    
+                    if success:
+                        sent_count += 1
+                        
+                        # Save to message history
+                        if self.my_signal_id:
+                            try:
+                                self.message_manager.add_message(
+                                    sender_signal_id=self.my_signal_id,
+                                    recipient_signal_id=self.current_recipient,
+                                    message_body=message,
+                                    is_outgoing=True
+                                )
+                                
+                                # Update UI
+                                timestamp = datetime.now().strftime("%H:%M")
+                                self.message_history.append(f"[{timestamp}] You: {message}\n")
+                            except Exception as e:
+                                print(f"Error saving product message: {e}")
+                except Exception as e:
+                    print(f"Error sending product {product.name}: {e}")
+            
+            if sent_count > 0:
+                QMessageBox.information(self, "Success", f"Sent {sent_count} product(s)")
+                self.load_conversations(force_refresh=True)
+            else:
+                QMessageBox.warning(self, "Failed", "Failed to send products")
     
     def send_catalog(self):
         """Send full catalog to current recipient"""
@@ -1483,7 +1669,7 @@ class DashboardWindow(QMainWindow):
         # Add tabs
         tabs.addTab(ProductsTab(self.product_manager), "Products")
         tabs.addTab(OrdersTab(self.order_manager), "Orders")
-        tabs.addTab(MessagesTab(self.signal_handler, self.contact_manager, self.message_manager, self.seller_manager), "Messages")
+        tabs.addTab(MessagesTab(self.signal_handler, self.contact_manager, self.message_manager, self.seller_manager, self.product_manager), "Messages")
         tabs.addTab(SettingsTab(self.seller_manager, self.signal_handler), "Settings")
         
         self.setCentralWidget(tabs)
