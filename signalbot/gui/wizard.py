@@ -8,9 +8,10 @@ from typing import Optional, Dict
 from PyQt5.QtWidgets import (
     QWizard, QWizardPage, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QRadioButton, QButtonGroup,
-    QTextEdit, QMessageBox, QComboBox, QFileDialog
+    QTextEdit, QMessageBox, QComboBox, QFileDialog, QScrollArea,
+    QWidget, QApplication, QGroupBox
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPixmap, QFont
 
 from ..core.security import security_manager
@@ -260,7 +261,6 @@ class SignalPage(QWizardPage):
     
     def copy_link_text(self):
         """Copy link text to clipboard"""
-        from PyQt5.QtWidgets import QApplication
         link = self.link_text.toPlainText()
         if link:
             QApplication.clipboard().setText(link)
