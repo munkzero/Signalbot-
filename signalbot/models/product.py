@@ -14,6 +14,7 @@ class Product:
     def __init__(
         self,
         id: Optional[int] = None,
+        product_id: Optional[str] = None,
         name: str = "",
         description: str = "",
         price: float = 0.0,
@@ -24,6 +25,7 @@ class Product:
         active: bool = True
     ):
         self.id = id
+        self.product_id = product_id
         self.name = name
         self.description = description
         self.price = price
@@ -57,6 +59,7 @@ class Product:
         
         return cls(
             id=db_product.id,
+            product_id=db_product.product_id,
             name=db_product.name,
             description=db_product.description or "",
             price=db_product.price,
@@ -84,6 +87,7 @@ class Product:
             image_path_enc, image_path_salt = db_manager.encrypt_field(self.image_path)
         
         db_product = ProductModel(
+            product_id=self.product_id,
             name=self.name,
             description=self.description,
             price=self.price,
@@ -138,6 +142,7 @@ class ProductManager:
         if not db_product:
             raise ValueError(f"Product with ID {product.id} not found")
         
+        db_product.product_id = product.product_id
         db_product.name = product.name
         db_product.description = product.description
         db_product.price = product.price
@@ -168,15 +173,30 @@ class ProductManager:
     
     def get_product(self, product_id: int) -> Optional[Product]:
         """
-        Get product by ID
+        Get product by database ID
         
         Args:
-            product_id: Product ID
+            product_id: Product database ID
             
         Returns:
             Product or None if not found
         """
         db_product = self.db.session.query(ProductModel).filter_by(id=product_id).first()
+        if db_product:
+            return Product.from_db_model(db_product, self.db)
+        return None
+    
+    def get_product_by_product_id(self, product_id: str) -> Optional[Product]:
+        """
+        Get product by user-visible product ID
+        
+        Args:
+            product_id: User-visible product ID (e.g., "#1", "SKU-001")
+            
+        Returns:
+            Product or None if not found
+        """
+        db_product = self.db.session.query(ProductModel).filter_by(product_id=product_id).first()
         if db_product:
             return Product.from_db_model(db_product, self.db)
         return None
