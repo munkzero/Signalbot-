@@ -294,32 +294,31 @@ class WalletPage(QWizardPage):
         layout.addWidget(self.advanced_radio)
         
         # Simple mode section
-        self.simple_group = QGroupBox("Simple Setup")
+        self.simple_group = QGroupBox("Simple Setup - View Only Wallet")
         simple_layout = QVBoxLayout()
         
         info_label = QLabel(
-            "Enter your Monero wallet address and private view key.\n"
-            "This creates a view-only wallet that can monitor incoming payments.\n"
-            "Get your view key from Monero GUI: Settings → Show Keys"
+            "Just enter your Monero wallet address below.\n"
+            "This is the easiest option and works for most users.\n\n"
+            "⚠️ Note: You'll receive payment notifications, but won't be able to\n"
+            "send transactions from this app (send from your main wallet instead)."
         )
         info_label.setWordWrap(True)
         info_label.setStyleSheet("color: #666; font-size: 9pt;")
         simple_layout.addWidget(info_label)
         
         self.wallet_address = QLineEdit()
-        self.wallet_address.setPlaceholderText("4...")
-        simple_layout.addWidget(QLabel("Monero Wallet Address*:"))
+        self.wallet_address.setPlaceholderText("45WQHqFEXu...")
+        simple_layout.addWidget(QLabel("Your Monero Wallet Address*:"))
         simple_layout.addWidget(self.wallet_address)
         
-        self.view_key = QLineEdit()
-        self.view_key.setEchoMode(QLineEdit.Password)
-        self.view_key.setPlaceholderText("Private view key")
-        simple_layout.addWidget(QLabel("Private View Key*:"))
-        simple_layout.addWidget(self.view_key)
-        
-        self.auto_start_checkbox = QCheckBox("Auto-start wallet-RPC for me (Recommended)")
-        self.auto_start_checkbox.setChecked(True)
-        simple_layout.addWidget(self.auto_start_checkbox)
+        note_label = QLabel(
+            "That's it! No private keys needed for simple mode.\n"
+            "The app will monitor incoming payments to this address."
+        )
+        note_label.setWordWrap(True)
+        note_label.setStyleSheet("color: green; font-size: 9pt; font-style: italic;")
+        simple_layout.addWidget(note_label)
         
         self.simple_group.setLayout(simple_layout)
         layout.addWidget(self.simple_group)
@@ -375,8 +374,6 @@ class WalletPage(QWizardPage):
         # Register fields
         self.registerField("wallet_mode", self.simple_radio)
         self.registerField("wallet_address", self.wallet_address)
-        self.registerField("view_key", self.view_key)
-        self.registerField("auto_start_rpc", self.auto_start_checkbox)
         self.registerField("rpc_host", self.rpc_host)
         self.registerField("rpc_port", self.rpc_port)
     
@@ -395,23 +392,23 @@ class WalletPage(QWizardPage):
             if self.simple_radio.isChecked():
                 # Validate simple mode inputs
                 address = self.wallet_address.text().strip()
-                view_key = self.view_key.text().strip()
                 
-                if not address or not view_key:
-                    QMessageBox.warning(self, "Validation Error", "Please enter wallet address and view key")
+                if not address:
+                    QMessageBox.warning(self, "Validation Error", "Please enter your wallet address")
                     return
                 
-                # Basic address validation
-                if not address.startswith('4') or len(address) < 95:
+                # Basic address validation (Monero addresses are 95 or 106 characters)
+                if len(address) < 90:
                     QMessageBox.warning(self, "Invalid Address", "Please enter a valid Monero wallet address")
                     return
                 
-                # Basic view key validation
-                if len(view_key) != 64:
-                    QMessageBox.warning(self, "Invalid View Key", "Private view key should be 64 characters")
-                    return
-                
-                QMessageBox.information(self, "Validation Passed", "Wallet address and view key format are valid!\n\nNote: Full validation will occur when wallet-RPC starts.")
+                QMessageBox.information(
+                    self, 
+                    "Valid Address", 
+                    "Wallet address format looks good!\n\n"
+                    "In Simple Mode, the app will monitor incoming payments\n"
+                    "to this address. You can send payments from your main wallet."
+                )
             else:
                 # Test RPC connection
                 wallet = MoneroWallet(

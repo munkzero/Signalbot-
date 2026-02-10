@@ -13,76 +13,63 @@ from .security import security_manager
 
 
 # ENCRYPTED COMMISSION WALLET ADDRESS
-# This is encrypted and will be decrypted at runtime only
-# Tampering with this will cause the bot to fail integrity checks
-ENCRYPTED_COMMISSION_WALLET = ""  # To be set during compilation
-COMMISSION_WALLET_SALT = ""  # To be set during compilation
-COMMISSION_CHECKSUM = ""  # To be set during compilation
+# Multi-layer encoding for developer wallet (base64)
+# Developer wallet: 45WQHqFEXuCep9YkqJ6ZB7WCnnJiemkAn8UvSpAe71HrWqE6b5y7jxqhG8RYJJHpUoPuK4D2jwZLyDftJVqnc1hT5aHw559
+_ENCRYPTED_WALLET = "NDVXUUhxRkVYdUNlcDlZa3FKNlpCN1dDbm5KaWVta0FuOFV2U3BBZTcxSHJXcUU2YjV5N2p4cWhHOFJZSkpIcFVvUHVLNEQyandaTHlEZnRKVnFuYzFoVDVhSHc1NTk="
 
 # Commission rate (4% = 0.04)
 COMMISSION_RATE = 0.04
 
 
+def get_commission_wallet() -> str:
+    """
+    Decrypt and return developer commission wallet
+    Note: Base64 encoding is for obfuscation only, not security
+    
+    Returns:
+        Commission wallet address
+    """
+    try:
+        return base64.b64decode(_ENCRYPTED_WALLET).decode('utf-8')
+    except Exception as e:
+        # Log error and fall back to hardcoded wallet
+        print(f"Warning: Failed to decode commission wallet ({e}), using fallback")
+        # Fallback to hardcoded wallet
+        return "45WQHqFEXuCep9YkqJ6ZB7WCnnJiemkAn8UvSpAe71HrWqE6b5y7jxqhG8RYJJHpUoPuK4D2jwZLyDftJVqnc1hT5aHw559"
+
+
+def calculate_commission(total_amount: float) -> tuple:
+    """
+    Calculate commission and net amount
+    
+    Args:
+        total_amount: Total payment amount in XMR
+        
+    Returns:
+        Tuple of (seller_amount, commission_amount)
+    """
+    commission = total_amount * COMMISSION_RATE
+    seller_amount = total_amount - commission
+    return (seller_amount, commission)
+
+
 class CommissionManager:
     """Manages commission calculations and forwarding"""
     
-    def __init__(self, master_key: bytes):
-        """
-        Initialize commission manager
-        
-        Args:
-            master_key: Master encryption key for decrypting commission wallet
-        """
-        self._master_key = master_key
-        self._commission_wallet = None
-        self._decrypted = False
-    
-    def _decrypt_commission_wallet(self) -> str:
-        """
-        Decrypt commission wallet address
-        Only called when needed, immediately cleared from memory after use
-        
-        Returns:
-            Decrypted commission wallet address
-            
-        Raises:
-            ValueError: If decryption fails or checksum invalid
-        """
-        if not ENCRYPTED_COMMISSION_WALLET or not COMMISSION_WALLET_SALT:
-            raise ValueError("Commission wallet not configured")
-        
-        try:
-            # Decrypt wallet address
-            wallet = security_manager.decrypt_string(
-                ENCRYPTED_COMMISSION_WALLET,
-                self._master_key.decode(),
-                COMMISSION_WALLET_SALT
-            )
-            
-            # Verify integrity
-            checksum = security_manager.generate_checksum(wallet.encode())
-            if COMMISSION_CHECKSUM and checksum != COMMISSION_CHECKSUM:
-                raise ValueError("Commission wallet integrity check failed - tampering detected")
-            
-            return wallet
-        except Exception as e:
-            raise ValueError(f"Failed to decrypt commission wallet: {e}")
+    def __init__(self):
+        """Initialize commission manager"""
+        pass
     
     def get_commission_wallet(self) -> str:
         """
         Get commission wallet address
-        Decrypts on first access, then caches for session
         
         Returns:
             Commission wallet address
         """
-        if not self._decrypted:
-            self._commission_wallet = self._decrypt_commission_wallet()
-            self._decrypted = True
-        
-        return self._commission_wallet
+        return get_commission_wallet()
     
-    def calculate_commission(self, total_amount: float) -> tuple[float, float]:
+    def calculate_commission(self, total_amount: float) -> tuple:
         """
         Calculate commission and seller amount
         
@@ -92,10 +79,7 @@ class CommissionManager:
         Returns:
             Tuple of (seller_amount, commission_amount)
         """
-        commission = total_amount * COMMISSION_RATE
-        seller_amount = total_amount - commission
-        
-        return (seller_amount, commission)
+        return calculate_commission(total_amount)
     
     def format_commission_disclosure(self, total_amount: float) -> str:
         """
@@ -115,63 +99,30 @@ class CommissionManager:
             f"Commission (4%): {commission:.6f} XMR"
         )
     
-    def verify_integrity(self) -> bool:
+    def process_order_commission(self, order, monero_wallet):
         """
-        Verify commission system integrity
-        Checks for tampering attempts
+        When order is paid, calculate and log commission
+        
+        Args:
+            order: Paid order object
+            monero_wallet: MoneroWallet instance (for future auto-forwarding)
         
         Returns:
-            True if integrity verified, False if tampering detected
+            Tuple of (seller_amount, commission_amount)
         """
-        try:
-            # Try to decrypt wallet address
-            wallet = self._decrypt_commission_wallet()
-            
-            # Verify checksum
-            checksum = security_manager.generate_checksum(wallet.encode())
-            if COMMISSION_CHECKSUM and checksum != COMMISSION_CHECKSUM:
-                return False
-            
-            # Verify commission rate hasn't been modified
-            if COMMISSION_RATE != 0.04:
-                return False
-            
-            return True
-        except:
-            return False
-    
-    def clear_from_memory(self):
-        """
-        Clear decrypted commission wallet from memory
-        Called after use for security
-        """
-        if self._commission_wallet:
-            # Overwrite with random data before clearing
-            self._commission_wallet = os.urandom(len(self._commission_wallet)).hex()
-            self._commission_wallet = None
-            self._decrypted = False
-
-
-def setup_commission_wallet(wallet_address: str, master_password: str) -> dict:
-    """
-    Utility function to encrypt commission wallet for compilation
-    This should be run once before compilation to generate encrypted values
-    
-    Args:
-        wallet_address: Monero wallet address for commission
-        master_password: Master password for encryption
+        # Get total XMR amount from order
+        total_xmr = order.price_xmr * order.quantity
+        seller_amount, commission = self.calculate_commission(total_xmr)
+        dev_wallet = self.get_commission_wallet()
         
-    Returns:
-        Dictionary with encrypted values to be hardcoded
-    """
-    # Encrypt wallet address
-    encrypted, salt = security_manager.encrypt_string(wallet_address, master_password)
-    
-    # Generate checksum
-    checksum = security_manager.generate_checksum(wallet_address.encode())
-    
-    return {
-        'ENCRYPTED_COMMISSION_WALLET': encrypted,
-        'COMMISSION_WALLET_SALT': salt,
-        'COMMISSION_CHECKSUM': checksum
-    }
+        # Log commission (transparent)
+        print(f"Order #{order.order_id}: Total {total_xmr:.6f} XMR")
+        print(f"  → Seller receives: {seller_amount:.6f} XMR")
+        print(f"  → Platform fee (4%): {commission:.6f} XMR")
+        print(f"  → Commission wallet: {dev_wallet[:20]}...{dev_wallet[-10:]}")
+        
+        # Note: Actual transfer would happen here in production
+        # For now, we just calculate and log
+        # monero_wallet.transfer(address=dev_wallet, amount=commission, priority=1)
+        
+        return (seller_amount, commission)
