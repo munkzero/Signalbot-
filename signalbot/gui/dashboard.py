@@ -30,7 +30,8 @@ from ..config.settings import (
     WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT,
     SUPPORTED_CURRENCIES, MAX_IMAGE_SIZE, IMAGES_DIR,
     ORDER_EXPIRATION_MINUTES, LOW_STOCK_THRESHOLD,
-    MONERO_CONFIRMATIONS_REQUIRED, COMMISSION_RATE
+    MONERO_CONFIRMATIONS_REQUIRED, COMMISSION_RATE,
+    MESSAGE_SEND_DELAY_SECONDS
 )
 from ..core.signal_handler import SignalHandler
 from ..utils.image_tools import image_processor
@@ -2129,7 +2130,7 @@ class MessagesTab(QWidget):
                 print(f"Error sending product {product.name}: {e}")
             
             progress.setValue(i + 1)
-            time.sleep(1)  # Avoid rate limiting
+            time.sleep(MESSAGE_SEND_DELAY_SECONDS)  # Avoid rate limiting
         
         progress.close()
         QMessageBox.information(self, "Success", f"Sent {sent_count} of {len(products)} products")

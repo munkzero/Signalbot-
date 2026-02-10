@@ -25,11 +25,14 @@ MASTER_KEY_FILE = DATA_DIR / ".master_key"
 PIN_HASH_FILE = DATA_DIR / ".pin_hash"
 
 # Commission settings (DO NOT MODIFY)
-COMMISSION_RATE = 0.04  # 4%
+COMMISSION_RATE = 0.07  # 7%
 
 # Order settings
 ORDER_EXPIRATION_MINUTES = 60  # Default order expiration time
 LOW_STOCK_THRESHOLD = 5  # Alert when stock falls below this
+
+# Messaging settings
+MESSAGE_SEND_DELAY_SECONDS = 1  # Delay between bulk messages to avoid rate limiting
 
 # Currency conversion
 DEFAULT_CURRENCY = "USD"

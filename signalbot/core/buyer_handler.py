@@ -11,6 +11,10 @@ from ..config.settings import ORDER_EXPIRATION_MINUTES
 from ..utils.qr_generator import qr_generator
 
 
+# TODO: Replace with real-time exchange rate API
+XMR_EXCHANGE_RATE_USD = 150.0  # Placeholder: 1 XMR = $150 USD
+
+
 class BuyerHandler:
     """Handles buyer commands and order creation"""
     
@@ -210,10 +214,8 @@ Reply "order {product_id} qty {product.stock}" to proceed.
         commission = subtotal * 0.07  # 7% commission
         total = subtotal + commission
         
-        # TODO: Replace with real-time exchange rate API call
-        # Get XMR conversion (placeholder - integrate with real exchange rate)
-        xmr_rate = 150  # Example: 1 XMR = $150 USD
-        total_xmr = total / xmr_rate
+        # Get XMR conversion using configured exchange rate
+        total_xmr = total / XMR_EXCHANGE_RATE_USD
         
         # Generate payment address (placeholder)
         payment_address = self._generate_payment_address(product.id, buyer_signal_id)
@@ -310,8 +312,6 @@ Order #{order.order_id}
         """
         # TODO: Integrate with MoneroWallet.create_subaddress()
         # This is a placeholder implementation
-        # Integrate with MoneroWallet.create_subaddress()
-        # For now, placeholder
         import hashlib
         hash_input = f"{product_id}{buyer_signal_id}{datetime.utcnow().isoformat()}"
         hash_hex = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
