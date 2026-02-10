@@ -11,10 +11,11 @@ from PyQt5.QtWidgets import (
     QDialogButtonBox, QFormLayout, QTextEdit, QListWidget,
     QSplitter, QFileDialog, QCheckBox, QDoubleSpinBox,
     QSpinBox, QComboBox, QScrollArea, QRadioButton,
-    QButtonGroup, QGroupBox, QGridLayout, QListWidgetItem
+    QButtonGroup, QGroupBox, QGridLayout, QListWidgetItem,
+    QMenu, QAction, QApplication
 )
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont, QPixmap
+from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
+from PyQt5.QtGui import QFont, QPixmap, QCursor
 from datetime import datetime
 from typing import Optional
 
@@ -766,6 +767,33 @@ class OrdersTab(QWidget):
             ))
 
 
+class MessageSendThread(QThread):
+    """Thread for sending messages without blocking UI"""
+    finished = pyqtSignal(bool, str)  # success, message
+    
+    def __init__(self, signal_handler, recipient, message, attachments=None):
+        super().__init__()
+        self.signal_handler = signal_handler
+        self.recipient = recipient
+        self.message = message
+        self.attachments = attachments
+    
+    def run(self):
+        """Send message in background"""
+        try:
+            success = self.signal_handler.send_message(
+                self.recipient,
+                self.message,
+                self.attachments
+            )
+            if success:
+                self.finished.emit(True, "Message sent successfully")
+            else:
+                self.finished.emit(False, "Failed to send message")
+        except Exception as e:
+            self.finished.emit(False, f"Error: {str(e)}")
+
+
 class MessagesTab(QWidget):
     """Messaging tab with conversation list and chat window"""
     
@@ -816,6 +844,8 @@ class MessagesTab(QWidget):
         # Conversations list
         self.conversations_list = QListWidget()
         self.conversations_list.itemClicked.connect(self.load_conversation)
+        self.conversations_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.conversations_list.customContextMenuRequested.connect(self.show_conversation_context_menu)
         left_layout.addWidget(self.conversations_list)
         
         left_panel.setLayout(left_layout)
@@ -835,6 +865,8 @@ class MessagesTab(QWidget):
         # Message history
         self.message_history = QTextEdit()
         self.message_history.setReadOnly(True)
+        self.message_history.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.message_history.customContextMenuRequested.connect(self.show_message_context_menu)
         right_layout.addWidget(self.message_history)
         
         # Quick actions
@@ -859,11 +891,11 @@ class MessagesTab(QWidget):
         self.message_input.setPlaceholderText("Type a message...")
         self.message_input.returnPressed.connect(self.send_message)
         
-        send_btn = QPushButton("Send")
-        send_btn.clicked.connect(self.send_message)
+        self.send_btn = QPushButton("Send")
+        self.send_btn.clicked.connect(self.send_message)
         
         message_input_layout.addWidget(self.message_input)
-        message_input_layout.addWidget(send_btn)
+        message_input_layout.addWidget(self.send_btn)
         right_layout.addLayout(message_input_layout)
         
         right_panel.setLayout(right_layout)
@@ -885,6 +917,7 @@ class MessagesTab(QWidget):
         self.load_conversations()
         
         self.attachment_path = None
+        self.send_thread = None  # Thread for async message sending
     
     def load_conversations(self):
         """Load conversation list from database"""
@@ -955,7 +988,7 @@ class MessagesTab(QWidget):
             self.load_conversations()
     
     def send_message(self):
-        """Send message to current recipient"""
+        """Send message to current recipient using background thread"""
         if not self.current_recipient:
             QMessageBox.warning(self, "No Recipient", "Please select a conversation first")
             return
@@ -964,37 +997,51 @@ class MessagesTab(QWidget):
         if not message and not self.attachment_path:
             return
         
-        try:
-            attachments = [self.attachment_path] if self.attachment_path else None
-            success = self.signal_handler.send_message(
-                self.current_recipient,
-                message,
-                attachments
-            )
+        # Disable send button and show loading state
+        self.send_btn.setEnabled(False)
+        self.send_btn.setText("Sending...")
+        
+        # Store message text for later use
+        message_text = message
+        
+        # Create and start send thread
+        attachments = [self.attachment_path] if self.attachment_path else None
+        self.send_thread = MessageSendThread(
+            self.signal_handler,
+            self.current_recipient,
+            message,
+            attachments
+        )
+        self.send_thread.finished.connect(lambda success, msg: self.on_message_sent(success, msg, message_text))
+        self.send_thread.start()
+    
+    def on_message_sent(self, success, status_message, message_text):
+        """Handle message send completion"""
+        # Re-enable send button
+        self.send_btn.setEnabled(True)
+        self.send_btn.setText("Send")
+        
+        if success:
+            # Add to message history
+            timestamp = datetime.now().strftime("%H:%M")
+            self.message_history.append(f"[{timestamp}] You: {message_text}\n")
+            self.message_input.clear()
+            self.attachment_path = None
             
-            if success:
-                # Add to message history
-                timestamp = datetime.now().strftime("%H:%M")
-                self.message_history.append(f"[{timestamp}] You: {message}\n")
-                self.message_input.clear()
-                self.attachment_path = None
-                
-                # Save to database
-                if self.my_signal_id:
-                    self.message_manager.add_message(
-                        sender_signal_id=self.my_signal_id,
-                        recipient_signal_id=self.current_recipient,
-                        message_body=message,
-                        is_outgoing=True
-                    )
-                    # Ensure contact exists
-                    self.contact_manager.get_or_create_contact(self.current_recipient)
-                    # Refresh conversations list
-                    self.load_conversations()
-            else:
-                QMessageBox.warning(self, "Send Failed", "Failed to send message")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to send message: {e}")
+            # Save to database
+            if self.my_signal_id:
+                self.message_manager.add_message(
+                    sender_signal_id=self.my_signal_id,
+                    recipient_signal_id=self.current_recipient,
+                    message_body=message_text,
+                    is_outgoing=True
+                )
+                # Ensure contact exists
+                self.contact_manager.get_or_create_contact(self.current_recipient)
+                # Refresh conversations list
+                self.load_conversations()
+        else:
+            QMessageBox.warning(self, "Send Failed", status_message)
     
     def send_product(self):
         """Open product picker and send product info"""
@@ -1049,6 +1096,91 @@ class MessagesTab(QWidget):
         # Update current conversation if it's the active one
         if self.current_recipient == sender:
             self.message_history.append(f"[{timestamp}] {sender}: {text}\n")
+    
+    def show_conversation_context_menu(self, position):
+        """Show context menu for conversation list"""
+        item = self.conversations_list.itemAt(position)
+        if not item or not (item.flags() & Qt.ItemIsSelectable):
+            return
+        
+        contact_id = item.data(Qt.UserRole)
+        if not contact_id:
+            return
+        
+        menu = QMenu(self)
+        delete_action = QAction("🗑️ Delete Conversation", self)
+        delete_action.triggered.connect(lambda: self.delete_conversation(contact_id))
+        menu.addAction(delete_action)
+        
+        menu.exec_(self.conversations_list.mapToGlobal(position))
+    
+    def delete_conversation(self, contact_id):
+        """Delete a conversation"""
+        reply = QMessageBox.question(
+            self,
+            "Delete Conversation",
+            f"Are you sure you want to delete this conversation?\nThis action cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.message_manager.delete_conversation(contact_id, self.my_signal_id):
+                # Clear chat if this was the active conversation
+                if self.current_recipient == contact_id:
+                    self.current_recipient = None
+                    self.chat_header.setText("Select a conversation")
+                    self.message_history.clear()
+                
+                # Reload conversations
+                self.load_conversations()
+                QMessageBox.information(self, "Success", "Conversation deleted")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to delete conversation")
+    
+    def show_message_context_menu(self, position):
+        """Show context menu for message history"""
+        menu = QMenu(self)
+        
+        copy_action = QAction("Copy", self)
+        copy_action.triggered.connect(self.copy_selected_text)
+        menu.addAction(copy_action)
+        
+        if self.current_recipient:
+            menu.addSeparator()
+            clear_action = QAction("Clear All Messages", self)
+            clear_action.triggered.connect(self.clear_all_messages)
+            menu.addAction(clear_action)
+        
+        menu.exec_(self.message_history.mapToGlobal(position))
+    
+    def copy_selected_text(self):
+        """Copy selected text to clipboard"""
+        cursor = self.message_history.textCursor()
+        if cursor.hasSelection():
+            selected_text = cursor.selectedText()
+            QApplication.clipboard().setText(selected_text)
+    
+    def clear_all_messages(self):
+        """Clear all messages in current conversation"""
+        if not self.current_recipient:
+            return
+        
+        reply = QMessageBox.question(
+            self,
+            "Clear All Messages",
+            "Are you sure you want to clear all messages in this conversation?\nThis action cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.message_manager.delete_conversation(self.current_recipient, self.my_signal_id):
+                self.message_history.clear()
+                self.load_conversations()
+                QMessageBox.information(self, "Success", "All messages cleared")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to clear messages")
 
 
 class SettingsTab(QWidget):
