@@ -29,6 +29,26 @@ class BuyerHandler:
         self.signal_handler = signal_handler
         self.seller_signal_id = seller_signal_id
     
+    @staticmethod
+    def _format_product_id(product_id: Optional[str]) -> str:
+        """
+        Format product ID consistently
+        
+        Args:
+            product_id: Product ID to format
+            
+        Returns:
+            Formatted product ID string
+        """
+        if not product_id:
+            return "N/A"
+        
+        # Add # prefix if not already present
+        if not product_id.startswith('#'):
+            return f"#{product_id}"
+        
+        return product_id
+    
     def handle_buyer_message(self, buyer_signal_id: str, message_text: str):
         """
         Parse buyer commands and execute actions
@@ -74,7 +94,7 @@ class BuyerHandler:
             Tuple of (product_id, quantity) or None
         """
         # Pattern: "order/buy [product_id] qty [number]"
-        pattern = r'(order|buy)\s+(#?\w+-?\w*)\s+qty\s+(\d+)'
+        pattern = r'(order|buy)\s+(#?[\w-]+)\s+qty\s+(\d+)'
         match = re.search(pattern, message.lower())
         
         if match:
@@ -85,7 +105,7 @@ class BuyerHandler:
             return (product_id, quantity)
         
         # Pattern: "order/buy [product_id]" (quantity defaults to 1)
-        pattern = r'(order|buy)\s+(#?\w+-?\w*)'
+        pattern = r'(order|buy)\s+(#?[\w-]+)'
         match = re.search(pattern, message.lower())
         
         if match:
@@ -121,7 +141,7 @@ class BuyerHandler:
         
         # Send each product
         for product in products:
-            product_id_str = f"#{product.product_id}" if product.product_id and not product.product_id.startswith('#') else (product.product_id or "N/A")
+            product_id_str = self._format_product_id(product.product_id)
             message = f"""━━━━━━━━━━━━━━━━━
 {product_id_str} - {product.name}
 ━━━━━━━━━━━━━━━━━
@@ -190,6 +210,7 @@ Reply "order {product_id} qty {product.stock}" to proceed.
         commission = subtotal * 0.07  # 7% commission
         total = subtotal + commission
         
+        # TODO: Replace with real-time exchange rate API call
         # Get XMR conversion (placeholder - integrate with real exchange rate)
         xmr_rate = 150  # Example: 1 XMR = $150 USD
         total_xmr = total / xmr_rate
@@ -287,6 +308,8 @@ Order #{order.order_id}
         Returns:
             Monero payment address
         """
+        # TODO: Integrate with MoneroWallet.create_subaddress()
+        # This is a placeholder implementation
         # Integrate with MoneroWallet.create_subaddress()
         # For now, placeholder
         import hashlib

@@ -225,7 +225,7 @@ class AddProductDialog(QDialog):
                     if p.product_id.startswith('#'):
                         num = int(p.product_id[1:])
                         numeric_ids.append(num)
-                except:
+                except (ValueError, AttributeError):
                     pass
         
         if numeric_ids:
@@ -1787,6 +1787,26 @@ class MessagesTab(QWidget):
         self.attachment_path = None
         self.send_thread = None  # Thread for async message sending
     
+    @staticmethod
+    def _format_product_id(product_id: Optional[str]) -> str:
+        """
+        Format product ID consistently
+        
+        Args:
+            product_id: Product ID to format
+            
+        Returns:
+            Formatted product ID string
+        """
+        if not product_id:
+            return "N/A"
+        
+        # Add # prefix if not already present
+        if not product_id.startswith('#'):
+            return f"#{product_id}"
+        
+        return product_id
+    
     def load_conversations(self, force_refresh=False):
         """Load conversation list from database with caching"""
         self.conversations_list.clear()
@@ -1984,7 +2004,7 @@ class MessagesTab(QWidget):
             sent_count = 0
             for product in products:
                 # Format product message with ID
-                product_id_str = f"#{product.product_id}" if product.product_id and not product.product_id.startswith('#') else (product.product_id or "N/A")
+                product_id_str = self._format_product_id(product.product_id)
                 message = f"""━━━━━━━━━━━━━━━━━
 {product_id_str} - {product.name}
 ━━━━━━━━━━━━━━━━━
@@ -2068,7 +2088,7 @@ class MessagesTab(QWidget):
                 break
             
             # Format product message with ID
-            product_id_str = f"#{product.product_id}" if product.product_id and not product.product_id.startswith('#') else (product.product_id or "N/A")
+            product_id_str = self._format_product_id(product.product_id)
             message = f"""━━━━━━━━━━━━━━━━━
 {product_id_str} - {product.name}
 ━━━━━━━━━━━━━━━━━
@@ -2529,6 +2549,18 @@ class DashboardWindow(QMainWindow):
             self.signal_handler = SignalHandler(phone_number)
         else:
             self.signal_handler = signal_handler
+        
+        # Initialize buyer handler for automatic order processing
+        from ..core.buyer_handler import BuyerHandler
+        seller = self.seller_manager.get_seller(1)
+        seller_signal_id = seller.signal_id if seller else None
+        if seller_signal_id:
+            self.signal_handler.buyer_handler = BuyerHandler(
+                self.product_manager,
+                self.order_manager,
+                self.signal_handler,
+                seller_signal_id
+            )
         
         self.setWindowTitle(WINDOW_TITLE)
         self.setMinimumSize(WINDOW_WIDTH, WINDOW_HEIGHT)
