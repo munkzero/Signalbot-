@@ -26,6 +26,7 @@ class SignalHandler:
         """
         self.phone_number = phone_number
         self.message_callbacks = []
+        self.buyer_handler = None  # Will be set by dashboard
         self.listening = False
         self.listen_thread = None
         self.daemon_process = None
@@ -301,6 +302,13 @@ class SignalHandler:
             'is_group': group_info is not None,
             'group_id': group_info.get('groupId') if group_info else None
         }
+        
+        # If buyer handler exists, process buyer commands
+        if self.buyer_handler and message_text:
+            try:
+                self.buyer_handler.handle_buyer_message(source, message_text)
+            except Exception as e:
+                print(f"Error in buyer handler: {e}")
         
         # Call registered callbacks
         for callback in self.message_callbacks:

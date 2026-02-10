@@ -22,16 +22,16 @@ A privacy-focused e-commerce platform that operates via Signal messenger, allowi
 ### Security & Privacy
 - **AES-256 Encryption**: All sensitive data encrypted at rest
 - **EXIF Metadata Removal**: Product images automatically stripped of metadata
-- **Commission Protection**: 4% commission system with anti-tamper mechanisms
+- **Commission Protection**: 7% commission system with anti-tamper mechanisms
 - **PIN Protection**: Dashboard access requires secure PIN
 - **Encrypted Communications**: All buyer-seller communication via Signal
 
 ## Commission System
 
-**IMPORTANT**: This bot charges a **4% commission** on all sales. This is disclosed during setup and is non-negotiable.
+**IMPORTANT**: This bot charges a **7% commission** on all sales. This is disclosed during setup and is non-negotiable.
 
-- Seller receives: 96% of each sale
-- Creator receives: 4% of each sale (automatically forwarded)
+- Seller receives: 93% of each sale
+- Creator receives: 7% of each sale (automatically forwarded)
 - Commission wallet address is encrypted and tamper-proof
 - Full transparency: Commission shown on each transaction
 
@@ -285,7 +285,7 @@ print(wallet.test_connection())
 
 ## License
 
-This project is provided as-is. The 4% commission is built into the system and cannot be removed.
+This project is provided as-is. The 7% commission is built into the system and cannot be removed.
 
 ## Support
 
@@ -299,7 +299,7 @@ For issues or questions:
 - This is experimental software
 - Use at your own risk
 - Ensure compliance with local laws regarding cryptocurrency and e-commerce
-- The 4% commission is mandatory and cannot be disabled
+- The 7% commission is mandatory and cannot be disabled
 - Seller responsible for taxes, legal compliance, and customer service
 
 ## Credits
