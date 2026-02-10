@@ -710,6 +710,166 @@ class SignalRelinkDialog(QDialog):
         return self.phone_input.text() if self.phone_input.text() else None
 
 
+class EditWalletDialog(QDialog):
+    """Dialog for editing Monero wallet configuration"""
+    
+    def __init__(self, seller_manager, current_seller, parent=None):
+        super().__init__(parent)
+        self.seller_manager = seller_manager
+        self.seller = current_seller
+        self.wallet_config = current_seller.wallet_config.copy() if current_seller.wallet_config else {}
+        
+        self.setWindowTitle("Edit Wallet Settings")
+        self.setModal(True)
+        self.setMinimumSize(600, 400)
+        
+        layout = QVBoxLayout()
+        
+        # Warning
+        warning = QLabel(
+            "⚠️ Changing wallet settings may affect payment processing.\n"
+            "Make sure the new configuration is correct before saving."
+        )
+        warning.setWordWrap(True)
+        warning.setStyleSheet("color: orange; font-weight: bold;")
+        layout.addWidget(warning)
+        
+        # Wallet type
+        type_group = QGroupBox("Wallet Type")
+        type_layout = QVBoxLayout()
+        
+        self.type_group = QButtonGroup()
+        self.view_only_radio = QRadioButton("View-Only Wallet (Simple)")
+        self.rpc_radio = QRadioButton("RPC Wallet (Advanced)")
+        
+        # Set current type
+        wallet_type = self.wallet_config.get('type', 'view_only')
+        if wallet_type == 'view_only':
+            self.view_only_radio.setChecked(True)
+        else:
+            self.rpc_radio.setChecked(True)
+        
+        self.type_group.addButton(self.view_only_radio, 1)
+        self.type_group.addButton(self.rpc_radio, 2)
+        
+        type_layout.addWidget(self.view_only_radio)
+        type_layout.addWidget(self.rpc_radio)
+        type_group.setLayout(type_layout)
+        layout.addWidget(type_group)
+        
+        # Stack for different wallet types
+        from PyQt5.QtWidgets import QStackedWidget
+        self.config_stack = QStackedWidget()
+        
+        # View-only config
+        view_only_widget = QWidget()
+        view_only_layout = QFormLayout()
+        
+        self.address_input = QLineEdit()
+        self.address_input.setPlaceholderText("45WQHqFEXu...")
+        current_address = self.wallet_config.get('address', '')
+        self.address_input.setText(current_address)
+        view_only_layout.addRow("XMR Address*:", self.address_input)
+        
+        view_only_widget.setLayout(view_only_layout)
+        self.config_stack.addWidget(view_only_widget)
+        
+        # RPC config
+        rpc_widget = QWidget()
+        rpc_layout = QFormLayout()
+        
+        self.rpc_host_input = QLineEdit()
+        self.rpc_host_input.setPlaceholderText("127.0.0.1")
+        self.rpc_host_input.setText(self.wallet_config.get('rpc_host', '127.0.0.1'))
+        rpc_layout.addRow("RPC Host*:", self.rpc_host_input)
+        
+        self.rpc_port_input = QLineEdit()
+        self.rpc_port_input.setPlaceholderText("18083")
+        self.rpc_port_input.setText(str(self.wallet_config.get('rpc_port', 18083)))
+        rpc_layout.addRow("RPC Port*:", self.rpc_port_input)
+        
+        self.rpc_user_input = QLineEdit()
+        self.rpc_user_input.setText(self.wallet_config.get('rpc_username', ''))
+        rpc_layout.addRow("Username:", self.rpc_user_input)
+        
+        self.rpc_pass_input = QLineEdit()
+        self.rpc_pass_input.setEchoMode(QLineEdit.Password)
+        self.rpc_pass_input.setText(self.wallet_config.get('rpc_password', ''))
+        rpc_layout.addRow("Password:", self.rpc_pass_input)
+        
+        rpc_widget.setLayout(rpc_layout)
+        self.config_stack.addWidget(rpc_widget)
+        
+        # Connect radio buttons to stack
+        self.view_only_radio.toggled.connect(lambda checked: self.config_stack.setCurrentIndex(0 if checked else 1))
+        
+        # Set initial stack
+        self.config_stack.setCurrentIndex(0 if wallet_type == 'view_only' else 1)
+        
+        layout.addWidget(self.config_stack)
+        
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Save | QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.save_wallet)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        
+        self.setLayout(layout)
+    
+    def save_wallet(self):
+        """Validate and save wallet configuration"""
+        # Determine wallet type
+        if self.view_only_radio.isChecked():
+            # View-only wallet
+            address = self.address_input.text().strip()
+            
+            if not address:
+                QMessageBox.warning(self, "Validation Error", "XMR address is required")
+                return
+            
+            if len(address) < 90:  # Basic validation
+                QMessageBox.warning(self, "Validation Error", "Invalid XMR address length")
+                return
+            
+            new_config = {
+                'type': 'view_only',
+                'address': address
+            }
+        else:
+            # RPC wallet
+            host = self.rpc_host_input.text().strip()
+            port = self.rpc_port_input.text().strip()
+            
+            if not host or not port:
+                QMessageBox.warning(self, "Validation Error", "RPC host and port are required")
+                return
+            
+            try:
+                port_int = int(port)
+            except ValueError:
+                QMessageBox.warning(self, "Validation Error", "Port must be a number")
+                return
+            
+            new_config = {
+                'type': 'rpc',
+                'rpc_host': host,
+                'rpc_port': port_int,
+                'rpc_username': self.rpc_user_input.text().strip(),
+                'rpc_password': self.rpc_pass_input.text().strip()
+            }
+        
+        # Update seller
+        try:
+            self.seller.wallet_config = new_config
+            self.seller_manager.update_seller(self.seller)
+            QMessageBox.information(self, "Success", "Wallet settings updated successfully")
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save wallet settings: {e}")
+
+
 class ContactDialog(QDialog):
     """Dialog for adding/editing contacts"""
     
@@ -2048,6 +2208,7 @@ class SettingsTab(QWidget):
         wallet_btn_layout = QHBoxLayout()
         test_conn_btn = QPushButton("Test Connection")
         edit_wallet_btn = QPushButton("Edit Wallet Settings")
+        edit_wallet_btn.clicked.connect(self.edit_wallet_settings)
         wallet_btn_layout.addWidget(test_conn_btn)
         wallet_btn_layout.addWidget(edit_wallet_btn)
         wallet_btn_layout.addStretch()
@@ -2201,6 +2362,24 @@ class SettingsTab(QWidget):
             self.phone_label.setText("Not linked")
             self.status_label.setText("❌ Not Linked")
             QMessageBox.information(self, "Unlinked", "Signal account unlinked")
+    
+    def edit_wallet_settings(self):
+        """Open dialog to edit wallet settings"""
+        seller = self.seller_manager.get_seller(1)
+        if not seller:
+            QMessageBox.warning(self, "Error", "Seller not found")
+            return
+        
+        dialog = EditWalletDialog(self.seller_manager, seller, self)
+        if dialog.exec_() == QDialog.Accepted:
+            # Refresh display - reload the entire settings tab would be complex,
+            # so just show a message
+            QMessageBox.information(
+                self,
+                "Settings Updated",
+                "Wallet settings updated successfully.\n"
+                "Please restart the application for changes to take full effect."
+            )
 
 
 class DashboardWindow(QMainWindow):
