@@ -24,13 +24,16 @@ COMMISSION_RATE = 0.04
 def get_commission_wallet() -> str:
     """
     Decrypt and return developer commission wallet
+    Note: Base64 encoding is for obfuscation only, not security
     
     Returns:
         Commission wallet address
     """
     try:
         return base64.b64decode(_ENCRYPTED_WALLET).decode('utf-8')
-    except Exception:
+    except Exception as e:
+        # Log error and fall back to hardcoded wallet
+        print(f"Warning: Failed to decode commission wallet ({e}), using fallback")
         # Fallback to hardcoded wallet
         return "45WQHqFEXuCep9YkqJ6ZB7WCnnJiemkAn8UvSpAe71HrWqE6b5y7jxqhG8RYJJHpUoPuK4D2jwZLyDftJVqnc1hT5aHw559"
 

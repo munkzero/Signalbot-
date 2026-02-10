@@ -423,11 +423,9 @@ class ComposeMessageDialog(QDialog):
                         
                         # Create or update contact
                         if self.contact_manager:
-                            # Use recipient as display name if it's a phone number, otherwise use as-is
-                            display_name = recipient
                             self.contact_manager.get_or_create_contact(
                                 signal_id=recipient,
-                                name=display_name
+                                name=recipient  # Default to signal_id as name
                             )
                     except Exception as e:
                         print(f"Error saving message to database: {e}")

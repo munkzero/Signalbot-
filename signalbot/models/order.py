@@ -320,6 +320,7 @@ class OrderManager:
         
         # Filter by age
         if criteria.get('older_than_days'):
+            # Using utcnow() for compatibility; consider datetime.now(timezone.utc) for Python 3.12+
             cutoff_date = datetime.utcnow() - timedelta(days=criteria['older_than_days'])
             query = query.filter(OrderModel.created_at < cutoff_date)
         
@@ -345,6 +346,7 @@ class OrderManager:
         
         # Filter by age
         if criteria.get('older_than_days'):
+            # Using utcnow() for compatibility; consider datetime.now(timezone.utc) for Python 3.12+
             cutoff_date = datetime.utcnow() - timedelta(days=criteria['older_than_days'])
             query = query.filter(OrderModel.created_at < cutoff_date)
         
