@@ -42,7 +42,7 @@ class SignalHandler:
                 ['signal-cli', 'link', '-n', 'ShopBot'],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=10
             )
             
             if result.returncode == 0:
@@ -102,7 +102,7 @@ class SignalHandler:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=10
             )
             
             return result.returncode == 0
@@ -343,7 +343,7 @@ Thank you for your purchase!
                 ['signal-cli', '-u', self.phone_number, 'listGroups', '--detailed'],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=10
             )
             
             groups = []

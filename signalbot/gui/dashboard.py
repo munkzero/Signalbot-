@@ -804,6 +804,7 @@ class MessagesTab(QWidget):
         self.message_manager = message_manager
         self.seller_manager = seller_manager
         self.conversations = {}  # Dict to store conversations
+        self.conversations_cache = {}  # Cache for conversation data
         self.current_recipient = None
         self.my_signal_id = None
         
@@ -919,8 +920,8 @@ class MessagesTab(QWidget):
         self.attachment_path = None
         self.send_thread = None  # Thread for async message sending
     
-    def load_conversations(self):
-        """Load conversation list from database"""
+    def load_conversations(self, force_refresh=False):
+        """Load conversation list from database with caching"""
         self.conversations_list.clear()
         
         if not self.my_signal_id:
@@ -929,8 +930,11 @@ class MessagesTab(QWidget):
             self.conversations_list.addItem(item)
             return
         
-        # Get all conversations from database
-        conversations = self.message_manager.get_all_conversations(self.my_signal_id)
+        # Get all conversations from database (use cache if available)
+        if force_refresh or not self.conversations_cache:
+            self.conversations_cache = self.message_manager.get_all_conversations(self.my_signal_id)
+        
+        conversations = self.conversations_cache
         
         if not conversations:
             item = QListWidgetItem("No conversations yet")
@@ -985,7 +989,7 @@ class MessagesTab(QWidget):
         """Open compose message dialog"""
         dialog = ComposeMessageDialog(self.signal_handler, parent=self)
         if dialog.exec_() == QDialog.Accepted:
-            self.load_conversations()
+            self.load_conversations(force_refresh=True)
     
     def send_message(self):
         """Send message to current recipient using background thread"""
@@ -1022,26 +1026,33 @@ class MessagesTab(QWidget):
         self.send_btn.setText("Send")
         
         if success:
-            # Add to message history
+            # Add to message history immediately (UI update)
             timestamp = datetime.now().strftime("%H:%M")
             self.message_history.append(f"[{timestamp}] You: {message_text}\n")
             self.message_input.clear()
             self.attachment_path = None
             
-            # Save to database
+            # Save to database in background (non-blocking)
             if self.my_signal_id:
-                self.message_manager.add_message(
-                    sender_signal_id=self.my_signal_id,
-                    recipient_signal_id=self.current_recipient,
-                    message_body=message_text,
-                    is_outgoing=True
-                )
-                # Ensure contact exists
-                self.contact_manager.get_or_create_contact(self.current_recipient)
-                # Refresh conversations list
-                self.load_conversations()
+                QTimer.singleShot(0, lambda: self._save_message_to_db(message_text))
         else:
             QMessageBox.warning(self, "Send Failed", status_message)
+    
+    def _save_message_to_db(self, message_text):
+        """Save message to database asynchronously"""
+        try:
+            self.message_manager.add_message(
+                sender_signal_id=self.my_signal_id,
+                recipient_signal_id=self.current_recipient,
+                message_body=message_text,
+                is_outgoing=True
+            )
+            # Ensure contact exists
+            self.contact_manager.get_or_create_contact(self.current_recipient)
+            # Refresh conversations list
+            self.load_conversations(force_refresh=True)
+        except Exception as e:
+            print(f"Error saving message to database: {e}")
     
     def send_product(self):
         """Open product picker and send product info"""
@@ -1089,7 +1100,7 @@ class MessagesTab(QWidget):
         if sender not in self.conversations:
             self.conversations[sender] = []
             # Reload conversations to show new one
-            self.load_conversations()
+            self.load_conversations(force_refresh=True)
         
         self.conversations[sender].append(message)
         
@@ -1133,7 +1144,7 @@ class MessagesTab(QWidget):
                     self.message_history.clear()
                 
                 # Reload conversations
-                self.load_conversations()
+                self.load_conversations(force_refresh=True)
                 QMessageBox.information(self, "Success", "Conversation deleted")
             else:
                 QMessageBox.warning(self, "Error", "Failed to delete conversation")
@@ -1177,7 +1188,7 @@ class MessagesTab(QWidget):
         if reply == QMessageBox.Yes:
             if self.message_manager.delete_conversation(self.current_recipient, self.my_signal_id):
                 self.message_history.clear()
-                self.load_conversations()
+                self.load_conversations(force_refresh=True)
                 QMessageBox.information(self, "Success", "All messages cleared")
             else:
                 QMessageBox.warning(self, "Error", "Failed to clear messages")
