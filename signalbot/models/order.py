@@ -299,3 +299,58 @@ class OrderManager:
             db_order.payment_status = 'partial'
         
         self.db.session.commit()
+    
+    def count_orders_matching(self, criteria: dict) -> int:
+        """
+        Count orders matching deletion criteria
+        
+        Args:
+            criteria: dict with:
+                - statuses: list of statuses to delete
+                - older_than_days: int or None
+        
+        Returns:
+            Number of orders matching criteria
+        """
+        query = self.db.session.query(OrderModel)
+        
+        # Filter by status
+        if criteria.get('statuses'):
+            query = query.filter(OrderModel.payment_status.in_(criteria['statuses']))
+        
+        # Filter by age
+        if criteria.get('older_than_days'):
+            cutoff_date = datetime.utcnow() - timedelta(days=criteria['older_than_days'])
+            query = query.filter(OrderModel.created_at < cutoff_date)
+        
+        return query.count()
+    
+    def delete_orders(self, criteria: dict) -> int:
+        """
+        Delete orders matching criteria
+        
+        Args:
+            criteria: dict with:
+                - statuses: list of statuses to delete
+                - older_than_days: int or None
+        
+        Returns:
+            Number of orders deleted
+        """
+        query = self.db.session.query(OrderModel)
+        
+        # Filter by status
+        if criteria.get('statuses'):
+            query = query.filter(OrderModel.payment_status.in_(criteria['statuses']))
+        
+        # Filter by age
+        if criteria.get('older_than_days'):
+            cutoff_date = datetime.utcnow() - timedelta(days=criteria['older_than_days'])
+            query = query.filter(OrderModel.created_at < cutoff_date)
+        
+        # Delete
+        count = query.count()
+        query.delete(synchronize_session=False)
+        self.db.session.commit()
+        
+        return count

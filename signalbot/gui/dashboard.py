@@ -1210,7 +1210,10 @@ class OrdersTab(QWidget):
         # Buttons
         button_layout = QHBoxLayout()
         refresh_btn = QPushButton("Refresh")
+        delete_old_btn = QPushButton("🗑️ Delete Old Orders")
+        delete_old_btn.clicked.connect(self.delete_old_orders)
         button_layout.addWidget(refresh_btn)
+        button_layout.addWidget(delete_old_btn)
         button_layout.addStretch()
         layout.addLayout(button_layout)
         
@@ -1244,6 +1247,172 @@ class OrdersTab(QWidget):
             self.table.setItem(row, 5, QTableWidgetItem(
                 order.created_at.strftime("%Y-%m-%d %H:%M") if order.created_at else "N/A"
             ))
+    
+    def delete_old_orders(self):
+        """Open dialog to delete old orders"""
+        dialog = DeleteOldOrdersDialog(self.order_manager, self)
+        if dialog.exec_() == QDialog.Accepted:
+            deleted_count = dialog.deleted_count
+            QMessageBox.information(
+                self,
+                "Success",
+                f"Deleted {deleted_count} old order(s)"
+            )
+            self.load_orders()
+
+
+class DeleteOldOrdersDialog(QDialog):
+    """Dialog for configuring which orders to delete"""
+    
+    def __init__(self, order_manager, parent=None):
+        super().__init__(parent)
+        self.order_manager = order_manager
+        self.deleted_count = 0
+        
+        self.setWindowTitle("Delete Old Orders")
+        self.setModal(True)
+        self.setMinimumWidth(500)
+        
+        layout = QVBoxLayout()
+        
+        # Instructions
+        instructions = QLabel(
+            "Select criteria for orders to delete.\n"
+            "This action cannot be undone!"
+        )
+        instructions.setWordWrap(True)
+        instructions.setStyleSheet("font-weight: bold; color: red;")
+        layout.addWidget(instructions)
+        
+        # Criteria checkboxes
+        criteria_group = QGroupBox("Delete Criteria")
+        criteria_layout = QVBoxLayout()
+        
+        self.expired_checkbox = QCheckBox("Expired orders (never paid)")
+        self.expired_checkbox.setChecked(True)
+        criteria_layout.addWidget(self.expired_checkbox)
+        
+        self.delivered_checkbox = QCheckBox("Delivered orders")
+        criteria_layout.addWidget(self.delivered_checkbox)
+        
+        self.cancelled_checkbox = QCheckBox("Cancelled orders")
+        criteria_layout.addWidget(self.cancelled_checkbox)
+        
+        criteria_group.setLayout(criteria_layout)
+        layout.addWidget(criteria_group)
+        
+        # Age filter
+        age_group = QGroupBox("Age Filter (Optional)")
+        age_layout = QHBoxLayout()
+        
+        self.age_checkbox = QCheckBox("Delete orders older than")
+        self.age_spinbox = QSpinBox()
+        self.age_spinbox.setRange(1, 365)
+        self.age_spinbox.setValue(30)
+        self.age_spinbox.setSuffix(" days")
+        self.age_spinbox.setEnabled(False)
+        
+        self.age_checkbox.toggled.connect(self.age_spinbox.setEnabled)
+        
+        age_layout.addWidget(self.age_checkbox)
+        age_layout.addWidget(self.age_spinbox)
+        age_layout.addStretch()
+        
+        age_group.setLayout(age_layout)
+        layout.addWidget(age_group)
+        
+        # Preview
+        preview_group = QGroupBox("Preview")
+        preview_layout = QVBoxLayout()
+        
+        self.preview_label = QLabel("Click 'Preview' to see how many orders will be deleted")
+        preview_layout.addWidget(self.preview_label)
+        
+        preview_btn = QPushButton("Preview")
+        preview_btn.clicked.connect(self.preview_deletion)
+        preview_layout.addWidget(preview_btn)
+        
+        preview_group.setLayout(preview_layout)
+        layout.addWidget(preview_group)
+        
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.confirm_and_delete)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        
+        self.setLayout(layout)
+    
+    def get_criteria(self):
+        """Get deletion criteria from dialog"""
+        criteria = {
+            'statuses': [],
+            'older_than_days': None
+        }
+        
+        if self.expired_checkbox.isChecked():
+            criteria['statuses'].append('expired')
+        
+        if self.delivered_checkbox.isChecked():
+            criteria['statuses'].append('delivered')
+        
+        if self.cancelled_checkbox.isChecked():
+            criteria['statuses'].append('cancelled')
+        
+        if self.age_checkbox.isChecked():
+            criteria['older_than_days'] = self.age_spinbox.value()
+        
+        return criteria
+    
+    def preview_deletion(self):
+        """Preview how many orders will be deleted"""
+        criteria = self.get_criteria()
+        
+        if not criteria['statuses']:
+            self.preview_label.setText("⚠️ No status criteria selected. No orders will be deleted.")
+            return
+        
+        count = self.order_manager.count_orders_matching(criteria)
+        self.preview_label.setText(f"📊 {count} order(s) will be deleted")
+    
+    def confirm_and_delete(self):
+        """Confirm and delete matching orders"""
+        criteria = self.get_criteria()
+        
+        if not criteria['statuses']:
+            QMessageBox.warning(
+                self,
+                "No Criteria",
+                "Please select at least one status criteria"
+            )
+            return
+        
+        # Get count
+        count = self.order_manager.count_orders_matching(criteria)
+        
+        if count == 0:
+            QMessageBox.information(
+                self,
+                "No Orders",
+                "No orders match the selected criteria"
+            )
+            return
+        
+        # Confirmation
+        reply = QMessageBox.question(
+            self,
+            "Confirm Deletion",
+            f"Are you sure you want to delete {count} order(s)?\n\n"
+            "This action cannot be undone!",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.deleted_count = self.order_manager.delete_orders(criteria)
+            self.accept()
 
 
 class MessageSendThread(QThread):
