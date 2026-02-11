@@ -68,8 +68,14 @@ class BuyerHandler:
         
         print(f"DEBUG: Processing buyer command: {message_text[:50]}")
         
-        # Command: "catalog" or "show products" - more flexible matching
-        if any(word in message_lower for word in ['catalog', 'catalogue', 'products', 'menu', 'show']):
+        # Command: "catalog" or "show products" - improved matching to avoid false positives
+        # Match specific keywords or common phrases
+        catalog_keywords = ['catalog', 'catalogue', 'menu']
+        catalog_phrases = ['show products', 'show catalog', 'show catalogue', 'show menu']
+        
+        if any(word in message_lower for word in catalog_keywords) or \
+           any(phrase in message_lower for phrase in catalog_phrases) or \
+           message_lower == 'products':
             print(f"DEBUG: Sending catalog to {buyer_signal_id}")
             self.send_catalog(buyer_signal_id)
             return

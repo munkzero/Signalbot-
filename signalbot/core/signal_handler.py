@@ -290,7 +290,6 @@ class SignalHandler:
                                 self._handle_message(message_data)
                             except json.JSONDecodeError:
                                 print(f"DEBUG: Failed to parse JSON: {line[:100]}")
-                                pass
                 
             except Exception as e:
                 print(f"ERROR: Error receiving messages: {e}")

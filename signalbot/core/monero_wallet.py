@@ -278,7 +278,7 @@ class MoneroWallet:
                 return True
             
             return False
-        except:
+        except Exception:
             # If query fails, assume view-only to be safe
             # This prevents accidental spending attempts
             return True
