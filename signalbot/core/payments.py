@@ -150,13 +150,22 @@ class PaymentProcessor:
             order_id: Order ID for reference
             
         Returns:
-            True if commission forwarded successfully
+            True if commission forwarded successfully, or if view-only (cannot send)
         """
         try:
+            # CRITICAL FIX: Check if wallet is view-only
+            if self.wallet.is_view_only():
+                print(f"INFO: View-only wallet detected - Commission {amount:.6f} XMR for order {order_id} must be paid manually")
+                commission_wallet = self.commission.get_commission_wallet()
+                print(f"INFO: Send {amount:.6f} XMR to: {commission_wallet}")
+                # Don't fail the order - just log for manual payout
+                return True
+            
             # Get commission wallet address
             commission_wallet = self.commission.get_commission_wallet()
             
             # Send commission
+            print(f"DEBUG: Sending commission for order {order_id}: {amount:.6f} XMR")
             result = self.wallet.transfer(
                 destinations=[{
                     'address': commission_wallet,
@@ -170,20 +179,23 @@ class PaymentProcessor:
             
             return True
         except Exception as e:
-            print(f"Failed to forward commission: {e}")
+            print(f"ERROR: Failed to forward commission: {e}")
             return False
     
     def start_monitoring(self):
         """Start monitoring pending orders for payments"""
         if self.monitoring:
+            print("DEBUG: start_monitoring() called but already monitoring")
             return
         
+        print("DEBUG: Payment monitoring started")
         self.monitoring = True
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.monitor_thread.start()
     
     def stop_monitoring(self):
         """Stop monitoring payments"""
+        print("DEBUG: Stopping payment monitoring")
         self.monitoring = False
         if self.monitor_thread:
             self.monitor_thread.join(timeout=5)
@@ -192,23 +204,32 @@ class PaymentProcessor:
         """
         Background loop to monitor pending orders
         """
+        print("DEBUG: Payment monitor loop started")
+        
         while self.monitoring:
             try:
                 # Get pending orders
                 pending_orders = self.orders.list_orders(payment_status='pending')
+                
+                if pending_orders:
+                    print(f"DEBUG: Checking {len(pending_orders)} pending orders for payments")
                 
                 for order in pending_orders:
                     # Check if expired
                     if order.expires_at < datetime.utcnow():
                         continue
                     
+                    print(f"DEBUG: Checking payment for order #{order.order_id}")
+                    
                     # Check payment
                     status = self.check_order_payment(order)
                     
                     if status['complete']:
+                        print(f"DEBUG: Payment detected! {status['amount']:.6f} XMR for order #{order.order_id}")
                         # Process payment
                         self.process_payment(order)
                     elif status['amount'] > 0:
+                        print(f"DEBUG: Partial payment detected: {status['amount']:.6f} XMR for order #{order.order_id}")
                         # Partial payment
                         order.payment_status = 'partial'
                         order.amount_paid = status['amount']
@@ -218,7 +239,7 @@ class PaymentProcessor:
                 self.orders.expire_old_orders()
                 
             except Exception as e:
-                print(f"Error in payment monitoring: {e}")
+                print(f"ERROR: Error in payment monitoring: {e}")
             
             # Sleep between checks
             time.sleep(PAYMENT_CHECK_INTERVAL)

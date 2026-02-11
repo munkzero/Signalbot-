@@ -2563,6 +2563,69 @@ class DashboardWindow(QMainWindow):
                 seller_signal_id
             )
         
+        # CRITICAL FIX: Auto-start listening for incoming messages
+        if seller_signal_id:
+            print("DEBUG: Dashboard initializing - starting message listener")
+            self.signal_handler.start_listening()
+        
+        # Initialize payment monitoring if wallet is configured
+        self.payment_processor = None
+        if seller and seller.wallet_config:
+            try:
+                from ..core.payments import PaymentProcessor
+                from ..core.commission import CommissionManager
+                from ..core.monero_wallet import MoneroWallet
+                
+                # Initialize wallet based on config
+                wallet_config = seller.wallet_config
+                wallet_type = wallet_config.get('type', 'rpc')
+                
+                if wallet_type == 'rpc':
+                    wallet = MoneroWallet(
+                        wallet_type='rpc',
+                        rpc_host=wallet_config.get('rpc_host'),
+                        rpc_port=wallet_config.get('rpc_port'),
+                        rpc_user=wallet_config.get('rpc_user'),
+                        rpc_password=wallet_config.get('rpc_password')
+                    )
+                    
+                    # CRITICAL FIX: Auto-start payment monitoring
+                    commission_manager = CommissionManager()
+                    self.payment_processor = PaymentProcessor(
+                        wallet,
+                        commission_manager,
+                        self.order_manager
+                    )
+                    
+                    # Register callback for payment notifications
+                    def on_payment_detected(order):
+                        # Notify buyer
+                        buyer_success = self.signal_handler.send_message(
+                            order.customer_signal_id,
+                            f"✅ Payment confirmed! Your order #{order.order_id} is being processed."
+                        )
+                        if not buyer_success:
+                            print(f"WARNING: Failed to notify buyer {order.customer_signal_id} of payment for order #{order.order_id}")
+                        
+                        # Notify seller
+                        seller_success = self.signal_handler.send_message(
+                            seller_signal_id,
+                            f"💰 New paid order #{order.order_id} - {order.product_name} x{order.quantity}"
+                        )
+                        if not seller_success:
+                            print(f"WARNING: Failed to notify seller of payment for order #{order.order_id}")
+                    
+                    # Register callback for all pending orders
+                    pending_orders = self.order_manager.list_orders(payment_status='pending')
+                    for order in pending_orders:
+                        self.payment_processor.register_payment_callback(order.order_id, on_payment_detected)
+                    
+                    print("DEBUG: Dashboard initializing - starting payment monitoring")
+                    self.payment_processor.start_monitoring()
+                    
+            except Exception as e:
+                print(f"WARNING: Failed to initialize payment monitoring: {e}")
+        
         self.setWindowTitle(WINDOW_TITLE)
         self.setMinimumSize(WINDOW_WIDTH, WINDOW_HEIGHT)
         

@@ -66,8 +66,24 @@ class BuyerHandler:
         
         message_lower = message_text.lower().strip()
         
-        # Command: "catalog" or "show products"
-        if any(word in message_lower for word in ['catalog', 'products', 'menu']):
+        print(f"DEBUG: Processing buyer command: {message_text[:50]}")
+        
+        # Command: "catalog" or "show products" - improved matching to avoid false positives
+        # Match specific keywords or common phrases
+        catalog_keywords = ['catalog', 'catalogue', 'menu']
+        catalog_phrases = ['show products', 'show catalog', 'show catalogue', 'show menu', 'view products', 'view catalog']
+        
+        # Also check if message is a simple request like "products" or "items"
+        simple_requests = ['products', 'items', 'list']
+        
+        is_catalog_request = (
+            any(word in message_lower for word in catalog_keywords) or
+            any(phrase in message_lower for phrase in catalog_phrases) or
+            message_lower in simple_requests
+        )
+        
+        if is_catalog_request:
+            print(f"DEBUG: Sending catalog to {buyer_signal_id}")
             self.send_catalog(buyer_signal_id)
             return
         
@@ -75,11 +91,13 @@ class BuyerHandler:
         order_match = self._parse_order_command(message_text)
         if order_match:
             product_id, quantity = order_match
+            print(f"DEBUG: Creating order for product {product_id} qty {quantity}")
             self.create_order(buyer_signal_id, product_id, quantity)
             return
         
         # Command: "help"
         if 'help' in message_lower:
+            print(f"DEBUG: Sending help to {buyer_signal_id}")
             self.send_help(buyer_signal_id)
             return
     
@@ -127,6 +145,8 @@ class BuyerHandler:
         Args:
             buyer_signal_id: Buyer's Signal ID
         """
+        import os
+        
         products = self.product_manager.list_products(active_only=True)
         
         if not products:
@@ -158,9 +178,14 @@ class BuyerHandler:
 To order: "order {product_id_str} qty [amount]"
 """
             
+            # CRITICAL FIX: Check if image file actually exists before attaching
             attachments = []
             if product.image_path:
-                attachments.append(product.image_path)
+                if os.path.exists(product.image_path) and os.path.isfile(product.image_path):
+                    attachments.append(product.image_path)
+                    print(f"DEBUG: Attaching image for {product.name}: {product.image_path}")
+                else:
+                    print(f"WARNING: Image path set but file missing for {product.name}: {product.image_path}")
             
             self.signal_handler.send_message(
                 recipient=buyer_signal_id,
@@ -177,27 +202,33 @@ To order: "order {product_id_str} qty [amount]"
             product_id: Product ID to order
             quantity: Quantity to order
         """
-        # Find product
-        product = self.product_manager.get_product_by_product_id(product_id)
-        
-        if not product:
-            self.signal_handler.send_message(
-                recipient=buyer_signal_id,
-                message=f"❌ Product {product_id} not found. Type 'catalog' to see available products."
-            )
-            return
-        
-        # Check stock
-        if product.stock < quantity:
-            if product.stock == 0:
+        try:
+            print(f"DEBUG: Creating order for {buyer_signal_id}, product {product_id}, qty {quantity}")
+            
+            # Find product
+            product = self.product_manager.get_product_by_product_id(product_id)
+            
+            if not product:
+                print(f"DEBUG: Product {product_id} not found")
                 self.signal_handler.send_message(
                     recipient=buyer_signal_id,
-                    message=f"❌ {product.name} is OUT OF STOCK"
+                    message=f"❌ Product {product_id} not found. Type 'catalog' to see available products."
                 )
-            else:
-                self.signal_handler.send_message(
-                    recipient=buyer_signal_id,
-                    message=f"""⚠️ STOCK LIMITATION
+                return
+            
+            # Check stock
+            if product.stock < quantity:
+                if product.stock == 0:
+                    print(f"DEBUG: Product {product.name} out of stock")
+                    self.signal_handler.send_message(
+                        recipient=buyer_signal_id,
+                        message=f"❌ {product.name} is OUT OF STOCK"
+                    )
+                else:
+                    print(f"DEBUG: Insufficient stock: requested {quantity}, available {product.stock}")
+                    self.signal_handler.send_message(
+                        recipient=buyer_signal_id,
+                        message=f"""⚠️ STOCK LIMITATION
 
 You requested: {quantity} units
 Available: {product.stock} units
@@ -205,46 +236,55 @@ Available: {product.stock} units
 Would you like to order {product.stock} instead?
 Reply "order {product_id} qty {product.stock}" to proceed.
 """
-                )
-            return
-        
-        # Calculate totals with 7% commission
-        unit_price = float(product.price)
-        subtotal = unit_price * quantity
-        commission = subtotal * 0.07  # 7% commission
-        total = subtotal + commission
-        
-        # Get XMR conversion using configured exchange rate
-        total_xmr = total / XMR_EXCHANGE_RATE_USD
-        
-        # Generate payment address (placeholder)
-        payment_address = self._generate_payment_address(product.id, buyer_signal_id)
-        
-        # Create order in database
-        order = Order(
-            customer_signal_id=buyer_signal_id,
-            product_id=product.id,
-            product_name=product.name,
-            quantity=quantity,
-            price_fiat=unit_price,
-            currency=product.currency,
-            price_xmr=total_xmr,
-            payment_address=payment_address,
-            payment_status='pending',
-            order_status='processing',
-            commission_amount=commission * total_xmr / total,  # Commission in XMR
-            seller_amount=subtotal * total_xmr / total,  # Seller amount in XMR
-            expires_at=datetime.utcnow() + timedelta(minutes=ORDER_EXPIRATION_MINUTES)
-        )
-        
-        created_order = self.order_manager.create_order(order)
-        
-        # Reduce stock (will be restored if order expires)
-        product.stock -= quantity
-        self.product_manager.update_product(product)
-        
-        # Send order confirmation with payment info
-        self.send_order_confirmation(buyer_signal_id, created_order, product, payment_address)
+                    )
+                return
+            
+            # Calculate totals with 7% commission
+            unit_price = float(product.price)
+            subtotal = unit_price * quantity
+            commission = subtotal * 0.07  # 7% commission
+            total = subtotal + commission
+            
+            # Get XMR conversion using configured exchange rate
+            total_xmr = total / XMR_EXCHANGE_RATE_USD
+            
+            print(f"DEBUG: Order total: {total} {product.currency} = {total_xmr:.6f} XMR")
+            
+            # Generate payment address (placeholder)
+            payment_address = self._generate_payment_address(product.id, buyer_signal_id)
+            
+            # Create order in database
+            order = Order(
+                customer_signal_id=buyer_signal_id,
+                product_id=product.id,
+                product_name=product.name,
+                quantity=quantity,
+                price_fiat=unit_price,
+                currency=product.currency,
+                price_xmr=total_xmr,
+                payment_address=payment_address,
+                payment_status='pending',
+                order_status='processing',
+                commission_amount=commission * total_xmr / total,  # Commission in XMR
+                seller_amount=subtotal * total_xmr / total,  # Seller amount in XMR
+                expires_at=datetime.utcnow() + timedelta(minutes=ORDER_EXPIRATION_MINUTES)
+            )
+            
+            created_order = self.order_manager.create_order(order)
+            print(f"DEBUG: Order #{created_order.order_id} created successfully")
+            
+            # Reduce stock (will be restored if order expires)
+            product.stock -= quantity
+            self.product_manager.update_product(product)
+            
+            # Send order confirmation with payment info
+            self.send_order_confirmation(buyer_signal_id, created_order, product, payment_address)
+        except Exception as e:
+            print(f"ERROR: Failed to create order: {e}")
+            self.signal_handler.send_message(
+                recipient=buyer_signal_id,
+                message="❌ Failed to create order. Please try again or contact support."
+            )
     
     def send_order_confirmation(self, buyer_signal_id: str, order: Order, product, payment_address: str):
         """
@@ -256,7 +296,10 @@ Reply "order {product_id} qty {product.stock}" to proceed.
             product: Product object
             payment_address: Monero payment address
         """
-        message = f"""🛒 ORDER CONFIRMATION
+        try:
+            print(f"DEBUG: Sending order confirmation to {buyer_signal_id} for order #{order.order_id}")
+            
+            message = f"""🛒 ORDER CONFIRMATION
 Order #{order.order_id}
 
 ━━━━━━━━━━━━━━━━━
@@ -276,27 +319,35 @@ Order #{order.order_id}
 💳 Send EXACTLY {order.price_xmr:.6f} XMR to:
 {payment_address}
 """
-        
-        # Generate payment QR code
-        try:
-            qr_data = qr_generator.generate_payment_qr(payment_address, order.price_xmr)
-            qr_path = f"/tmp/order_{order.order_id}_qr.png"
             
-            with open(qr_path, 'wb') as f:
-                f.write(qr_data)
-            
-            # Send message with QR code
-            self.signal_handler.send_message(
-                recipient=buyer_signal_id,
-                message=message.strip(),
-                attachments=[qr_path]
-            )
+            # Generate payment QR code
+            try:
+                qr_data = qr_generator.generate_payment_qr(payment_address, order.price_xmr)
+                qr_path = f"/tmp/order_{order.order_id}_qr.png"
+                
+                with open(qr_path, 'wb') as f:
+                    f.write(qr_data)
+                
+                print(f"DEBUG: QR code generated at {qr_path}")
+                
+                # Send message with QR code
+                self.signal_handler.send_message(
+                    recipient=buyer_signal_id,
+                    message=message.strip(),
+                    attachments=[qr_path]
+                )
+            except Exception as e:
+                print(f"ERROR: Error generating QR code: {e}")
+                # Send without QR code
+                self.signal_handler.send_message(
+                    recipient=buyer_signal_id,
+                    message=message.strip()
+                )
         except Exception as e:
-            print(f"Error generating QR code: {e}")
-            # Send without QR code
+            print(f"ERROR: Failed to send order confirmation: {e}")
             self.signal_handler.send_message(
                 recipient=buyer_signal_id,
-                message=message.strip()
+                message="❌ Order created but failed to send confirmation. Check your orders in the dashboard."
             )
     
     def _generate_payment_address(self, product_id: int, buyer_signal_id: str) -> str:

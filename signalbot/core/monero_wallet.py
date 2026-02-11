@@ -96,9 +96,14 @@ class MoneroWallet:
             result = response.json()
             
             if 'error' in result:
-                raise RuntimeError(f"RPC error: {result['error']}")
+                error_msg = result['error'].get('message', result['error'])
+                raise RuntimeError(f"RPC error: {error_msg}")
             
             return result.get('result', {})
+        except requests.exceptions.ConnectionError as e:
+            raise RuntimeError(f"Cannot connect to wallet RPC: {e}")
+        except requests.exceptions.Timeout:
+            raise RuntimeError(f"Wallet RPC timeout - check node connection")
         except Exception as e:
             raise RuntimeError(f"RPC call failed: {e}")
     
@@ -253,6 +258,31 @@ class MoneroWallet:
         )
         
         return (payment_received, total_received, max_confirmations)
+    
+    def is_view_only(self) -> bool:
+        """
+        Check if wallet is view-only (cannot send funds)
+        
+        Returns:
+            True if wallet is view-only
+        """
+        try:
+            # Try to query spend key - view-only wallets won't have it
+            result = self._rpc_call('query_key', {'key_type': 'spend_key'})
+            
+            # If we get a key, check if it's all zeros (view-only indicator)
+            spend_key = result.get('key', '')
+            
+            # View-only wallets have a spend key of all zeros
+            if spend_key and spend_key == '0' * 64:
+                return True
+            
+            return False
+        except Exception as e:
+            # If query fails, assume view-only to be safe
+            # This prevents accidental spending attempts
+            print(f"WARNING: Cannot determine wallet type (assuming view-only): {e}")
+            return True
     
     def transfer(
         self,
