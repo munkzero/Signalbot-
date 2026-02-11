@@ -254,6 +254,30 @@ class MoneroWallet:
         
         return (payment_received, total_received, max_confirmations)
     
+    def is_view_only(self) -> bool:
+        """
+        Check if wallet is view-only (cannot send funds)
+        
+        Returns:
+            True if wallet is view-only
+        """
+        try:
+            # Try to query spend key - view-only wallets won't have it
+            result = self._rpc_call('query_key', {'key_type': 'spend_key'})
+            
+            # If we get a key, check if it's all zeros (view-only indicator)
+            spend_key = result.get('key', '')
+            
+            # View-only wallets have a spend key of all zeros
+            if spend_key and spend_key == '0' * 64:
+                return True
+            
+            return False
+        except:
+            # If query fails, assume view-only to be safe
+            # This prevents accidental spending attempts
+            return True
+    
     def transfer(
         self,
         destinations: List[Dict[str, any]],

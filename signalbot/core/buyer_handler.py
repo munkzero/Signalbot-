@@ -66,8 +66,11 @@ class BuyerHandler:
         
         message_lower = message_text.lower().strip()
         
-        # Command: "catalog" or "show products"
-        if any(word in message_lower for word in ['catalog', 'products', 'menu']):
+        print(f"DEBUG: Processing buyer command: {message_text[:50]}")
+        
+        # Command: "catalog" or "show products" - more flexible matching
+        if any(word in message_lower for word in ['catalog', 'catalogue', 'products', 'menu', 'show']):
+            print(f"DEBUG: Sending catalog to {buyer_signal_id}")
             self.send_catalog(buyer_signal_id)
             return
         
@@ -75,11 +78,13 @@ class BuyerHandler:
         order_match = self._parse_order_command(message_text)
         if order_match:
             product_id, quantity = order_match
+            print(f"DEBUG: Creating order for product {product_id} qty {quantity}")
             self.create_order(buyer_signal_id, product_id, quantity)
             return
         
         # Command: "help"
         if 'help' in message_lower:
+            print(f"DEBUG: Sending help to {buyer_signal_id}")
             self.send_help(buyer_signal_id)
             return
     
@@ -127,6 +132,8 @@ class BuyerHandler:
         Args:
             buyer_signal_id: Buyer's Signal ID
         """
+        import os
+        
         products = self.product_manager.list_products(active_only=True)
         
         if not products:
@@ -158,9 +165,14 @@ class BuyerHandler:
 To order: "order {product_id_str} qty [amount]"
 """
             
+            # CRITICAL FIX: Check if image file actually exists before attaching
             attachments = []
             if product.image_path:
-                attachments.append(product.image_path)
+                if os.path.exists(product.image_path) and os.path.isfile(product.image_path):
+                    attachments.append(product.image_path)
+                    print(f"DEBUG: Attaching image for {product.name}: {product.image_path}")
+                else:
+                    print(f"WARNING: Image path set but file missing for {product.name}: {product.image_path}")
             
             self.signal_handler.send_message(
                 recipient=buyer_signal_id,

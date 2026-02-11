@@ -42,6 +42,18 @@ SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "CAD", "AUD", "NZD", "JPY"]
 MONERO_CONFIRMATIONS_REQUIRED = 10  # Number of confirmations for payment
 PAYMENT_CHECK_INTERVAL = 30  # Seconds between payment checks
 
+# Popular Monero nodes for easy switching
+PUBLIC_NODES = [
+    {'host': 'node.moneroworld.com', 'port': 18089},
+    {'host': 'nodes.hashvault.pro', 'port': 18081},
+    {'host': 'xmr-node.cakewallet.com', 'port': 18081},
+    {'host': 'node.community.rino.io', 'port': 18081},
+]
+
+# Wallet RPC settings (for auto-managed wallets)
+DEFAULT_RPC_PORT = 18082
+DEFAULT_DAEMON = 'node.moneroworld.com:18089'
+
 # Signal settings
 SIGNAL_DATA_DIR = DATA_DIR / "signal"
 SIGNAL_DATA_DIR.mkdir(exist_ok=True)

@@ -16,13 +16,13 @@ class SignalHandler:
     Note: Requires signal-cli to be installed and configured
     """
     
-    def __init__(self, phone_number: Optional[str] = None, auto_daemon: bool = True):
+    def __init__(self, phone_number: Optional[str] = None, auto_daemon: bool = False):
         """
         Initialize Signal handler
         
         Args:
             phone_number: Seller's Signal phone number
-            auto_daemon: Automatically start daemon mode for faster messaging
+            auto_daemon: Automatically start daemon mode for faster messaging (disabled by default due to reliability issues)
         """
         self.phone_number = phone_number
         self.message_callbacks = []
@@ -32,7 +32,9 @@ class SignalHandler:
         self.daemon_process = None
         self.daemon_running = False
         
-        # Auto-start daemon for faster messaging
+        print(f"DEBUG: SignalHandler initialized with phone_number={phone_number}, auto_daemon={auto_daemon}")
+        
+        # Auto-start daemon for faster messaging (disabled by default)
         if auto_daemon and phone_number:
             self.start_daemon()
     
@@ -231,11 +233,14 @@ class SignalHandler:
     def start_listening(self):
         """Start listening for incoming messages"""
         if self.listening:
+            print("DEBUG: start_listening() called but already listening")
             return
         
+        print(f"DEBUG: start_listening() called for {self.phone_number}")
         self.listening = True
         self.listen_thread = threading.Thread(target=self._listen_loop, daemon=True)
         self.listen_thread.start()
+        print("DEBUG: Listen thread started successfully")
     
     def stop_listening(self):
         """Stop listening for messages and clean up daemon"""
@@ -251,10 +256,14 @@ class SignalHandler:
         Background loop to receive messages
         """
         if not self.phone_number:
+            print("DEBUG: _listen_loop cannot start - no phone number configured")
             return
+        
+        print(f"DEBUG: Listen loop active for {self.phone_number}")
         
         while self.listening:
             try:
+                print("DEBUG: Checking for messages...")
                 # Receive messages using signal-cli
                 result = subprocess.run(
                     ['signal-cli', '-u', self.phone_number, 'receive', '--json'],
@@ -264,6 +273,7 @@ class SignalHandler:
                 )
                 
                 if result.returncode == 0 and result.stdout:
+                    print(f"DEBUG: Received data from signal-cli")
                     # Parse JSON messages
                     for line in result.stdout.strip().split('\n'):
                         if line:
@@ -271,10 +281,11 @@ class SignalHandler:
                                 message_data = json.loads(line)
                                 self._handle_message(message_data)
                             except json.JSONDecodeError:
+                                print(f"DEBUG: Failed to parse JSON: {line[:100]}")
                                 pass
                 
             except Exception as e:
-                print(f"Error receiving messages: {e}")
+                print(f"ERROR: Error receiving messages: {e}")
             
             time.sleep(2)
     
@@ -294,6 +305,8 @@ class SignalHandler:
         message_text = data_message.get('message', '')
         group_info = data_message.get('groupInfo')
         
+        print(f"DEBUG: Received message from {source}: {message_text[:50] if message_text else '(no text)'}")
+        
         # Create message object
         message = {
             'sender': source,
@@ -306,16 +319,17 @@ class SignalHandler:
         # If buyer handler exists, process buyer commands
         if self.buyer_handler and message_text:
             try:
+                print(f"DEBUG: Passing message to buyer handler")
                 self.buyer_handler.handle_buyer_message(source, message_text)
             except Exception as e:
-                print(f"Error in buyer handler: {e}")
+                print(f"ERROR: Error in buyer handler: {e}")
         
         # Call registered callbacks
         for callback in self.message_callbacks:
             try:
                 callback(message)
             except Exception as e:
-                print(f"Error in message callback: {e}")
+                print(f"ERROR: Error in message callback: {e}")
     
     def register_message_callback(self, callback: Callable):
         """
