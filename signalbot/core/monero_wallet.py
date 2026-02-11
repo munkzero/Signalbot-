@@ -278,9 +278,10 @@ class MoneroWallet:
                 return True
             
             return False
-        except Exception:
+        except Exception as e:
             # If query fails, assume view-only to be safe
             # This prevents accidental spending attempts
+            print(f"WARNING: Cannot determine wallet type (assuming view-only): {e}")
             return True
     
     def transfer(

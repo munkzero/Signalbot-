@@ -2600,15 +2600,20 @@ class DashboardWindow(QMainWindow):
                     # Register callback for payment notifications
                     def on_payment_detected(order):
                         # Notify buyer
-                        self.signal_handler.send_message(
+                        buyer_success = self.signal_handler.send_message(
                             order.customer_signal_id,
                             f"✅ Payment confirmed! Your order #{order.order_id} is being processed."
                         )
+                        if not buyer_success:
+                            print(f"WARNING: Failed to notify buyer {order.customer_signal_id} of payment for order #{order.order_id}")
+                        
                         # Notify seller
-                        self.signal_handler.send_message(
+                        seller_success = self.signal_handler.send_message(
                             seller_signal_id,
                             f"💰 New paid order #{order.order_id} - {order.product_name} x{order.quantity}"
                         )
+                        if not seller_success:
+                            print(f"WARNING: Failed to notify seller of payment for order #{order.order_id}")
                     
                     # Register callback for all pending orders
                     pending_orders = self.order_manager.list_orders(payment_status='pending')

@@ -71,11 +71,18 @@ class BuyerHandler:
         # Command: "catalog" or "show products" - improved matching to avoid false positives
         # Match specific keywords or common phrases
         catalog_keywords = ['catalog', 'catalogue', 'menu']
-        catalog_phrases = ['show products', 'show catalog', 'show catalogue', 'show menu']
+        catalog_phrases = ['show products', 'show catalog', 'show catalogue', 'show menu', 'view products', 'view catalog']
         
-        if any(word in message_lower for word in catalog_keywords) or \
-           any(phrase in message_lower for phrase in catalog_phrases) or \
-           message_lower == 'products':
+        # Also check if message is a simple request like "products" or "items"
+        simple_requests = ['products', 'items', 'list']
+        
+        is_catalog_request = (
+            any(word in message_lower for word in catalog_keywords) or
+            any(phrase in message_lower for phrase in catalog_phrases) or
+            message_lower in simple_requests
+        )
+        
+        if is_catalog_request:
             print(f"DEBUG: Sending catalog to {buyer_signal_id}")
             self.send_catalog(buyer_signal_id)
             return
