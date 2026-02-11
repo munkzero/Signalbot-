@@ -96,9 +96,14 @@ class MoneroWallet:
             result = response.json()
             
             if 'error' in result:
-                raise RuntimeError(f"RPC error: {result['error']}")
+                error_msg = result['error'].get('message', result['error'])
+                raise RuntimeError(f"RPC error: {error_msg}")
             
             return result.get('result', {})
+        except requests.exceptions.ConnectionError as e:
+            raise RuntimeError(f"Cannot connect to wallet RPC: {e}")
+        except requests.exceptions.Timeout:
+            raise RuntimeError(f"Wallet RPC timeout - check node connection")
         except Exception as e:
             raise RuntimeError(f"RPC call failed: {e}")
     

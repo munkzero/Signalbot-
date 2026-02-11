@@ -210,9 +210,17 @@ class SignalHandler:
                 timeout=20  # Increased timeout for reliability
             )
             
-            return result.returncode == 0
+            if result.returncode == 0:
+                print(f"DEBUG: Message sent successfully to {recipient}")
+                return True
+            else:
+                print(f"ERROR: Failed to send message to {recipient}: {result.stderr}")
+                return False
+        except subprocess.TimeoutExpired:
+            print(f"ERROR: Timeout sending message to {recipient}")
+            return False
         except Exception as e:
-            print(f"Failed to send Signal message: {e}")
+            print(f"ERROR: Failed to send Signal message: {e}")
             return False
     
     def send_image(self, recipient: str, image_path: str, caption: Optional[str] = None) -> bool:
