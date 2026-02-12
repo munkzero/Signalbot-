@@ -37,6 +37,7 @@ from ..config.settings import (
 from ..core.signal_handler import SignalHandler
 from ..utils.image_tools import image_processor
 from ..core.monero_wallet import InHouseWallet
+from ..models.node import NodeManager, MoneroNodeConfig
 
 
 class PINDialog(QDialog):
@@ -3174,35 +3175,29 @@ class SettingsTab(QWidget):
         wallet_group = QGroupBox("Monero Wallet")
         wallet_layout = QVBoxLayout()
         
-        if seller and seller.wallet_config:
-            wallet_type = seller.wallet_config.get('type', 'Unknown')
-            if wallet_type == 'view_only':
-                address = seller.wallet_config.get('address', 'N/A')
-                # Truncate address
-                display_addr = address[:12] + "..." + address[-12:] if len(address) > 24 else address
-                wallet_layout.addWidget(QLabel(f"Type: View-Only Wallet"))
-                
-                addr_layout = QHBoxLayout()
-                addr_layout.addWidget(QLabel(f"Address: {display_addr}"))
-                copy_btn = QPushButton("Copy")
-                copy_btn.setMaximumWidth(80)
-                addr_layout.addWidget(copy_btn)
-                addr_layout.addStretch()
-                wallet_layout.addLayout(addr_layout)
-            elif wallet_type == 'rpc':
-                rpc_host = seller.wallet_config.get('rpc_host', 'N/A')
-                rpc_port = seller.wallet_config.get('rpc_port', 'N/A')
-                wallet_layout.addWidget(QLabel(f"Type: RPC Wallet"))
-                wallet_layout.addWidget(QLabel(f"RPC: {rpc_host}:{rpc_port}"))
+        # Display wallet path
+        if seller and seller.wallet_path:
+            wallet_path_display = seller.wallet_path
+            if len(wallet_path_display) > 50:
+                wallet_path_display = "..." + wallet_path_display[-50:]
+            wallet_layout.addWidget(QLabel(f"Wallet Path: {wallet_path_display}"))
         else:
-            wallet_layout.addWidget(QLabel("Wallet not configured"))
+            wallet_layout.addWidget(QLabel("Wallet Path: Not configured"))
+        
+        # Display current default node
+        node_manager = NodeManager(self.seller_manager.db)
+        default_node = node_manager.get_default_node()
+        if default_node:
+            protocol = "https" if default_node.use_ssl else "http"
+            node_display = f"{default_node.node_name} ({protocol}://{default_node.address}:{default_node.port})"
+            wallet_layout.addWidget(QLabel(f"Default Node: {node_display}"))
+        else:
+            wallet_layout.addWidget(QLabel("Default Node: Not configured"))
         
         wallet_btn_layout = QHBoxLayout()
-        test_conn_btn = QPushButton("Test Connection")
-        edit_wallet_btn = QPushButton("Edit Wallet Settings")
-        edit_wallet_btn.clicked.connect(self.edit_wallet_settings)
-        wallet_btn_layout.addWidget(test_conn_btn)
-        wallet_btn_layout.addWidget(edit_wallet_btn)
+        wallet_settings_btn = QPushButton("Wallet Settings")
+        wallet_settings_btn.clicked.connect(self.open_wallet_settings)
+        wallet_btn_layout.addWidget(wallet_settings_btn)
         wallet_btn_layout.addStretch()
         wallet_layout.addLayout(wallet_btn_layout)
         
@@ -3355,23 +3350,777 @@ class SettingsTab(QWidget):
             self.status_label.setText("❌ Not Linked")
             QMessageBox.information(self, "Unlinked", "Signal account unlinked")
     
-    def edit_wallet_settings(self):
-        """Open dialog to edit wallet settings"""
+    def open_wallet_settings(self):
+        """Open comprehensive wallet settings dialog"""
         seller = self.seller_manager.get_seller(1)
         if not seller:
             QMessageBox.warning(self, "Error", "Seller not found")
             return
         
-        dialog = EditWalletDialog(self.seller_manager, seller, self)
+        dialog = WalletSettingsDialog(self.seller_manager, seller, self)
         if dialog.exec_() == QDialog.Accepted:
-            # Refresh display - reload the entire settings tab would be complex,
-            # so just show a message
             QMessageBox.information(
                 self,
                 "Settings Updated",
-                "Wallet settings updated successfully.\n"
-                "Please restart the application for changes to take full effect."
+                "Wallet settings updated successfully."
             )
+
+
+# Worker threads for async operations
+class TestNodeWorker(QThread):
+    """Worker thread for testing node connections"""
+    finished = pyqtSignal(bool, str, float)  # success, message, response_time
+    
+    def __init__(self, node_config: MoneroNodeConfig):
+        super().__init__()
+        self.node_config = node_config
+    
+    def run(self):
+        """Test node connection"""
+        import time
+        start_time = time.time()
+        
+        try:
+            protocol = "https" if self.node_config.use_ssl else "http"
+            url = f"{protocol}://{self.node_config.address}:{self.node_config.port}/json_rpc"
+            
+            payload = {
+                "jsonrpc": "2.0",
+                "id": "0",
+                "method": "get_info"
+            }
+            
+            auth = None
+            if self.node_config.username and self.node_config.password:
+                auth = (self.node_config.username, self.node_config.password)
+            
+            import requests
+            response = requests.post(url, json=payload, auth=auth, timeout=10)
+            response_time = time.time() - start_time
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'result' in data:
+                    self.finished.emit(True, "Connection successful", response_time)
+                else:
+                    self.finished.emit(False, "Invalid response from node", response_time)
+            else:
+                self.finished.emit(False, f"HTTP {response.status_code}", response_time)
+        except requests.exceptions.Timeout:
+            response_time = time.time() - start_time
+            self.finished.emit(False, "Connection timeout", response_time)
+        except requests.exceptions.ConnectionError:
+            response_time = time.time() - start_time
+            self.finished.emit(False, "Connection refused", response_time)
+        except Exception as e:
+            response_time = time.time() - start_time
+            self.finished.emit(False, str(e), response_time)
+
+
+class ReconnectWalletWorker(QThread):
+    """Worker thread for reconnecting wallet"""
+    finished = pyqtSignal(bool, str)  # success, message
+    progress = pyqtSignal(str)  # progress message
+    
+    def __init__(self, wallet: InHouseWallet, node_config: MoneroNodeConfig):
+        super().__init__()
+        self.wallet = wallet
+        self.node_config = node_config
+    
+    def run(self):
+        """Reconnect wallet to node"""
+        try:
+            self.progress.emit("Disconnecting from current node...")
+            if self.wallet.wallet:
+                self.wallet.disconnect()
+            
+            self.progress.emit("Connecting to new node...")
+            self.wallet.daemon_address = self.node_config.address
+            self.wallet.daemon_port = self.node_config.port
+            self.wallet.use_ssl = self.node_config.use_ssl
+            
+            self.wallet.connect()
+            
+            self.progress.emit("Refreshing wallet...")
+            self.wallet.wallet.refresh()
+            
+            self.finished.emit(True, "Wallet reconnected successfully")
+        except Exception as e:
+            self.finished.emit(False, f"Failed to reconnect: {str(e)}")
+
+
+class RescanBlockchainWorker(QThread):
+    """Worker thread for rescanning blockchain"""
+    finished = pyqtSignal(bool, str)  # success, message
+    progress = pyqtSignal(str)  # progress message
+    
+    def __init__(self, wallet: InHouseWallet, height: Optional[int] = None):
+        super().__init__()
+        self.wallet = wallet
+        self.height = height
+    
+    def run(self):
+        """Rescan blockchain"""
+        try:
+            if self.height:
+                self.progress.emit(f"Rescanning from block {self.height}...")
+            else:
+                self.progress.emit("Rescanning blockchain...")
+            
+            self.wallet.rescan_blockchain(self.height)
+            
+            self.finished.emit(True, "Blockchain rescan completed")
+        except Exception as e:
+            self.finished.emit(False, f"Rescan failed: {str(e)}")
+
+
+class WalletSettingsDialog(QDialog):
+    """Comprehensive wallet settings dialog with tabs"""
+    
+    def __init__(self, seller_manager, seller, parent=None):
+        super().__init__(parent)
+        self.seller_manager = seller_manager
+        self.seller = seller
+        self.node_manager = NodeManager(seller_manager.db)
+        
+        self.setWindowTitle("Wallet Settings")
+        self.setModal(True)
+        self.setMinimumSize(700, 500)
+        
+        layout = QVBoxLayout()
+        
+        # Create tab widget
+        self.tabs = QTabWidget()
+        
+        # Tab 1: Connect & Sync
+        self.connect_tab = self._create_connect_tab()
+        self.tabs.addTab(self.connect_tab, "Connect && Sync")
+        
+        # Tab 2: Manage Nodes
+        self.nodes_tab = self._create_nodes_tab()
+        self.tabs.addTab(self.nodes_tab, "Manage Nodes")
+        
+        layout.addWidget(self.tabs)
+        
+        # Close button
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        button_layout.addWidget(close_btn)
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+    
+    def _create_connect_tab(self):
+        """Create Connect & Sync tab"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # Reconnect section
+        reconnect_group = QGroupBox("Reconnect to Node")
+        reconnect_layout = QVBoxLayout()
+        
+        reconnect_info = QLabel("Reconnect the wallet to the current default node")
+        reconnect_info.setWordWrap(True)
+        reconnect_layout.addWidget(reconnect_info)
+        
+        reconnect_btn = QPushButton("Reconnect Now")
+        reconnect_btn.clicked.connect(self.reconnect_wallet)
+        reconnect_layout.addWidget(reconnect_btn)
+        
+        reconnect_group.setLayout(reconnect_layout)
+        layout.addWidget(reconnect_group)
+        
+        # Rescan section
+        rescan_group = QGroupBox("Rescan Blockchain")
+        rescan_layout = QVBoxLayout()
+        
+        rescan_info = QLabel(
+            "Rescan the blockchain to find missing transactions.\n"
+            "Leave block height empty for full rescan (may take time)."
+        )
+        rescan_info.setWordWrap(True)
+        rescan_layout.addWidget(rescan_info)
+        
+        height_layout = QHBoxLayout()
+        height_layout.addWidget(QLabel("Block Height (optional):"))
+        self.height_input = QLineEdit()
+        self.height_input.setPlaceholderText("e.g., 2500000")
+        height_layout.addWidget(self.height_input)
+        height_layout.addStretch()
+        rescan_layout.addLayout(height_layout)
+        
+        rescan_btn = QPushButton("Start Rescan")
+        rescan_btn.clicked.connect(self.rescan_blockchain)
+        rescan_layout.addWidget(rescan_btn)
+        
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setRange(0, 0)  # Indeterminate
+        rescan_layout.addWidget(self.progress_bar)
+        
+        self.progress_label = QLabel("")
+        self.progress_label.setVisible(False)
+        rescan_layout.addWidget(self.progress_label)
+        
+        rescan_group.setLayout(rescan_layout)
+        layout.addWidget(rescan_group)
+        
+        layout.addStretch()
+        widget.setLayout(layout)
+        return widget
+    
+    def _create_nodes_tab(self):
+        """Create Manage Nodes tab"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # Header
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel("Saved Nodes"))
+        header_layout.addStretch()
+        add_btn = QPushButton("Add New Node")
+        add_btn.clicked.connect(self.add_node)
+        header_layout.addWidget(add_btn)
+        layout.addLayout(header_layout)
+        
+        # Nodes table
+        self.nodes_table = QTableWidget()
+        self.nodes_table.setColumnCount(6)
+        self.nodes_table.setHorizontalHeaderLabels([
+            "Name", "Address", "Port", "SSL", "Default", "Actions"
+        ])
+        self.nodes_table.horizontalHeader().setStretchLastSection(False)
+        self.nodes_table.setColumnWidth(0, 150)
+        self.nodes_table.setColumnWidth(1, 200)
+        self.nodes_table.setColumnWidth(2, 60)
+        self.nodes_table.setColumnWidth(3, 50)
+        self.nodes_table.setColumnWidth(4, 60)
+        self.nodes_table.setColumnWidth(5, 150)
+        
+        layout.addWidget(self.nodes_table)
+        
+        self.refresh_nodes_table()
+        
+        widget.setLayout(layout)
+        return widget
+    
+    def refresh_nodes_table(self):
+        """Refresh the nodes table"""
+        nodes = self.node_manager.list_nodes()
+        self.nodes_table.setRowCount(len(nodes))
+        
+        for row, node in enumerate(nodes):
+            # Name
+            self.nodes_table.setItem(row, 0, QTableWidgetItem(node.node_name))
+            
+            # Address
+            self.nodes_table.setItem(row, 1, QTableWidgetItem(node.address))
+            
+            # Port
+            self.nodes_table.setItem(row, 2, QTableWidgetItem(str(node.port)))
+            
+            # SSL
+            ssl_text = "✓" if node.use_ssl else ""
+            ssl_item = QTableWidgetItem(ssl_text)
+            ssl_item.setTextAlignment(Qt.AlignCenter)
+            self.nodes_table.setItem(row, 3, ssl_item)
+            
+            # Default
+            default_text = "●" if node.is_default else ""
+            default_item = QTableWidgetItem(default_text)
+            default_item.setTextAlignment(Qt.AlignCenter)
+            self.nodes_table.setItem(row, 4, default_item)
+            
+            # Actions
+            actions_widget = QWidget()
+            actions_layout = QHBoxLayout()
+            actions_layout.setContentsMargins(4, 2, 4, 2)
+            
+            if not node.is_default:
+                set_default_btn = QPushButton("Set Default")
+                set_default_btn.clicked.connect(lambda checked, n=node: self.set_default_node(n))
+                actions_layout.addWidget(set_default_btn)
+            
+            edit_btn = QPushButton("Edit")
+            edit_btn.clicked.connect(lambda checked, n=node: self.edit_node(n))
+            actions_layout.addWidget(edit_btn)
+            
+            delete_btn = QPushButton("Delete")
+            delete_btn.clicked.connect(lambda checked, n=node: self.delete_node(n))
+            if node.is_default:
+                delete_btn.setEnabled(False)
+                delete_btn.setToolTip("Cannot delete default node. Set another as default first.")
+            actions_layout.addWidget(delete_btn)
+            
+            actions_widget.setLayout(actions_layout)
+            self.nodes_table.setCellWidget(row, 5, actions_widget)
+    
+    def reconnect_wallet(self):
+        """Reconnect wallet to current node"""
+        default_node = self.node_manager.get_default_node()
+        if not default_node:
+            QMessageBox.warning(self, "Error", "No default node configured")
+            return
+        
+        if not self.seller.wallet_path:
+            QMessageBox.warning(self, "Error", "Wallet not configured")
+            return
+        
+        reply = QMessageBox.question(
+            self,
+            "Confirm Reconnect",
+            f"Reconnect wallet to {default_node.node_name}?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.progress_bar.setVisible(True)
+            self.progress_label.setVisible(True)
+            self.progress_label.setText("Reconnecting...")
+            
+            # Create wallet instance
+            wallet = InHouseWallet(
+                self.seller.wallet_path,
+                "",  # Password would need to be requested
+                default_node.address,
+                default_node.port,
+                default_node.use_ssl
+            )
+            
+            self.reconnect_worker = ReconnectWalletWorker(wallet, default_node)
+            self.reconnect_worker.progress.connect(self.progress_label.setText)
+            self.reconnect_worker.finished.connect(self.on_reconnect_finished)
+            self.reconnect_worker.start()
+    
+    def on_reconnect_finished(self, success, message):
+        """Handle reconnect completion"""
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+        
+        if success:
+            QMessageBox.information(self, "Success", message)
+        else:
+            QMessageBox.warning(self, "Error", message)
+    
+    def rescan_blockchain(self):
+        """Rescan blockchain"""
+        if not self.seller.wallet_path:
+            QMessageBox.warning(self, "Error", "Wallet not configured")
+            return
+        
+        height_text = self.height_input.text().strip()
+        height = None
+        if height_text:
+            try:
+                height = int(height_text)
+                if height < 0:
+                    QMessageBox.warning(self, "Error", "Block height must be positive")
+                    return
+            except ValueError:
+                QMessageBox.warning(self, "Error", "Invalid block height")
+                return
+        
+        reply = QMessageBox.question(
+            self,
+            "Confirm Rescan",
+            "Rescanning may take time depending on blockchain size.\n"
+            "Continue?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.progress_bar.setVisible(True)
+            self.progress_label.setVisible(True)
+            self.progress_label.setText("Starting rescan...")
+            
+            # Get default node
+            default_node = self.node_manager.get_default_node()
+            if not default_node:
+                QMessageBox.warning(self, "Error", "No default node configured")
+                return
+            
+            # Create wallet instance
+            wallet = InHouseWallet(
+                self.seller.wallet_path,
+                "",  # Password would need to be requested
+                default_node.address,
+                default_node.port,
+                default_node.use_ssl
+            )
+            
+            self.rescan_worker = RescanBlockchainWorker(wallet, height)
+            self.rescan_worker.progress.connect(self.progress_label.setText)
+            self.rescan_worker.finished.connect(self.on_rescan_finished)
+            self.rescan_worker.start()
+    
+    def on_rescan_finished(self, success, message):
+        """Handle rescan completion"""
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+        
+        if success:
+            QMessageBox.information(self, "Success", message)
+        else:
+            QMessageBox.warning(self, "Error", message)
+    
+    def add_node(self):
+        """Open add node dialog"""
+        dialog = AddNodeDialog(self.node_manager, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.refresh_nodes_table()
+    
+    def edit_node(self, node: MoneroNodeConfig):
+        """Open edit node dialog"""
+        dialog = EditNodeDialog(self.node_manager, node, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.refresh_nodes_table()
+    
+    def delete_node(self, node: MoneroNodeConfig):
+        """Delete a node"""
+        if node.is_default:
+            QMessageBox.warning(
+                self,
+                "Cannot Delete",
+                "Cannot delete the default node.\n"
+                "Please set another node as default first."
+            )
+            return
+        
+        reply = QMessageBox.question(
+            self,
+            "Confirm Delete",
+            f"Delete node '{node.node_name}'?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            try:
+                self.node_manager.delete_node(node.id)
+                self.refresh_nodes_table()
+                QMessageBox.information(self, "Success", "Node deleted")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to delete node: {e}")
+    
+    def set_default_node(self, node: MoneroNodeConfig):
+        """Set a node as default"""
+        try:
+            self.node_manager.set_default_node(node.id)
+            self.refresh_nodes_table()
+            QMessageBox.information(
+                self,
+                "Success",
+                f"'{node.node_name}' is now the default node"
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to set default: {e}")
+
+
+class AddNodeDialog(QDialog):
+    """Dialog for adding a new node"""
+    
+    def __init__(self, node_manager: NodeManager, parent=None):
+        super().__init__(parent)
+        self.node_manager = node_manager
+        self.test_worker = None
+        
+        self.setWindowTitle("Add New Node")
+        self.setModal(True)
+        self.setMinimumSize(500, 400)
+        
+        layout = QVBoxLayout()
+        
+        # Form
+        form = QFormLayout()
+        
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("My Node")
+        form.addRow("Node Name:", self.name_input)
+        
+        self.address_input = QLineEdit()
+        self.address_input.setPlaceholderText("node.example.com")
+        form.addRow("Node Address*:", self.address_input)
+        
+        self.port_input = QSpinBox()
+        self.port_input.setRange(1, 65535)
+        self.port_input.setValue(18081)
+        form.addRow("Node Port*:", self.port_input)
+        
+        self.ssl_checkbox = QCheckBox("Use SSL (https)")
+        form.addRow("", self.ssl_checkbox)
+        
+        self.username_input = QLineEdit()
+        self.username_input.setPlaceholderText("Optional")
+        form.addRow("Username:", self.username_input)
+        
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.password_input.setPlaceholderText("Optional")
+        form.addRow("Password:", self.password_input)
+        
+        self.default_checkbox = QCheckBox("Set as default node")
+        form.addRow("", self.default_checkbox)
+        
+        layout.addLayout(form)
+        
+        # Test connection section
+        test_group = QGroupBox("Test Connection")
+        test_layout = QVBoxLayout()
+        
+        test_btn_layout = QHBoxLayout()
+        self.test_btn = QPushButton("Test Connection")
+        self.test_btn.clicked.connect(self.test_connection)
+        test_btn_layout.addWidget(self.test_btn)
+        test_btn_layout.addStretch()
+        test_layout.addLayout(test_btn_layout)
+        
+        self.test_result = QLabel("")
+        self.test_result.setWordWrap(True)
+        test_layout.addWidget(self.test_result)
+        
+        test_group.setLayout(test_layout)
+        layout.addWidget(test_group)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.save_node)
+        button_layout.addWidget(save_btn)
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+    
+    def test_connection(self):
+        """Test node connection"""
+        address = self.address_input.text().strip()
+        if not address:
+            QMessageBox.warning(self, "Error", "Node address is required")
+            return
+        
+        # Create temporary node config
+        node = MoneroNodeConfig(
+            address=address,
+            port=self.port_input.value(),
+            use_ssl=self.ssl_checkbox.isChecked(),
+            username=self.username_input.text().strip() or None,
+            password=self.password_input.text().strip() or None
+        )
+        
+        self.test_btn.setEnabled(False)
+        self.test_result.setText("Testing connection...")
+        self.test_result.setStyleSheet("color: blue;")
+        
+        self.test_worker = TestNodeWorker(node)
+        self.test_worker.finished.connect(self.on_test_finished)
+        self.test_worker.start()
+    
+    def on_test_finished(self, success, message, response_time):
+        """Handle test completion"""
+        self.test_btn.setEnabled(True)
+        
+        if success:
+            self.test_result.setText(
+                f"✅ {message}\n"
+                f"Response time: {response_time:.2f}s"
+            )
+            self.test_result.setStyleSheet("color: green;")
+        else:
+            self.test_result.setText(f"❌ Connection failed: {message}")
+            self.test_result.setStyleSheet("color: red;")
+    
+    def save_node(self):
+        """Validate and save node"""
+        address = self.address_input.text().strip()
+        if not address:
+            QMessageBox.warning(self, "Error", "Node address is required")
+            return
+        
+        name = self.name_input.text().strip()
+        if not name:
+            name = f"{address}:{self.port_input.value()}"
+        
+        try:
+            node = MoneroNodeConfig(
+                address=address,
+                port=self.port_input.value(),
+                use_ssl=self.ssl_checkbox.isChecked(),
+                username=self.username_input.text().strip() or None,
+                password=self.password_input.text().strip() or None,
+                node_name=name,
+                is_default=self.default_checkbox.isChecked()
+            )
+            
+            self.node_manager.add_node(node)
+            QMessageBox.information(self, "Success", "Node added successfully")
+            self.accept()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to add node: {e}")
+
+
+class EditNodeDialog(QDialog):
+    """Dialog for editing an existing node"""
+    
+    def __init__(self, node_manager: NodeManager, node: MoneroNodeConfig, parent=None):
+        super().__init__(parent)
+        self.node_manager = node_manager
+        self.node = node
+        self.test_worker = None
+        
+        self.setWindowTitle("Edit Node")
+        self.setModal(True)
+        self.setMinimumSize(500, 400)
+        
+        layout = QVBoxLayout()
+        
+        # Form
+        form = QFormLayout()
+        
+        self.name_input = QLineEdit()
+        self.name_input.setText(node.node_name)
+        form.addRow("Node Name:", self.name_input)
+        
+        self.address_input = QLineEdit()
+        self.address_input.setText(node.address)
+        form.addRow("Node Address*:", self.address_input)
+        
+        self.port_input = QSpinBox()
+        self.port_input.setRange(1, 65535)
+        self.port_input.setValue(node.port)
+        form.addRow("Node Port*:", self.port_input)
+        
+        self.ssl_checkbox = QCheckBox("Use SSL (https)")
+        self.ssl_checkbox.setChecked(node.use_ssl)
+        form.addRow("", self.ssl_checkbox)
+        
+        self.username_input = QLineEdit()
+        if node.username:
+            self.username_input.setText(node.username)
+        self.username_input.setPlaceholderText("Optional")
+        form.addRow("Username:", self.username_input)
+        
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        if node.password:
+            self.password_input.setText(node.password)
+        self.password_input.setPlaceholderText("Optional")
+        form.addRow("Password:", self.password_input)
+        
+        self.default_checkbox = QCheckBox("Set as default node")
+        self.default_checkbox.setChecked(node.is_default)
+        if node.is_default:
+            self.default_checkbox.setEnabled(False)
+            self.default_checkbox.setToolTip("Already the default node")
+        form.addRow("", self.default_checkbox)
+        
+        layout.addLayout(form)
+        
+        # Test connection section
+        test_group = QGroupBox("Test Connection")
+        test_layout = QVBoxLayout()
+        
+        test_btn_layout = QHBoxLayout()
+        self.test_btn = QPushButton("Test Connection")
+        self.test_btn.clicked.connect(self.test_connection)
+        test_btn_layout.addWidget(self.test_btn)
+        test_btn_layout.addStretch()
+        test_layout.addLayout(test_btn_layout)
+        
+        self.test_result = QLabel("")
+        self.test_result.setWordWrap(True)
+        test_layout.addWidget(self.test_result)
+        
+        test_group.setLayout(test_layout)
+        layout.addWidget(test_group)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.save_node)
+        button_layout.addWidget(save_btn)
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+    
+    def test_connection(self):
+        """Test node connection"""
+        address = self.address_input.text().strip()
+        if not address:
+            QMessageBox.warning(self, "Error", "Node address is required")
+            return
+        
+        # Create temporary node config
+        node = MoneroNodeConfig(
+            address=address,
+            port=self.port_input.value(),
+            use_ssl=self.ssl_checkbox.isChecked(),
+            username=self.username_input.text().strip() or None,
+            password=self.password_input.text().strip() or None
+        )
+        
+        self.test_btn.setEnabled(False)
+        self.test_result.setText("Testing connection...")
+        self.test_result.setStyleSheet("color: blue;")
+        
+        self.test_worker = TestNodeWorker(node)
+        self.test_worker.finished.connect(self.on_test_finished)
+        self.test_worker.start()
+    
+    def on_test_finished(self, success, message, response_time):
+        """Handle test completion"""
+        self.test_btn.setEnabled(True)
+        
+        if success:
+            self.test_result.setText(
+                f"✅ {message}\n"
+                f"Response time: {response_time:.2f}s"
+            )
+            self.test_result.setStyleSheet("color: green;")
+        else:
+            self.test_result.setText(f"❌ Connection failed: {message}")
+            self.test_result.setStyleSheet("color: red;")
+    
+    def save_node(self):
+        """Validate and save node"""
+        address = self.address_input.text().strip()
+        if not address:
+            QMessageBox.warning(self, "Error", "Node address is required")
+            return
+        
+        name = self.name_input.text().strip()
+        if not name:
+            name = f"{address}:{self.port_input.value()}"
+        
+        try:
+            # Update node fields
+            self.node.node_name = name
+            self.node.address = address
+            self.node.port = self.port_input.value()
+            self.node.use_ssl = self.ssl_checkbox.isChecked()
+            self.node.username = self.username_input.text().strip() or None
+            self.node.password = self.password_input.text().strip() or None
+            self.node.is_default = self.default_checkbox.isChecked()
+            
+            self.node_manager.update_node(self.node)
+            QMessageBox.information(self, "Success", "Node updated successfully")
+            self.accept()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to update node: {e}")
 
 
 class DashboardWindow(QMainWindow):
