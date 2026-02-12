@@ -3545,6 +3545,19 @@ class WalletSettingsDialog(QDialog):
         
         self.setLayout(layout)
     
+    def _request_wallet_password(self):
+        """Request wallet password from user"""
+        password_dialog = WalletPasswordDialog(self)
+        if password_dialog.exec_() != QDialog.Accepted:
+            return None
+        
+        password = password_dialog.get_password()
+        if not password:
+            QMessageBox.warning(self, "Error", "Password is required")
+            return None
+        
+        return password
+    
     def _create_connect_tab(self):
         """Create Connect & Sync tab"""
         widget = QWidget()
@@ -3711,13 +3724,8 @@ class WalletSettingsDialog(QDialog):
         
         if reply == QMessageBox.Yes:
             # Request wallet password
-            password_dialog = WalletPasswordDialog(self)
-            if password_dialog.exec_() != QDialog.Accepted:
-                return
-            
-            password = password_dialog.get_password()
+            password = self._request_wallet_password()
             if not password:
-                QMessageBox.warning(self, "Error", "Password is required")
                 return
             
             self.progress_bar.setVisible(True)
@@ -3776,13 +3784,8 @@ class WalletSettingsDialog(QDialog):
         
         if reply == QMessageBox.Yes:
             # Request wallet password
-            password_dialog = WalletPasswordDialog(self)
-            if password_dialog.exec_() != QDialog.Accepted:
-                return
-            
-            password = password_dialog.get_password()
+            password = self._request_wallet_password()
             if not password:
-                QMessageBox.warning(self, "Error", "Password is required")
                 return
             
             self.progress_bar.setVisible(True)

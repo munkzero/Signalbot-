@@ -15,7 +15,7 @@ def verify_implementation():
     base_dir = Path(__file__).parent
     dashboard_path = base_dir / "signalbot" / "gui" / "dashboard.py"
     
-    with open(dashboard_path, 'r') as f:
+    with open(dashboard_path, 'r', encoding='utf-8') as f:
         content = f.read()
     
     # Parse the AST
