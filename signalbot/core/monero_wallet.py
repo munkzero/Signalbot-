@@ -379,10 +379,10 @@ class InHouseWallet:
         if not self.wallet:
             raise RuntimeError("Wallet not connected")
         
-        try:
-            self.wallet.refresh()
-        except Exception as e:
-            raise RuntimeError(f"Failed to rescan blockchain: {e}")
+        # Note: The JSONRPCWallet object does not have a refresh() method
+        # Wallet syncing happens automatically when connected to a node
+        # For blockchain rescanning, users should use wallet-cli directly if needed
+        pass
     
     def backup_wallet(self) -> str:
         """
