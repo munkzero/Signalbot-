@@ -13,10 +13,11 @@ from PyQt5.QtWidgets import (
     QSplitter, QFileDialog, QCheckBox, QDoubleSpinBox,
     QSpinBox, QComboBox, QScrollArea, QRadioButton,
     QButtonGroup, QGroupBox, QGridLayout, QListWidgetItem,
-    QMenu, QAction, QApplication, QProgressDialog
+    QMenu, QAction, QApplication, QProgressDialog, QProgressBar,
+    QFrame, QInputDialog
 )
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QPixmap, QCursor
+from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize
+from PyQt5.QtGui import QFont, QPixmap, QCursor, QColor, QIcon
 from datetime import datetime
 from typing import Optional
 
@@ -35,6 +36,8 @@ from ..config.settings import (
 )
 from ..core.signal_handler import SignalHandler
 from ..utils.image_tools import image_processor
+from ..core.monero_wallet import InHouseWallet
+from ..models.node import NodeManager, MoneroNodeConfig
 
 
 class PINDialog(QDialog):
@@ -66,6 +69,39 @@ class PINDialog(QDialog):
     
     def get_pin(self):
         return self.pin_input.text()
+
+
+class WalletPasswordDialog(QDialog):
+    """Dialog for wallet password entry"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Enter Wallet Password")
+        self.setModal(True)
+        
+        layout = QVBoxLayout()
+        
+        label = QLabel("Enter your wallet password:")
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        
+        layout.addWidget(label)
+        layout.addWidget(self.password_input)
+        layout.addWidget(buttons)
+        
+        self.setLayout(layout)
+    
+    def get_password(self):
+        password = self.password_input.text()
+        self.password_input.clear()
+        return password
+
 
 
 class AddProductDialog(QDialog):
@@ -1291,6 +1327,848 @@ class ContactsTab(QWidget):
         menu.exec_(self.table.mapToGlobal(position))
 
 
+class RefreshBalanceWorker(QThread):
+    """Worker thread for refreshing wallet balance"""
+    finished = pyqtSignal(tuple)
+    error = pyqtSignal(str)
+    
+    def __init__(self, wallet):
+        super().__init__()
+        self.wallet = wallet
+    
+    def run(self):
+        try:
+            balance = self.wallet.get_balance()
+            self.finished.emit(balance)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class RefreshTransfersWorker(QThread):
+    """Worker thread for refreshing transactions"""
+    finished = pyqtSignal(list)
+    error = pyqtSignal(str)
+    
+    def __init__(self, wallet):
+        super().__init__()
+        self.wallet = wallet
+    
+    def run(self):
+        try:
+            transfers = self.wallet.get_transfers()
+            self.finished.emit(transfers)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class SendFundsWorker(QThread):
+    """Worker thread for sending funds"""
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+    
+    def __init__(self, wallet, address, amount, priority):
+        super().__init__()
+        self.wallet = wallet
+        self.address = address
+        self.amount = amount
+        self.priority = priority
+    
+    def run(self):
+        try:
+            result = self.wallet.send(self.address, self.amount, self.priority)
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class BackupWalletWorker(QThread):
+    """Worker thread for backing up wallet"""
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+    
+    def __init__(self, wallet):
+        super().__init__()
+        self.wallet = wallet
+    
+    def run(self):
+        try:
+            backup_path = self.wallet.backup_wallet()
+            self.finished.emit(backup_path)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class SendFundsDialog(QDialog):
+    """Dialog for sending Monero funds"""
+    
+    def __init__(self, wallet, parent=None):
+        super().__init__(parent)
+        self.wallet = wallet
+        self.setWindowTitle("Send Funds")
+        self.setModal(True)
+        self.setMinimumWidth(500)
+        
+        layout = QVBoxLayout()
+        form_layout = QFormLayout()
+        
+        # Address
+        self.address_input = QLineEdit()
+        self.address_input.setPlaceholderText("Monero address (starts with 4...)")
+        form_layout.addRow("Recipient Address*:", self.address_input)
+        
+        # Amount
+        self.amount_input = QDoubleSpinBox()
+        self.amount_input.setDecimals(12)
+        self.amount_input.setMaximum(1000000.0)
+        self.amount_input.setMinimum(0.000000000001)
+        self.amount_input.setSingleStep(0.1)
+        form_layout.addRow("Amount (XMR)*:", self.amount_input)
+        
+        # Priority
+        self.priority_combo = QComboBox()
+        self.priority_combo.addItems(["Low", "Medium", "High", "Urgent"])
+        self.priority_combo.setCurrentIndex(1)  # Default to Medium
+        form_layout.addRow("Priority:", self.priority_combo)
+        
+        layout.addLayout(form_layout)
+        
+        # Buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        button_box.accepted.connect(self.validate_and_accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+        
+        self.setLayout(layout)
+    
+    def validate_and_accept(self):
+        """Validate inputs before accepting"""
+        address = self.address_input.text().strip()
+        amount = self.amount_input.value()
+        
+        if not address:
+            QMessageBox.warning(self, "Validation Error", "Please enter a recipient address")
+            return
+        
+        if len(address) < 95:
+            QMessageBox.warning(self, "Validation Error", "Invalid Monero address (too short)")
+            return
+        
+        if amount <= 0:
+            QMessageBox.warning(self, "Validation Error", "Amount must be greater than zero")
+            return
+        
+        # Confirm transaction
+        reply = QMessageBox.question(
+            self,
+            "Confirm Send",
+            f"Send {amount:.12f} XMR to:\n{address[:20]}...{address[-20:]}?\n\nThis action cannot be undone!",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.accept()
+    
+    def get_data(self):
+        """Get form data"""
+        return {
+            'address': self.address_input.text().strip(),
+            'amount': self.amount_input.value(),
+            'priority': self.priority_combo.currentIndex()
+        }
+
+
+class ReceiveDialog(QDialog):
+    """Dialog for receiving Monero (shows QR code)"""
+    
+    def __init__(self, address, parent=None):
+        super().__init__(parent)
+        self.address = address
+        self.setWindowTitle("Receive Funds")
+        self.setModal(True)
+        self.setMinimumWidth(450)
+        
+        layout = QVBoxLayout()
+        
+        # Title
+        title = QLabel("Share this address to receive XMR:")
+        title.setFont(QFont("Arial", 12, QFont.Bold))
+        layout.addWidget(title)
+        
+        # Address display
+        address_layout = QHBoxLayout()
+        self.address_label = QLineEdit(address)
+        self.address_label.setReadOnly(True)
+        self.address_label.setFont(QFont("Courier", 9))
+        
+        copy_btn = QPushButton("Copy")
+        copy_btn.clicked.connect(self.copy_address)
+        
+        address_layout.addWidget(self.address_label)
+        address_layout.addWidget(copy_btn)
+        layout.addLayout(address_layout)
+        
+        # QR Code placeholder
+        qr_label = QLabel("QR Code Generation:\nInstall qrcode library for QR display")
+        qr_label.setAlignment(Qt.AlignCenter)
+        qr_label.setMinimumHeight(250)
+        qr_label.setStyleSheet("border: 1px solid #ccc; background: #f9f9f9; padding: 20px;")
+        
+        try:
+            import qrcode
+            from io import BytesIO
+            
+            # Generate QR code
+            qr = qrcode.QRCode(version=1, box_size=10, border=4)
+            qr.add_data(address)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white")
+            
+            # Convert to QPixmap
+            buffer = BytesIO()
+            img.save(buffer, format='PNG')
+            buffer.seek(0)
+            
+            pixmap = QPixmap()
+            pixmap.loadFromData(buffer.read())
+            qr_label.setPixmap(pixmap.scaled(300, 300, Qt.KeepAspectRatio))
+        except ImportError:
+            pass
+        
+        layout.addWidget(qr_label)
+        
+        # Warning
+        warning = QLabel("⚠️ Only send Monero (XMR) to this address!")
+        warning.setStyleSheet("color: #ff6600; font-weight: bold;")
+        warning.setAlignment(Qt.AlignCenter)
+        layout.addWidget(warning)
+        
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+        
+        self.setLayout(layout)
+    
+    def copy_address(self):
+        """Copy address to clipboard"""
+        QApplication.clipboard().setText(self.address)
+        QMessageBox.information(self, "Copied", "Address copied to clipboard!")
+
+
+class BackupDialog(QDialog):
+    """Dialog showing backup status"""
+    
+    def __init__(self, backup_path, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Wallet Backup")
+        self.setModal(True)
+        self.setMinimumWidth(450)
+        
+        layout = QVBoxLayout()
+        
+        # Success message
+        success_label = QLabel("✅ Wallet backed up successfully!")
+        success_label.setFont(QFont("Arial", 14, QFont.Bold))
+        success_label.setStyleSheet("color: green;")
+        layout.addWidget(success_label)
+        
+        # Backup path
+        path_label = QLabel(f"Backup saved to:\n{backup_path}")
+        path_label.setWordWrap(True)
+        layout.addWidget(path_label)
+        
+        # Warning
+        warning = QLabel(
+            "⚠️ IMPORTANT:\n"
+            "• Keep this backup file secure\n"
+            "• Store it in multiple safe locations\n"
+            "• Never share your wallet files with anyone\n"
+            "• Keep your seed phrase backed up separately"
+        )
+        warning.setStyleSheet("color: #ff6600; margin-top: 20px;")
+        layout.addWidget(warning)
+        
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+        
+        self.setLayout(layout)
+
+
+class WalletTab(QWidget):
+    """Monero wallet management tab"""
+    
+    def __init__(self, wallet: Optional[InHouseWallet] = None):
+        super().__init__()
+        self.wallet = wallet
+        self.subaddresses = []
+        self.transfers = []
+        self.last_refresh = None
+        
+        # Auto-refresh timer
+        self.refresh_timer = QTimer()
+        self.refresh_timer.timeout.connect(self.auto_refresh)
+        self.refresh_timer.start(30000)  # 30 seconds
+        
+        self.init_ui()
+        
+        # Initial load
+        if self.wallet:
+            self.refresh_all()
+    
+    def init_ui(self):
+        """Initialize UI components"""
+        main_layout = QVBoxLayout()
+        
+        # Sync Status Bar (very top)
+        self.sync_status_bar = self.create_sync_status_bar()
+        main_layout.addWidget(self.sync_status_bar)
+        
+        # Balance Display Section
+        self.balance_section = self.create_balance_section()
+        main_layout.addWidget(self.balance_section)
+        
+        # Middle section: Address Management + Quick Actions
+        middle_layout = QHBoxLayout()
+        
+        # Address Management Section (left)
+        self.address_section = self.create_address_section()
+        middle_layout.addWidget(self.address_section, 1)
+        
+        # Quick Actions Section (right)
+        self.actions_section = self.create_actions_section()
+        middle_layout.addWidget(self.actions_section, 1)
+        
+        main_layout.addLayout(middle_layout)
+        
+        # Transaction History Section (bottom)
+        self.history_section = self.create_history_section()
+        main_layout.addWidget(self.history_section, 2)
+        
+        self.setLayout(main_layout)
+    
+    def create_sync_status_bar(self):
+        """Create sync status bar"""
+        frame = QFrame()
+        frame.setFrameStyle(QFrame.StyledPanel)
+        frame.setMaximumHeight(50)
+        
+        layout = QHBoxLayout()
+        
+        # Connection indicator
+        self.connection_indicator = QLabel("●")
+        self.connection_indicator.setStyleSheet("color: red; font-size: 20px;")
+        layout.addWidget(self.connection_indicator)
+        
+        self.connection_status = QLabel("Disconnected")
+        layout.addWidget(self.connection_status)
+        
+        layout.addStretch()
+        
+        # Block height
+        self.block_height_label = QLabel("Block: 0 / 0")
+        layout.addWidget(self.block_height_label)
+        
+        # Progress bar
+        self.sync_progress = QProgressBar()
+        self.sync_progress.setMaximumWidth(200)
+        self.sync_progress.setValue(0)
+        layout.addWidget(self.sync_progress)
+        
+        # Last sync
+        self.last_sync_label = QLabel("Last sync: Never")
+        layout.addWidget(self.last_sync_label)
+        
+        frame.setLayout(layout)
+        return frame
+    
+    def create_balance_section(self):
+        """Create balance display section"""
+        group = QGroupBox("Wallet Balance")
+        group.setFont(QFont("Arial", 12, QFont.Bold))
+        
+        layout = QGridLayout()
+        
+        # Total balance
+        layout.addWidget(QLabel("Total Balance:"), 0, 0)
+        self.total_balance_label = QLabel("0.000000000000 XMR")
+        self.total_balance_label.setFont(QFont("Courier", 14, QFont.Bold))
+        layout.addWidget(self.total_balance_label, 0, 1)
+        
+        # Unlocked balance
+        layout.addWidget(QLabel("Unlocked:"), 1, 0)
+        self.unlocked_balance_label = QLabel("0.000000000000 XMR")
+        self.unlocked_balance_label.setFont(QFont("Courier", 12))
+        self.unlocked_balance_label.setStyleSheet("color: green;")
+        layout.addWidget(self.unlocked_balance_label, 1, 1)
+        
+        # Locked balance
+        layout.addWidget(QLabel("Locked/Pending:"), 2, 0)
+        self.locked_balance_label = QLabel("0.000000000000 XMR")
+        self.locked_balance_label.setFont(QFont("Courier", 12))
+        self.locked_balance_label.setStyleSheet("color: #ff9900;")
+        layout.addWidget(self.locked_balance_label, 2, 1)
+        
+        # Refresh button
+        refresh_btn = QPushButton("🔄 Refresh Balance")
+        refresh_btn.clicked.connect(self.refresh_balance)
+        layout.addWidget(refresh_btn, 0, 2, 3, 1)
+        
+        # Last updated
+        self.balance_updated_label = QLabel("Last updated: Never")
+        self.balance_updated_label.setStyleSheet("color: gray; font-size: 10px;")
+        layout.addWidget(self.balance_updated_label, 3, 0, 1, 3)
+        
+        group.setLayout(layout)
+        return group
+    
+    def create_address_section(self):
+        """Create address management section"""
+        group = QGroupBox("Address Management")
+        group.setFont(QFont("Arial", 11, QFont.Bold))
+        
+        layout = QVBoxLayout()
+        
+        # Primary address
+        primary_layout = QHBoxLayout()
+        primary_layout.addWidget(QLabel("Primary Address:"))
+        
+        self.primary_address_label = QLineEdit()
+        self.primary_address_label.setReadOnly(True)
+        self.primary_address_label.setFont(QFont("Courier", 8))
+        self.primary_address_label.setText("Not connected")
+        primary_layout.addWidget(self.primary_address_label)
+        
+        copy_primary_btn = QPushButton("Copy")
+        copy_primary_btn.clicked.connect(lambda: self.copy_address(self.primary_address_label.text()))
+        primary_layout.addWidget(copy_primary_btn)
+        
+        layout.addLayout(primary_layout)
+        
+        # Generate subaddress button
+        gen_subaddr_btn = QPushButton("+ Generate Subaddress")
+        gen_subaddr_btn.clicked.connect(self.generate_subaddress)
+        layout.addWidget(gen_subaddr_btn)
+        
+        # Subaddresses list
+        layout.addWidget(QLabel("Subaddresses:"))
+        self.subaddress_list = QListWidget()
+        self.subaddress_list.setMaximumHeight(150)
+        self.subaddress_list.itemDoubleClicked.connect(self.show_receive_dialog)
+        layout.addWidget(self.subaddress_list)
+        
+        group.setLayout(layout)
+        return group
+    
+    def create_actions_section(self):
+        """Create quick actions section"""
+        group = QGroupBox("Quick Actions")
+        group.setFont(QFont("Arial", 11, QFont.Bold))
+        
+        layout = QVBoxLayout()
+        
+        # Send Funds
+        send_btn = QPushButton("💸 Send Funds")
+        send_btn.setMinimumHeight(40)
+        send_btn.setStyleSheet("font-size: 12px; font-weight: bold;")
+        send_btn.clicked.connect(self.send_funds)
+        layout.addWidget(send_btn)
+        
+        # Receive
+        receive_btn = QPushButton("📥 Receive (Show QR)")
+        receive_btn.setMinimumHeight(40)
+        receive_btn.setStyleSheet("font-size: 12px; font-weight: bold;")
+        receive_btn.clicked.connect(lambda: self.show_receive_dialog())
+        layout.addWidget(receive_btn)
+        
+        # Backup Wallet
+        backup_btn = QPushButton("💾 Backup Wallet")
+        backup_btn.setMinimumHeight(40)
+        backup_btn.clicked.connect(self.backup_wallet)
+        layout.addWidget(backup_btn)
+        
+        # Export Transactions
+        export_btn = QPushButton("📊 Export Transactions")
+        export_btn.setMinimumHeight(40)
+        export_btn.clicked.connect(self.export_transactions)
+        layout.addWidget(export_btn)
+        
+        layout.addStretch()
+        
+        group.setLayout(layout)
+        return group
+    
+    def create_history_section(self):
+        """Create transaction history section"""
+        group = QGroupBox("Transaction History")
+        group.setFont(QFont("Arial", 11, QFont.Bold))
+        
+        layout = QVBoxLayout()
+        
+        # Transactions table
+        self.transactions_table = QTableWidget()
+        self.transactions_table.setColumnCount(5)
+        self.transactions_table.setHorizontalHeaderLabels([
+            "Type", "Amount (XMR)", "Address", "Confirmations", "Date"
+        ])
+        self.transactions_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.transactions_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        layout.addWidget(self.transactions_table)
+        
+        # View All button
+        view_all_btn = QPushButton("View All Transactions")
+        view_all_btn.clicked.connect(self.view_all_transactions)
+        layout.addWidget(view_all_btn)
+        
+        group.setLayout(layout)
+        return group
+    
+    def refresh_all(self):
+        """Refresh all wallet data"""
+        self.refresh_balance()
+        self.refresh_addresses()
+        self.refresh_transactions()
+    
+    def refresh_balance(self):
+        """Refresh wallet balance"""
+        if not self.wallet:
+            self.show_not_connected()
+            return
+        
+        # Use worker thread
+        self.balance_worker = RefreshBalanceWorker(self.wallet)
+        self.balance_worker.finished.connect(self.on_balance_refreshed)
+        self.balance_worker.error.connect(self.on_balance_error)
+        self.balance_worker.start()
+    
+    def on_balance_refreshed(self, balance):
+        """Handle balance refresh completion"""
+        total, unlocked, locked = balance
+        
+        self.total_balance_label.setText(f"{total:.12f} XMR")
+        self.unlocked_balance_label.setText(f"{unlocked:.12f} XMR")
+        self.locked_balance_label.setText(f"{locked:.12f} XMR")
+        
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.balance_updated_label.setText(f"Last updated: {now}")
+        self.last_refresh = now
+        
+        # Update sync status
+        self.connection_indicator.setStyleSheet("color: green; font-size: 20px;")
+        self.connection_status.setText("Connected")
+    
+    def on_balance_error(self, error_msg):
+        """Handle balance refresh error"""
+        QMessageBox.warning(self, "Error", f"Failed to refresh balance:\n{error_msg}")
+        self.connection_indicator.setStyleSheet("color: red; font-size: 20px;")
+        self.connection_status.setText("Error")
+    
+    def refresh_addresses(self):
+        """Refresh wallet addresses"""
+        if not self.wallet:
+            return
+        
+        try:
+            # Get primary address
+            primary = self.wallet.get_address()
+            self.primary_address_label.setText(primary)
+            
+            # Note: Getting subaddresses would require additional wallet methods
+            # For now, we'll keep the current list
+        except Exception as e:
+            print(f"Error refreshing addresses: {e}")
+    
+    def refresh_transactions(self):
+        """Refresh transaction history"""
+        if not self.wallet:
+            return
+        
+        # Use worker thread
+        self.transfers_worker = RefreshTransfersWorker(self.wallet)
+        self.transfers_worker.finished.connect(self.on_transfers_refreshed)
+        self.transfers_worker.error.connect(self.on_transfers_error)
+        self.transfers_worker.start()
+    
+    def on_transfers_refreshed(self, transfers):
+        """Handle transfers refresh completion"""
+        self.transfers = transfers
+        
+        # Update table (show last 20)
+        display_transfers = transfers[-20:] if len(transfers) > 20 else transfers
+        self.transactions_table.setRowCount(len(display_transfers))
+        
+        for row, tx in enumerate(display_transfers):
+            # Type
+            tx_type = tx.get('type', 'in').upper()
+            type_item = QTableWidgetItem(tx_type)
+            if tx_type == 'IN':
+                type_item.setForeground(QColor('green'))
+            else:
+                type_item.setForeground(QColor('red'))
+            self.transactions_table.setItem(row, 0, type_item)
+            
+            # Amount
+            amount = tx.get('amount', 0) / 1e12  # Convert from atomic units
+            amount_item = QTableWidgetItem(f"{amount:.12f}")
+            self.transactions_table.setItem(row, 1, amount_item)
+            
+            # Address
+            address = tx.get('address', 'N/A')
+            addr_display = f"{address[:20]}..." if len(address) > 20 else address
+            self.transactions_table.setItem(row, 2, QTableWidgetItem(addr_display))
+            
+            # Confirmations
+            confirmations = tx.get('confirmations', 0)
+            self.transactions_table.setItem(row, 3, QTableWidgetItem(str(confirmations)))
+            
+            # Date
+            timestamp = tx.get('timestamp', 0)
+            if timestamp:
+                date_str = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
+            else:
+                date_str = "N/A"
+            self.transactions_table.setItem(row, 4, QTableWidgetItem(date_str))
+        
+        self.transactions_table.resizeColumnsToContents()
+    
+    def on_transfers_error(self, error_msg):
+        """Handle transfers refresh error"""
+        print(f"Error refreshing transfers: {error_msg}")
+    
+    def auto_refresh(self):
+        """Auto-refresh wallet data"""
+        if self.wallet:
+            self.refresh_all()
+    
+    def generate_subaddress(self):
+        """Generate new subaddress"""
+        if not self.wallet:
+            self.show_not_connected()
+            return
+        
+        label, ok = QInputDialog.getText(self, "Generate Subaddress", "Enter label (optional):")
+        
+        if ok:
+            try:
+                subaddr = self.wallet.create_subaddress(label if label else None)
+                address = subaddr.get('address', '')
+                
+                # Add to list
+                item = QListWidgetItem(f"{label or 'Unlabeled'}: {address[:30]}...")
+                item.setData(Qt.UserRole, address)
+                self.subaddress_list.addItem(item)
+                
+                QMessageBox.information(
+                    self,
+                    "Success",
+                    f"Subaddress generated:\n{address}\n\nClick to view QR code."
+                )
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to generate subaddress:\n{e}")
+    
+    def copy_address(self, address):
+        """Copy address to clipboard"""
+        if address and address != "Not connected":
+            QApplication.clipboard().setText(address)
+            QMessageBox.information(self, "Copied", "Address copied to clipboard!")
+    
+    def show_receive_dialog(self, item=None):
+        """Show receive dialog with QR code"""
+        if not self.wallet:
+            self.show_not_connected()
+            return
+        
+        if item:
+            address = item.data(Qt.UserRole)
+        else:
+            address = self.primary_address_label.text()
+        
+        if address and address != "Not connected":
+            dialog = ReceiveDialog(address, self)
+            dialog.exec_()
+    
+    def send_funds(self):
+        """Open send funds dialog"""
+        if not self.wallet:
+            self.show_not_connected()
+            return
+        
+        dialog = SendFundsDialog(self.wallet, self)
+        if dialog.exec_() == QDialog.Accepted:
+            data = dialog.get_data()
+            
+            # Show progress
+            progress = QProgressDialog("Sending transaction...", None, 0, 0, self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.show()
+            
+            # Use worker thread
+            self.send_worker = SendFundsWorker(
+                self.wallet,
+                data['address'],
+                data['amount'],
+                data['priority']
+            )
+            self.send_worker.finished.connect(lambda result: self.on_send_complete(result, progress))
+            self.send_worker.error.connect(lambda error: self.on_send_error(error, progress))
+            self.send_worker.start()
+    
+    def on_send_complete(self, result, progress):
+        """Handle send completion"""
+        progress.close()
+        
+        tx_hash = result.get('tx_hash', 'N/A')
+        amount = result.get('amount', 0)
+        fee = result.get('fee', 0)
+        
+        QMessageBox.information(
+            self,
+            "Transaction Sent",
+            f"Transaction sent successfully!\n\n"
+            f"Amount: {amount:.12f} XMR\n"
+            f"Fee: {fee:.12f} XMR\n"
+            f"TX Hash: {tx_hash[:32]}..."
+        )
+        
+        # Refresh balance and transactions
+        self.refresh_all()
+    
+    def on_send_error(self, error_msg, progress):
+        """Handle send error"""
+        progress.close()
+        QMessageBox.critical(self, "Send Failed", f"Failed to send transaction:\n{error_msg}")
+    
+    def backup_wallet(self):
+        """Backup wallet"""
+        if not self.wallet:
+            self.show_not_connected()
+            return
+        
+        reply = QMessageBox.question(
+            self,
+            "Backup Wallet",
+            "Create encrypted backup of wallet?\n\nBackup will be saved to the backup directory.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        
+        if reply == QMessageBox.Yes:
+            # Show progress
+            progress = QProgressDialog("Creating backup...", None, 0, 0, self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.show()
+            
+            # Use worker thread
+            self.backup_worker = BackupWalletWorker(self.wallet)
+            self.backup_worker.finished.connect(lambda path: self.on_backup_complete(path, progress))
+            self.backup_worker.error.connect(lambda error: self.on_backup_error(error, progress))
+            self.backup_worker.start()
+    
+    def on_backup_complete(self, backup_path, progress):
+        """Handle backup completion"""
+        progress.close()
+        
+        dialog = BackupDialog(backup_path, self)
+        dialog.exec_()
+    
+    def on_backup_error(self, error_msg, progress):
+        """Handle backup error"""
+        progress.close()
+        QMessageBox.critical(self, "Backup Failed", f"Failed to backup wallet:\n{error_msg}")
+    
+    def export_transactions(self):
+        """Export transactions to CSV"""
+        if not self.wallet or not self.transfers:
+            QMessageBox.warning(self, "No Data", "No transactions to export")
+            return
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Transactions",
+            f"transactions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            "CSV Files (*.csv)"
+        )
+        
+        if file_path:
+            try:
+                import csv
+                
+                with open(file_path, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['Type', 'Amount (XMR)', 'Address', 'Confirmations', 'Date', 'TX Hash'])
+                    
+                    for tx in self.transfers:
+                        tx_type = tx.get('type', 'in').upper()
+                        amount = tx.get('amount', 0) / 1e12
+                        address = tx.get('address', 'N/A')
+                        confirmations = tx.get('confirmations', 0)
+                        timestamp = tx.get('timestamp', 0)
+                        date_str = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M") if timestamp else "N/A"
+                        tx_hash = tx.get('txid', 'N/A')
+                        
+                        writer.writerow([tx_type, f"{amount:.12f}", address, confirmations, date_str, tx_hash])
+                
+                QMessageBox.information(self, "Success", f"Transactions exported to:\n{file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Export Failed", f"Failed to export transactions:\n{e}")
+    
+    def view_all_transactions(self):
+        """View all transactions (open full table)"""
+        if not self.transfers:
+            QMessageBox.information(self, "No Transactions", "No transactions to display")
+            return
+        
+        # Reload table with all transactions
+        self.transactions_table.setRowCount(len(self.transfers))
+        
+        for row, tx in enumerate(self.transfers):
+            # Type
+            tx_type = tx.get('type', 'in').upper()
+            type_item = QTableWidgetItem(tx_type)
+            if tx_type == 'IN':
+                type_item.setForeground(QColor('green'))
+            else:
+                type_item.setForeground(QColor('red'))
+            self.transactions_table.setItem(row, 0, type_item)
+            
+            # Amount
+            amount = tx.get('amount', 0) / 1e12
+            amount_item = QTableWidgetItem(f"{amount:.12f}")
+            self.transactions_table.setItem(row, 1, amount_item)
+            
+            # Address
+            address = tx.get('address', 'N/A')
+            addr_display = f"{address[:20]}..." if len(address) > 20 else address
+            self.transactions_table.setItem(row, 2, QTableWidgetItem(addr_display))
+            
+            # Confirmations
+            confirmations = tx.get('confirmations', 0)
+            self.transactions_table.setItem(row, 3, QTableWidgetItem(str(confirmations)))
+            
+            # Date
+            timestamp = tx.get('timestamp', 0)
+            if timestamp:
+                date_str = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
+            else:
+                date_str = "N/A"
+            self.transactions_table.setItem(row, 4, QTableWidgetItem(date_str))
+        
+        self.transactions_table.resizeColumnsToContents()
+        QMessageBox.information(self, "All Transactions", f"Displaying all {len(self.transfers)} transactions")
+    
+    def show_not_connected(self):
+        """Show wallet not connected message"""
+        QMessageBox.warning(
+            self,
+            "Wallet Not Connected",
+            "Wallet is not connected. Please configure your wallet in Settings."
+        )
+
+
 class ProductsTab(QWidget):
     """Products management tab"""
     
@@ -2330,35 +3208,29 @@ class SettingsTab(QWidget):
         wallet_group = QGroupBox("Monero Wallet")
         wallet_layout = QVBoxLayout()
         
-        if seller and seller.wallet_config:
-            wallet_type = seller.wallet_config.get('type', 'Unknown')
-            if wallet_type == 'view_only':
-                address = seller.wallet_config.get('address', 'N/A')
-                # Truncate address
-                display_addr = address[:12] + "..." + address[-12:] if len(address) > 24 else address
-                wallet_layout.addWidget(QLabel(f"Type: View-Only Wallet"))
-                
-                addr_layout = QHBoxLayout()
-                addr_layout.addWidget(QLabel(f"Address: {display_addr}"))
-                copy_btn = QPushButton("Copy")
-                copy_btn.setMaximumWidth(80)
-                addr_layout.addWidget(copy_btn)
-                addr_layout.addStretch()
-                wallet_layout.addLayout(addr_layout)
-            elif wallet_type == 'rpc':
-                rpc_host = seller.wallet_config.get('rpc_host', 'N/A')
-                rpc_port = seller.wallet_config.get('rpc_port', 'N/A')
-                wallet_layout.addWidget(QLabel(f"Type: RPC Wallet"))
-                wallet_layout.addWidget(QLabel(f"RPC: {rpc_host}:{rpc_port}"))
+        # Display wallet path
+        if seller and seller.wallet_path:
+            wallet_path_display = seller.wallet_path
+            if len(wallet_path_display) > 50:
+                wallet_path_display = "..." + wallet_path_display[-50:]
+            wallet_layout.addWidget(QLabel(f"Wallet Path: {wallet_path_display}"))
         else:
-            wallet_layout.addWidget(QLabel("Wallet not configured"))
+            wallet_layout.addWidget(QLabel("Wallet Path: Not configured"))
+        
+        # Display current default node
+        node_manager = NodeManager(self.seller_manager.db)
+        default_node = node_manager.get_default_node()
+        if default_node:
+            protocol = "https" if default_node.use_ssl else "http"
+            node_display = f"{default_node.node_name} ({protocol}://{default_node.address}:{default_node.port})"
+            wallet_layout.addWidget(QLabel(f"Default Node: {node_display}"))
+        else:
+            wallet_layout.addWidget(QLabel("Default Node: Not configured"))
         
         wallet_btn_layout = QHBoxLayout()
-        test_conn_btn = QPushButton("Test Connection")
-        edit_wallet_btn = QPushButton("Edit Wallet Settings")
-        edit_wallet_btn.clicked.connect(self.edit_wallet_settings)
-        wallet_btn_layout.addWidget(test_conn_btn)
-        wallet_btn_layout.addWidget(edit_wallet_btn)
+        wallet_settings_btn = QPushButton("Wallet Settings")
+        wallet_settings_btn.clicked.connect(self.open_wallet_settings)
+        wallet_btn_layout.addWidget(wallet_settings_btn)
         wallet_btn_layout.addStretch()
         wallet_layout.addLayout(wallet_btn_layout)
         
@@ -2402,7 +3274,7 @@ class SettingsTab(QWidget):
         
         commission_layout.addWidget(QLabel(f"Commission Rate: {COMMISSION_RATE * 100:.0f}% on all sales"))
         commission_layout.addWidget(QLabel("Commission is automatically calculated and deducted from each sale."))
-        commission_layout.addWidget(QLabel("For every sale: 96% goes to you, 4% goes to the bot creator."))
+        commission_layout.addWidget(QLabel("For every sale: 93% goes to you, 7% goes to the bot creator."))
         
         commission_group.setLayout(commission_layout)
         layout.addWidget(commission_group)
@@ -2511,23 +3383,804 @@ class SettingsTab(QWidget):
             self.status_label.setText("❌ Not Linked")
             QMessageBox.information(self, "Unlinked", "Signal account unlinked")
     
-    def edit_wallet_settings(self):
-        """Open dialog to edit wallet settings"""
+    def open_wallet_settings(self):
+        """Open comprehensive wallet settings dialog"""
         seller = self.seller_manager.get_seller(1)
         if not seller:
             QMessageBox.warning(self, "Error", "Seller not found")
             return
         
-        dialog = EditWalletDialog(self.seller_manager, seller, self)
+        dialog = WalletSettingsDialog(self.seller_manager, seller, self)
         if dialog.exec_() == QDialog.Accepted:
-            # Refresh display - reload the entire settings tab would be complex,
-            # so just show a message
             QMessageBox.information(
                 self,
                 "Settings Updated",
-                "Wallet settings updated successfully.\n"
-                "Please restart the application for changes to take full effect."
+                "Wallet settings updated successfully."
             )
+
+
+# Worker threads for async operations
+class TestNodeWorker(QThread):
+    """Worker thread for testing node connections"""
+    finished = pyqtSignal(bool, str, float)  # success, message, response_time
+    
+    def __init__(self, node_config: MoneroNodeConfig):
+        super().__init__()
+        self.node_config = node_config
+    
+    def run(self):
+        """Test node connection"""
+        import time
+        start_time = time.time()
+        
+        try:
+            protocol = "https" if self.node_config.use_ssl else "http"
+            url = f"{protocol}://{self.node_config.address}:{self.node_config.port}/json_rpc"
+            
+            payload = {
+                "jsonrpc": "2.0",
+                "id": "0",
+                "method": "get_info"
+            }
+            
+            auth = None
+            if self.node_config.username and self.node_config.password:
+                auth = (self.node_config.username, self.node_config.password)
+            
+            import requests
+            response = requests.post(url, json=payload, auth=auth, timeout=10)
+            response_time = time.time() - start_time
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'result' in data:
+                    self.finished.emit(True, "Connection successful", response_time)
+                else:
+                    self.finished.emit(False, "Invalid response from node", response_time)
+            else:
+                self.finished.emit(False, f"HTTP {response.status_code}", response_time)
+        except requests.exceptions.Timeout:
+            response_time = time.time() - start_time
+            self.finished.emit(False, "Connection timeout", response_time)
+        except requests.exceptions.ConnectionError:
+            response_time = time.time() - start_time
+            self.finished.emit(False, "Connection refused", response_time)
+        except Exception as e:
+            response_time = time.time() - start_time
+            self.finished.emit(False, str(e), response_time)
+
+
+class ReconnectWalletWorker(QThread):
+    """Worker thread for reconnecting wallet"""
+    finished = pyqtSignal(bool, str)  # success, message
+    progress = pyqtSignal(str)  # progress message
+    
+    def __init__(self, wallet: InHouseWallet, node_config: MoneroNodeConfig):
+        super().__init__()
+        self.wallet = wallet
+        self.node_config = node_config
+    
+    def run(self):
+        """Reconnect wallet to node"""
+        try:
+            self.progress.emit("Disconnecting from current node...")
+            if self.wallet.wallet:
+                self.wallet.disconnect()
+            
+            self.progress.emit("Connecting to new node...")
+            self.wallet.daemon_address = self.node_config.address
+            self.wallet.daemon_port = self.node_config.port
+            self.wallet.use_ssl = self.node_config.use_ssl
+            
+            self.wallet.connect()
+            
+            self.progress.emit("Refreshing wallet...")
+            # Use the wallet's refresh method instead of accessing nested wallet
+            if hasattr(self.wallet, 'wallet') and self.wallet.wallet:
+                self.wallet.wallet.refresh()
+            
+            self.finished.emit(True, "Wallet reconnected successfully")
+        except Exception as e:
+            self.finished.emit(False, f"Failed to reconnect: {str(e)}")
+
+
+class RescanBlockchainWorker(QThread):
+    """Worker thread for rescanning blockchain"""
+    finished = pyqtSignal(bool, str)  # success, message
+    progress = pyqtSignal(str)  # progress message
+    
+    def __init__(self, wallet: InHouseWallet, height: Optional[int] = None):
+        super().__init__()
+        self.wallet = wallet
+        self.height = height
+    
+    def run(self):
+        """Rescan blockchain"""
+        try:
+            if self.height:
+                self.progress.emit(f"Rescanning from block {self.height}...")
+            else:
+                self.progress.emit("Rescanning blockchain...")
+            
+            self.wallet.rescan_blockchain(self.height)
+            
+            self.finished.emit(True, "Blockchain rescan completed")
+        except Exception as e:
+            self.finished.emit(False, f"Rescan failed: {str(e)}")
+
+
+class WalletSettingsDialog(QDialog):
+    """Comprehensive wallet settings dialog with tabs"""
+    
+    def __init__(self, seller_manager, seller, parent=None):
+        super().__init__(parent)
+        self.seller_manager = seller_manager
+        self.seller = seller
+        self.node_manager = NodeManager(seller_manager.db)
+        
+        self.setWindowTitle("Wallet Settings")
+        self.setModal(True)
+        self.setMinimumSize(700, 500)
+        
+        layout = QVBoxLayout()
+        
+        # Create tab widget
+        self.tabs = QTabWidget()
+        
+        # Tab 1: Connect & Sync
+        self.connect_tab = self._create_connect_tab()
+        self.tabs.addTab(self.connect_tab, "Connect && Sync")
+        
+        # Tab 2: Manage Nodes
+        self.nodes_tab = self._create_nodes_tab()
+        self.tabs.addTab(self.nodes_tab, "Manage Nodes")
+        
+        layout.addWidget(self.tabs)
+        
+        # Close button
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        button_layout.addWidget(close_btn)
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+    
+    def _request_wallet_password(self):
+        """Request wallet password from user"""
+        password_dialog = WalletPasswordDialog(self)
+        if password_dialog.exec_() != QDialog.Accepted:
+            return None
+        
+        password = password_dialog.get_password()
+        if not password:
+            QMessageBox.warning(self, "Error", "Password is required")
+            return None
+        
+        return password
+    
+    def _create_connect_tab(self):
+        """Create Connect & Sync tab"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # Reconnect section
+        reconnect_group = QGroupBox("Reconnect to Node")
+        reconnect_layout = QVBoxLayout()
+        
+        reconnect_info = QLabel("Reconnect the wallet to the current default node")
+        reconnect_info.setWordWrap(True)
+        reconnect_layout.addWidget(reconnect_info)
+        
+        reconnect_btn = QPushButton("Reconnect Now")
+        reconnect_btn.clicked.connect(self.reconnect_wallet)
+        reconnect_layout.addWidget(reconnect_btn)
+        
+        reconnect_group.setLayout(reconnect_layout)
+        layout.addWidget(reconnect_group)
+        
+        # Rescan section
+        rescan_group = QGroupBox("Rescan Blockchain")
+        rescan_layout = QVBoxLayout()
+        
+        rescan_info = QLabel(
+            "Rescan the blockchain to find missing transactions.\n"
+            "Leave block height empty for full rescan (may take time)."
+        )
+        rescan_info.setWordWrap(True)
+        rescan_layout.addWidget(rescan_info)
+        
+        height_layout = QHBoxLayout()
+        height_layout.addWidget(QLabel("Block Height (optional):"))
+        self.height_input = QLineEdit()
+        self.height_input.setPlaceholderText("e.g., 2500000")
+        height_layout.addWidget(self.height_input)
+        height_layout.addStretch()
+        rescan_layout.addLayout(height_layout)
+        
+        rescan_btn = QPushButton("Start Rescan")
+        rescan_btn.clicked.connect(self.rescan_blockchain)
+        rescan_layout.addWidget(rescan_btn)
+        
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setRange(0, 0)  # Indeterminate
+        rescan_layout.addWidget(self.progress_bar)
+        
+        self.progress_label = QLabel("")
+        self.progress_label.setVisible(False)
+        rescan_layout.addWidget(self.progress_label)
+        
+        rescan_group.setLayout(rescan_layout)
+        layout.addWidget(rescan_group)
+        
+        layout.addStretch()
+        widget.setLayout(layout)
+        return widget
+    
+    def _create_nodes_tab(self):
+        """Create Manage Nodes tab"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # Header
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel("Saved Nodes"))
+        header_layout.addStretch()
+        add_btn = QPushButton("Add New Node")
+        add_btn.clicked.connect(self.add_node)
+        header_layout.addWidget(add_btn)
+        layout.addLayout(header_layout)
+        
+        # Nodes table
+        self.nodes_table = QTableWidget()
+        self.nodes_table.setColumnCount(6)
+        self.nodes_table.setHorizontalHeaderLabels([
+            "Name", "Address", "Port", "SSL", "Default", "Actions"
+        ])
+        self.nodes_table.horizontalHeader().setStretchLastSection(False)
+        self.nodes_table.setColumnWidth(0, 150)
+        self.nodes_table.setColumnWidth(1, 200)
+        self.nodes_table.setColumnWidth(2, 60)
+        self.nodes_table.setColumnWidth(3, 50)
+        self.nodes_table.setColumnWidth(4, 60)
+        self.nodes_table.setColumnWidth(5, 150)
+        
+        layout.addWidget(self.nodes_table)
+        
+        self.refresh_nodes_table()
+        
+        widget.setLayout(layout)
+        return widget
+    
+    def refresh_nodes_table(self):
+        """Refresh the nodes table"""
+        nodes = self.node_manager.list_nodes()
+        self.nodes_table.setRowCount(len(nodes))
+        
+        for row, node in enumerate(nodes):
+            # Name
+            self.nodes_table.setItem(row, 0, QTableWidgetItem(node.node_name))
+            
+            # Address
+            self.nodes_table.setItem(row, 1, QTableWidgetItem(node.address))
+            
+            # Port
+            self.nodes_table.setItem(row, 2, QTableWidgetItem(str(node.port)))
+            
+            # SSL
+            ssl_text = "✓" if node.use_ssl else ""
+            ssl_item = QTableWidgetItem(ssl_text)
+            ssl_item.setTextAlignment(Qt.AlignCenter)
+            self.nodes_table.setItem(row, 3, ssl_item)
+            
+            # Default
+            default_text = "●" if node.is_default else ""
+            default_item = QTableWidgetItem(default_text)
+            default_item.setTextAlignment(Qt.AlignCenter)
+            self.nodes_table.setItem(row, 4, default_item)
+            
+            # Actions
+            actions_widget = QWidget()
+            actions_layout = QHBoxLayout()
+            actions_layout.setContentsMargins(4, 2, 4, 2)
+            
+            if not node.is_default:
+                set_default_btn = QPushButton("Set Default")
+                set_default_btn.clicked.connect(lambda checked, n=node: self.set_default_node(n))
+                actions_layout.addWidget(set_default_btn)
+            
+            edit_btn = QPushButton("Edit")
+            edit_btn.clicked.connect(lambda checked, n=node: self.edit_node(n))
+            actions_layout.addWidget(edit_btn)
+            
+            delete_btn = QPushButton("Delete")
+            delete_btn.clicked.connect(lambda checked, n=node: self.delete_node(n))
+            if node.is_default:
+                delete_btn.setEnabled(False)
+                delete_btn.setToolTip("Cannot delete default node. Set another as default first.")
+            actions_layout.addWidget(delete_btn)
+            
+            actions_widget.setLayout(actions_layout)
+            self.nodes_table.setCellWidget(row, 5, actions_widget)
+    
+    def reconnect_wallet(self):
+        """Reconnect wallet to current node"""
+        default_node = self.node_manager.get_default_node()
+        if not default_node:
+            QMessageBox.warning(self, "Error", "No default node configured")
+            return
+        
+        if not self.seller.wallet_path:
+            QMessageBox.warning(self, "Error", "Wallet not configured")
+            return
+        
+        reply = QMessageBox.question(
+            self,
+            "Confirm Reconnect",
+            f"Reconnect wallet to {default_node.node_name}?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # Request wallet password
+            password = self._request_wallet_password()
+            if not password:
+                return
+            
+            self.progress_bar.setVisible(True)
+            self.progress_label.setVisible(True)
+            self.progress_label.setText("Reconnecting...")
+            
+            # Create wallet instance with password
+            wallet = InHouseWallet(
+                self.seller.wallet_path,
+                password,
+                default_node.address,
+                default_node.port,
+                default_node.use_ssl
+            )
+            
+            self.reconnect_worker = ReconnectWalletWorker(wallet, default_node)
+            self.reconnect_worker.progress.connect(self.progress_label.setText)
+            self.reconnect_worker.finished.connect(self.on_reconnect_finished)
+            self.reconnect_worker.start()
+    
+    def on_reconnect_finished(self, success, message):
+        """Handle reconnect completion"""
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+        
+        if success:
+            QMessageBox.information(self, "Success", message)
+        else:
+            QMessageBox.warning(self, "Error", message)
+    
+    def rescan_blockchain(self):
+        """Rescan blockchain"""
+        if not self.seller.wallet_path:
+            QMessageBox.warning(self, "Error", "Wallet not configured")
+            return
+        
+        height_text = self.height_input.text().strip()
+        height = None
+        if height_text:
+            try:
+                height = int(height_text)
+                if height < 0:
+                    QMessageBox.warning(self, "Error", "Block height must be positive")
+                    return
+            except ValueError:
+                QMessageBox.warning(self, "Error", "Invalid block height")
+                return
+        
+        reply = QMessageBox.question(
+            self,
+            "Confirm Rescan",
+            "Rescanning may take time depending on blockchain size.\n"
+            "Continue?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # Request wallet password
+            password = self._request_wallet_password()
+            if not password:
+                return
+            
+            self.progress_bar.setVisible(True)
+            self.progress_label.setVisible(True)
+            self.progress_label.setText("Starting rescan...")
+            
+            # Get default node
+            default_node = self.node_manager.get_default_node()
+            if not default_node:
+                QMessageBox.warning(self, "Error", "No default node configured")
+                self.progress_bar.setVisible(False)
+                self.progress_label.setVisible(False)
+                return
+            
+            # Create wallet instance with password
+            wallet = InHouseWallet(
+                self.seller.wallet_path,
+                password,
+                default_node.address,
+                default_node.port,
+                default_node.use_ssl
+            )
+            
+            self.rescan_worker = RescanBlockchainWorker(wallet, height)
+            self.rescan_worker.progress.connect(self.progress_label.setText)
+            self.rescan_worker.finished.connect(self.on_rescan_finished)
+            self.rescan_worker.start()
+    
+    def on_rescan_finished(self, success, message):
+        """Handle rescan completion"""
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+        
+        if success:
+            QMessageBox.information(self, "Success", message)
+        else:
+            QMessageBox.warning(self, "Error", message)
+    
+    def add_node(self):
+        """Open add node dialog"""
+        dialog = AddNodeDialog(self.node_manager, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.refresh_nodes_table()
+    
+    def edit_node(self, node: MoneroNodeConfig):
+        """Open edit node dialog"""
+        dialog = EditNodeDialog(self.node_manager, node, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.refresh_nodes_table()
+    
+    def delete_node(self, node: MoneroNodeConfig):
+        """Delete a node"""
+        if node.is_default:
+            QMessageBox.warning(
+                self,
+                "Cannot Delete",
+                "Cannot delete the default node.\n"
+                "Please set another node as default first."
+            )
+            return
+        
+        reply = QMessageBox.question(
+            self,
+            "Confirm Delete",
+            f"Delete node '{node.node_name}'?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            try:
+                self.node_manager.delete_node(node.id)
+                self.refresh_nodes_table()
+                QMessageBox.information(self, "Success", "Node deleted")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to delete node: {e}")
+    
+    def set_default_node(self, node: MoneroNodeConfig):
+        """Set a node as default"""
+        try:
+            self.node_manager.set_default_node(node.id)
+            self.refresh_nodes_table()
+            QMessageBox.information(
+                self,
+                "Success",
+                f"'{node.node_name}' is now the default node"
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to set default: {e}")
+
+
+class AddNodeDialog(QDialog):
+    """Dialog for adding a new node"""
+    
+    def __init__(self, node_manager: NodeManager, parent=None):
+        super().__init__(parent)
+        self.node_manager = node_manager
+        self.test_worker = None
+        
+        self.setWindowTitle("Add New Node")
+        self.setModal(True)
+        self.setMinimumSize(500, 400)
+        
+        layout = QVBoxLayout()
+        
+        # Form
+        form = QFormLayout()
+        
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("My Node")
+        form.addRow("Node Name:", self.name_input)
+        
+        self.address_input = QLineEdit()
+        self.address_input.setPlaceholderText("node.example.com")
+        form.addRow("Node Address*:", self.address_input)
+        
+        self.port_input = QSpinBox()
+        self.port_input.setRange(1, 65535)
+        self.port_input.setValue(18081)
+        form.addRow("Node Port*:", self.port_input)
+        
+        self.ssl_checkbox = QCheckBox("Use SSL (https)")
+        form.addRow("", self.ssl_checkbox)
+        
+        self.username_input = QLineEdit()
+        self.username_input.setPlaceholderText("Optional")
+        form.addRow("Username:", self.username_input)
+        
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.password_input.setPlaceholderText("Optional")
+        form.addRow("Password:", self.password_input)
+        
+        self.default_checkbox = QCheckBox("Set as default node")
+        form.addRow("", self.default_checkbox)
+        
+        layout.addLayout(form)
+        
+        # Test connection section
+        test_group = QGroupBox("Test Connection")
+        test_layout = QVBoxLayout()
+        
+        test_btn_layout = QHBoxLayout()
+        self.test_btn = QPushButton("Test Connection")
+        self.test_btn.clicked.connect(self.test_connection)
+        test_btn_layout.addWidget(self.test_btn)
+        test_btn_layout.addStretch()
+        test_layout.addLayout(test_btn_layout)
+        
+        self.test_result = QLabel("")
+        self.test_result.setWordWrap(True)
+        test_layout.addWidget(self.test_result)
+        
+        test_group.setLayout(test_layout)
+        layout.addWidget(test_group)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.save_node)
+        button_layout.addWidget(save_btn)
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+    
+    def test_connection(self):
+        """Test node connection"""
+        address = self.address_input.text().strip()
+        if not address:
+            QMessageBox.warning(self, "Error", "Node address is required")
+            return
+        
+        # Create temporary node config
+        node = MoneroNodeConfig(
+            address=address,
+            port=self.port_input.value(),
+            use_ssl=self.ssl_checkbox.isChecked(),
+            username=self.username_input.text().strip() or None,
+            password=self.password_input.text().strip() or None
+        )
+        
+        self.test_btn.setEnabled(False)
+        self.test_result.setText("Testing connection...")
+        self.test_result.setStyleSheet("color: blue;")
+        
+        self.test_worker = TestNodeWorker(node)
+        self.test_worker.finished.connect(self.on_test_finished)
+        self.test_worker.start()
+    
+    def on_test_finished(self, success, message, response_time):
+        """Handle test completion"""
+        self.test_btn.setEnabled(True)
+        
+        if success:
+            self.test_result.setText(
+                f"✅ {message}\n"
+                f"Response time: {response_time:.2f}s"
+            )
+            self.test_result.setStyleSheet("color: green;")
+        else:
+            self.test_result.setText(f"❌ Connection failed: {message}")
+            self.test_result.setStyleSheet("color: red;")
+    
+    def save_node(self):
+        """Validate and save node"""
+        address = self.address_input.text().strip()
+        if not address:
+            QMessageBox.warning(self, "Error", "Node address is required")
+            return
+        
+        name = self.name_input.text().strip()
+        if not name:
+            name = f"{address}:{self.port_input.value()}"
+        
+        try:
+            node = MoneroNodeConfig(
+                address=address,
+                port=self.port_input.value(),
+                use_ssl=self.ssl_checkbox.isChecked(),
+                username=self.username_input.text().strip() or None,
+                password=self.password_input.text().strip() or None,
+                node_name=name,
+                is_default=self.default_checkbox.isChecked()
+            )
+            
+            self.node_manager.add_node(node)
+            QMessageBox.information(self, "Success", "Node added successfully")
+            self.accept()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to add node: {e}")
+
+
+class EditNodeDialog(QDialog):
+    """Dialog for editing an existing node"""
+    
+    def __init__(self, node_manager: NodeManager, node: MoneroNodeConfig, parent=None):
+        super().__init__(parent)
+        self.node_manager = node_manager
+        self.node = node
+        self.test_worker = None
+        
+        self.setWindowTitle("Edit Node")
+        self.setModal(True)
+        self.setMinimumSize(500, 400)
+        
+        layout = QVBoxLayout()
+        
+        # Form
+        form = QFormLayout()
+        
+        self.name_input = QLineEdit()
+        self.name_input.setText(node.node_name)
+        form.addRow("Node Name:", self.name_input)
+        
+        self.address_input = QLineEdit()
+        self.address_input.setText(node.address)
+        form.addRow("Node Address*:", self.address_input)
+        
+        self.port_input = QSpinBox()
+        self.port_input.setRange(1, 65535)
+        self.port_input.setValue(node.port)
+        form.addRow("Node Port*:", self.port_input)
+        
+        self.ssl_checkbox = QCheckBox("Use SSL (https)")
+        self.ssl_checkbox.setChecked(node.use_ssl)
+        form.addRow("", self.ssl_checkbox)
+        
+        self.username_input = QLineEdit()
+        if node.username:
+            self.username_input.setText(node.username)
+        self.username_input.setPlaceholderText("Optional")
+        form.addRow("Username:", self.username_input)
+        
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        if node.password:
+            self.password_input.setText(node.password)
+        self.password_input.setPlaceholderText("Optional")
+        form.addRow("Password:", self.password_input)
+        
+        self.default_checkbox = QCheckBox("Set as default node")
+        self.default_checkbox.setChecked(node.is_default)
+        if node.is_default:
+            self.default_checkbox.setEnabled(False)
+            self.default_checkbox.setToolTip("Already the default node")
+        form.addRow("", self.default_checkbox)
+        
+        layout.addLayout(form)
+        
+        # Test connection section
+        test_group = QGroupBox("Test Connection")
+        test_layout = QVBoxLayout()
+        
+        test_btn_layout = QHBoxLayout()
+        self.test_btn = QPushButton("Test Connection")
+        self.test_btn.clicked.connect(self.test_connection)
+        test_btn_layout.addWidget(self.test_btn)
+        test_btn_layout.addStretch()
+        test_layout.addLayout(test_btn_layout)
+        
+        self.test_result = QLabel("")
+        self.test_result.setWordWrap(True)
+        test_layout.addWidget(self.test_result)
+        
+        test_group.setLayout(test_layout)
+        layout.addWidget(test_group)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.save_node)
+        button_layout.addWidget(save_btn)
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+    
+    def test_connection(self):
+        """Test node connection"""
+        address = self.address_input.text().strip()
+        if not address:
+            QMessageBox.warning(self, "Error", "Node address is required")
+            return
+        
+        # Create temporary node config
+        node = MoneroNodeConfig(
+            address=address,
+            port=self.port_input.value(),
+            use_ssl=self.ssl_checkbox.isChecked(),
+            username=self.username_input.text().strip() or None,
+            password=self.password_input.text().strip() or None
+        )
+        
+        self.test_btn.setEnabled(False)
+        self.test_result.setText("Testing connection...")
+        self.test_result.setStyleSheet("color: blue;")
+        
+        self.test_worker = TestNodeWorker(node)
+        self.test_worker.finished.connect(self.on_test_finished)
+        self.test_worker.start()
+    
+    def on_test_finished(self, success, message, response_time):
+        """Handle test completion"""
+        self.test_btn.setEnabled(True)
+        
+        if success:
+            self.test_result.setText(
+                f"✅ {message}\n"
+                f"Response time: {response_time:.2f}s"
+            )
+            self.test_result.setStyleSheet("color: green;")
+        else:
+            self.test_result.setText(f"❌ Connection failed: {message}")
+            self.test_result.setStyleSheet("color: red;")
+    
+    def save_node(self):
+        """Validate and save node"""
+        address = self.address_input.text().strip()
+        if not address:
+            QMessageBox.warning(self, "Error", "Node address is required")
+            return
+        
+        name = self.name_input.text().strip()
+        if not name:
+            name = f"{address}:{self.port_input.value()}"
+        
+        try:
+            # Update node fields
+            self.node.node_name = name
+            self.node.address = address
+            self.node.port = self.port_input.value()
+            self.node.use_ssl = self.ssl_checkbox.isChecked()
+            self.node.username = self.username_input.text().strip() or None
+            self.node.password = self.password_input.text().strip() or None
+            self.node.is_default = self.default_checkbox.isChecked()
+            
+            self.node_manager.update_node(self.node)
+            QMessageBox.information(self, "Success", "Node updated successfully")
+            self.accept()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to update node: {e}")
 
 
 class DashboardWindow(QMainWindow):
@@ -2570,61 +4223,27 @@ class DashboardWindow(QMainWindow):
         
         # Initialize payment monitoring if wallet is configured
         self.payment_processor = None
-        if seller and seller.wallet_config:
+        self.wallet = None  # Store wallet reference for WalletTab
+        if seller and seller.wallet_path:
             try:
                 from ..core.payments import PaymentProcessor
                 from ..core.commission import CommissionManager
-                from ..core.monero_wallet import MoneroWallet
+                from ..core.monero_wallet import InHouseWallet
+                from ..models.node import NodeManager
                 
-                # Initialize wallet based on config
-                wallet_config = seller.wallet_config
-                wallet_type = wallet_config.get('type', 'rpc')
+                # Get default node configuration
+                node_manager = NodeManager(self.db_manager)
+                default_node = node_manager.get_default_node()
                 
-                if wallet_type == 'rpc':
-                    wallet = MoneroWallet(
-                        wallet_type='rpc',
-                        rpc_host=wallet_config.get('rpc_host'),
-                        rpc_port=wallet_config.get('rpc_port'),
-                        rpc_user=wallet_config.get('rpc_user'),
-                        rpc_password=wallet_config.get('rpc_password')
-                    )
-                    
-                    # CRITICAL FIX: Auto-start payment monitoring
-                    commission_manager = CommissionManager()
-                    self.payment_processor = PaymentProcessor(
-                        wallet,
-                        commission_manager,
-                        self.order_manager
-                    )
-                    
-                    # Register callback for payment notifications
-                    def on_payment_detected(order):
-                        # Notify buyer
-                        buyer_success = self.signal_handler.send_message(
-                            order.customer_signal_id,
-                            f"✅ Payment confirmed! Your order #{order.order_id} is being processed."
-                        )
-                        if not buyer_success:
-                            print(f"WARNING: Failed to notify buyer {order.customer_signal_id} of payment for order #{order.order_id}")
-                        
-                        # Notify seller
-                        seller_success = self.signal_handler.send_message(
-                            seller_signal_id,
-                            f"💰 New paid order #{order.order_id} - {order.product_name} x{order.quantity}"
-                        )
-                        if not seller_success:
-                            print(f"WARNING: Failed to notify seller of payment for order #{order.order_id}")
-                    
-                    # Register callback for all pending orders
-                    pending_orders = self.order_manager.list_orders(payment_status='pending')
-                    for order in pending_orders:
-                        self.payment_processor.register_payment_callback(order.order_id, on_payment_detected)
-                    
-                    print("DEBUG: Dashboard initializing - starting payment monitoring")
-                    self.payment_processor.start_monitoring()
+                if default_node:
+                    # Initialize in-house wallet
+                    # Note: In production, wallet password should be requested from user
+                    # For now, we'll skip auto-initialization of the wallet
+                    # The WalletTab will handle wallet initialization on demand
+                    pass
                     
             except Exception as e:
-                print(f"WARNING: Failed to initialize payment monitoring: {e}")
+                print(f"WARNING: Failed to initialize wallet: {e}")
         
         self.setWindowTitle(WINDOW_TITLE)
         self.setMinimumSize(WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -2633,6 +4252,7 @@ class DashboardWindow(QMainWindow):
         tabs = QTabWidget()
         
         # Add tabs
+        tabs.addTab(WalletTab(self.wallet), "💰 Wallet")
         tabs.addTab(ProductsTab(self.product_manager), "Products")
         tabs.addTab(OrdersTab(self.order_manager), "Orders")
         tabs.addTab(MessagesTab(self.signal_handler, self.contact_manager, self.message_manager, self.seller_manager, self.product_manager), "Messages")
