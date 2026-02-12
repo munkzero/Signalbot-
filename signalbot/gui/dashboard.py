@@ -3192,11 +3192,14 @@ class SettingsTab(QWidget):
         relink_btn.clicked.connect(self.relink_signal)
         test_signal_btn = QPushButton("Test Connection")
         test_signal_btn.clicked.connect(self.test_signal_connection)
+        test_message_btn = QPushButton("Test Message Receiving")
+        test_message_btn.clicked.connect(self.test_message_receiving)
         unlink_btn = QPushButton("Unlink")
         unlink_btn.clicked.connect(self.unlink_signal)
         
         signal_buttons.addWidget(relink_btn)
         signal_buttons.addWidget(test_signal_btn)
+        signal_buttons.addWidget(test_message_btn)
         signal_buttons.addWidget(unlink_btn)
         signal_buttons.addStretch()
         signal_layout.addLayout(signal_buttons)
@@ -3363,6 +3366,39 @@ class SettingsTab(QWidget):
                 "Error", 
                 f"Connection test failed: {e}\n\n"
                 "Please verify signal-cli is installed and your account is linked."
+            )
+    
+    def test_message_receiving(self):
+        """Test if message receiving is working"""
+        if not self.signal_handler:
+            QMessageBox.warning(self, "Error", "Signal handler not initialized")
+            return
+        
+        # Check if listener is running
+        is_running = self.signal_handler.is_listening()
+        
+        if not is_running:
+            reply = QMessageBox.question(
+                self,
+                "Listener Not Running",
+                "Message listener is not running. Start it now?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                self.signal_handler.start_listening()
+                QMessageBox.information(
+                    self,
+                    "Started",
+                    "✅ Message listener started.\n\n"
+                    "Send a test message to your Signal account from another device to verify it's working."
+                )
+        else:
+            QMessageBox.information(
+                self,
+                "Listener Active",
+                "✅ Message listener is running.\n\n"
+                "Send a test message from another device to verify it's working.\n"
+                "Incoming messages will appear in the Messages tab."
             )
 
     def unlink_signal(self):

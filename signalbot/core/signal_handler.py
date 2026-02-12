@@ -259,6 +259,15 @@ class SignalHandler:
         # Also stop daemon if running
         self.stop_daemon()
     
+    def is_listening(self):
+        """
+        Check if message listener is running
+        
+        Returns:
+            True if listening for messages
+        """
+        return self.listening
+    
     def _listen_loop(self):
         """
         Background loop to receive messages

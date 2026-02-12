@@ -1054,9 +1054,11 @@ class SetupWizard(QWizard):
             if not self.wallet_path or not self.node_config:
                 raise ValueError("Wallet or node configuration not found")
             
-            # Save node configuration
+            # Save node configuration and set as default
             try:
-                self.node_manager.add_node(self.node_config)
+                saved_node = self.node_manager.add_node(self.node_config)
+                self.node_manager.set_default_node(saved_node.id)
+                print(f"DEBUG: Node saved and set as default (ID: {saved_node.id})")
             except Exception as e:
                 print(f"Note: Node may already exist: {e}")
             
