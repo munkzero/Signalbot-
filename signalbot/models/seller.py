@@ -42,7 +42,7 @@ class Seller:
                     db_seller.signal_id,
                     db_seller.signal_id_salt
                 )
-            except:
+            except Exception:
                 signal_id = None
         
         return cls(

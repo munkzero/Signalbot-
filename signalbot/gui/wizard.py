@@ -399,7 +399,7 @@ class CustomNodePage(QWizardPage):
             port = int(port_text)
             if port < 1 or port > 65535:
                 raise ValueError()
-        except:
+        except (ValueError, TypeError):
             QMessageBox.warning(self, "Invalid Input", "Please enter a valid port number (1-65535)")
             return False
         
