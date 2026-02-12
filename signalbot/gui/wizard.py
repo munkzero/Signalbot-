@@ -614,7 +614,8 @@ class WalletCreationPage(QWizardPage):
                 address=node_data['address'],
                 port=node_data['port'],
                 use_ssl=node_data['use_ssl'],
-                node_name=node_data['name']
+                node_name=node_data['name'],
+                is_default=node_data.get('is_default', False)
             )
         
         # Store node config for later use

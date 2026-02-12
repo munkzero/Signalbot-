@@ -3510,10 +3510,9 @@ class ReconnectWalletWorker(QThread):
             
             self.wallet.connect()
             
-            self.progress.emit("Refreshing wallet...")
-            # Use the wallet's refresh method instead of accessing nested wallet
-            if hasattr(self.wallet, 'wallet') and self.wallet.wallet:
-                self.wallet.wallet.refresh()
+            # Note: refresh() is not needed. Wallet syncs automatically when connected.
+            # The JSONRPCWallet automatically syncs on the next RPC call (e.g., get_balance()).
+            # The JSONRPCWallet object does not have a refresh() method.
             
             self.finished.emit(True, "Wallet reconnected successfully")
         except Exception as e:

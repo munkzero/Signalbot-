@@ -379,10 +379,12 @@ class InHouseWallet:
         if not self.wallet:
             raise RuntimeError("Wallet not connected")
         
-        try:
-            self.wallet.refresh()
-        except Exception as e:
-            raise RuntimeError(f"Failed to rescan blockchain: {e}")
+        # The JSONRPCWallet object does not have a refresh() method
+        # Blockchain rescanning requires using wallet-cli directly
+        raise NotImplementedError(
+            "Blockchain rescanning is not available via JSON-RPC. "
+            "Please use monero-wallet-cli directly for this operation."
+        )
     
     def backup_wallet(self) -> str:
         """
