@@ -47,6 +47,9 @@ MONERO_CONFIRMATIONS_REQUIRED = 10  # Number of confirmations for payment
 PAYMENT_CHECK_INTERVAL = 30  # Seconds between payment checks
 
 # Default Monero nodes for easy selection
+# Note: Most public nodes use port 18081 for non-SSL and 18089 for SSL.
+# These nodes are configured as specified in the requirements.
+# Users can add custom nodes with SSL if preferred via the node management UI.
 DEFAULT_NODES = [
     {'address': 'xmr-node.cakewallet.com', 'port': 18081, 'use_ssl': False, 'name': 'Cake Wallet', 'is_default': True},
     {'address': 'nodes.hashvault.pro', 'port': 18081, 'use_ssl': False, 'name': 'HashVault Pro'},

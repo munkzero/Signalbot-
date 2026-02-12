@@ -3510,7 +3510,8 @@ class ReconnectWalletWorker(QThread):
             
             self.wallet.connect()
             
-            # Note: refresh() is not needed. Wallet will sync automatically when connected.
+            # Note: refresh() is not needed. Wallet syncs automatically when connected.
+            # The JSONRPCWallet automatically syncs on the next RPC call (e.g., get_balance()).
             # The JSONRPCWallet object does not have a refresh() method.
             
             self.finished.emit(True, "Wallet reconnected successfully")
