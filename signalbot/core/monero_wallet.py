@@ -173,7 +173,7 @@ class InHouseWallet:
             try:
                 self.wallet.height()
                 return True
-            except:
+            except Exception:
                 return False
                 
         except Exception as e:
@@ -416,7 +416,7 @@ class InHouseWallet:
             try:
                 self.rpc_process.terminate()
                 self.rpc_process.wait(timeout=5)
-            except:
+            except Exception:
                 self.rpc_process.kill()
             self.rpc_process = None
         

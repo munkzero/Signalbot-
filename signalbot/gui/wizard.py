@@ -47,8 +47,8 @@ class WelcomePage(QWizardPage):
             "3. Configure your Monero wallet\n"
             "4. Set your default currency\n\n"
             "⚠️ IMPORTANT DISCLOSURE:\n"
-            "This bot charges a 4% commission on all sales.\n"
-            "For every sale, 96% goes to you and 4% goes to the bot creator.\n"
+            "This bot charges a 7% commission on all sales.\n"
+            "For every sale, 93% goes to you and 7% goes to the bot creator.\n"
             "Commission is automatically deducted and forwarded.\n\n"
             "By continuing, you agree to this commission structure."
         )

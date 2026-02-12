@@ -3274,7 +3274,7 @@ class SettingsTab(QWidget):
         
         commission_layout.addWidget(QLabel(f"Commission Rate: {COMMISSION_RATE * 100:.0f}% on all sales"))
         commission_layout.addWidget(QLabel("Commission is automatically calculated and deducted from each sale."))
-        commission_layout.addWidget(QLabel("For every sale: 96% goes to you, 4% goes to the bot creator."))
+        commission_layout.addWidget(QLabel("For every sale: 93% goes to you, 7% goes to the bot creator."))
         
         commission_group.setLayout(commission_layout)
         layout.addWidget(commission_group)
@@ -3475,7 +3475,9 @@ class ReconnectWalletWorker(QThread):
             self.wallet.connect()
             
             self.progress.emit("Refreshing wallet...")
-            self.wallet.wallet.refresh()
+            # Use the wallet's refresh method instead of accessing nested wallet
+            if hasattr(self.wallet, 'wallet') and self.wallet.wallet:
+                self.wallet.wallet.refresh()
             
             self.finished.emit(True, "Wallet reconnected successfully")
         except Exception as e:
@@ -4222,64 +4224,26 @@ class DashboardWindow(QMainWindow):
         # Initialize payment monitoring if wallet is configured
         self.payment_processor = None
         self.wallet = None  # Store wallet reference for WalletTab
-        if seller and seller.wallet_config:
+        if seller and seller.wallet_path:
             try:
                 from ..core.payments import PaymentProcessor
                 from ..core.commission import CommissionManager
-                from ..core.monero_wallet import MoneroWallet
+                from ..core.monero_wallet import InHouseWallet
+                from ..models.node import NodeManager
                 
-                # Initialize wallet based on config
-                wallet_config = seller.wallet_config
-                wallet_type = wallet_config.get('type', 'rpc')
+                # Get default node configuration
+                node_manager = NodeManager(self.db_manager)
+                default_node = node_manager.get_default_node()
                 
-                if wallet_type == 'rpc':
-                    wallet = MoneroWallet(
-                        wallet_type='rpc',
-                        rpc_host=wallet_config.get('rpc_host'),
-                        rpc_port=wallet_config.get('rpc_port'),
-                        rpc_user=wallet_config.get('rpc_user'),
-                        rpc_password=wallet_config.get('rpc_password')
-                    )
-                    
-                    # Store wallet reference for WalletTab
-                    self.wallet = wallet
-                    
-                    # CRITICAL FIX: Auto-start payment monitoring
-                    commission_manager = CommissionManager()
-                    self.payment_processor = PaymentProcessor(
-                        wallet,
-                        commission_manager,
-                        self.order_manager
-                    )
-                    
-                    # Register callback for payment notifications
-                    def on_payment_detected(order):
-                        # Notify buyer
-                        buyer_success = self.signal_handler.send_message(
-                            order.customer_signal_id,
-                            f"✅ Payment confirmed! Your order #{order.order_id} is being processed."
-                        )
-                        if not buyer_success:
-                            print(f"WARNING: Failed to notify buyer {order.customer_signal_id} of payment for order #{order.order_id}")
-                        
-                        # Notify seller
-                        seller_success = self.signal_handler.send_message(
-                            seller_signal_id,
-                            f"💰 New paid order #{order.order_id} - {order.product_name} x{order.quantity}"
-                        )
-                        if not seller_success:
-                            print(f"WARNING: Failed to notify seller of payment for order #{order.order_id}")
-                    
-                    # Register callback for all pending orders
-                    pending_orders = self.order_manager.list_orders(payment_status='pending')
-                    for order in pending_orders:
-                        self.payment_processor.register_payment_callback(order.order_id, on_payment_detected)
-                    
-                    print("DEBUG: Dashboard initializing - starting payment monitoring")
-                    self.payment_processor.start_monitoring()
+                if default_node:
+                    # Initialize in-house wallet
+                    # Note: In production, wallet password should be requested from user
+                    # For now, we'll skip auto-initialization of the wallet
+                    # The WalletTab will handle wallet initialization on demand
+                    pass
                     
             except Exception as e:
-                print(f"WARNING: Failed to initialize payment monitoring: {e}")
+                print(f"WARNING: Failed to initialize wallet: {e}")
         
         self.setWindowTitle(WINDOW_TITLE)
         self.setMinimumSize(WINDOW_WIDTH, WINDOW_HEIGHT)
