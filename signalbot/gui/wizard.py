@@ -6,13 +6,15 @@ Guides seller through initial configuration with in-house wallet creation
 import sys
 import os
 import random
+import time
 from typing import Optional, Dict, List
 from pathlib import Path
+from datetime import datetime
 from PyQt5.QtWidgets import (
     QWizard, QWizardPage, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QRadioButton, QButtonGroup,
     QTextEdit, QMessageBox, QComboBox, QFileDialog, QScrollArea,
-    QWidget, QApplication, QGroupBox, QProgressBar, QGridLayout
+    QWidget, QApplication, QGroupBox, QProgressBar, QGridLayout, QCheckBox
 )
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap, QFont
@@ -351,7 +353,7 @@ class CustomNodePage(QWizardPage):
         layout.addWidget(self.port_input)
         
         # SSL option
-        self.ssl_checkbox = QRadioButton("Use SSL/TLS connection")
+        self.ssl_checkbox = QCheckBox("Use SSL/TLS connection")
         layout.addWidget(self.ssl_checkbox)
         
         # Optional authentication
@@ -605,7 +607,6 @@ class WalletCreationPage(QWizardPage):
         wizard.node_config = node_config
         
         # Generate unique wallet name
-        import time
         wallet_name = f"shop_wallet_{int(time.time())}"
         
         # Start wallet creation in background
@@ -747,7 +748,8 @@ class SeedPhrasePage(QWizardPage):
                     f.write("KEEP THIS SAFE AND SECRET!\n\n")
                     f.write(seed_phrase + "\n\n")
                     f.write("=" * 50 + "\n")
-                    f.write("Generated: " + str(Path(WALLET_DIR).absolute()) + "\n")
+                    f.write(f"Wallet: {self.wizard().wallet_path}\n")
+                    f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 
                 QMessageBox.warning(
                     self,

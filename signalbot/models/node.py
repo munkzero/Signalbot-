@@ -48,7 +48,7 @@ class MoneroNodeConfig:
                     db_node.username,
                     db_node.username_salt
                 )
-            except:
+            except Exception:
                 username = None
         
         password = None
@@ -58,7 +58,7 @@ class MoneroNodeConfig:
                     db_node.password,
                     db_node.password_salt
                 )
-            except:
+            except Exception:
                 password = None
         
         return cls(

@@ -81,21 +81,38 @@ class InHouseWallet:
         """
         # Generate new seed
         seed = Seed()
-        seed_phrase = seed.hex_seed  # This generates a new random seed
         
-        # Convert hex seed to word seed (25 words)
-        # The monero library automatically handles this
+        # Get seed phrase (25 words)
+        seed_phrase = cls._get_seed_phrase_from_seed(seed)
+        
         wallet_path = str(Path(WALLET_DIR) / wallet_name)
         
-        # Note: For actual wallet creation with monero-wallet-cli, we would need to 
-        # run the CLI tool. For now, we'll store the seed and create RPC connection
-        # The actual wallet file will be created when we start monero-wallet-rpc
-        
-        # Store seed temporarily for verification (in practice, show to user)
+        # Store seed temporarily for verification
         instance = cls(wallet_path, password, daemon_address, daemon_port, use_ssl)
         instance._seed = seed
         
-        return instance, seed.phrase_or_hex if hasattr(seed, 'phrase_or_hex') else seed.hex_seed
+        return instance, seed_phrase
+    
+    @staticmethod
+    def _get_seed_phrase_from_seed(seed: Seed) -> str:
+        """
+        Extract seed phrase from Seed object
+        
+        Args:
+            seed: Seed object
+            
+        Returns:
+            Seed phrase string
+        """
+        # The monero library Seed object may have different attributes
+        # depending on version. Try multiple approaches.
+        if hasattr(seed, 'phrase'):
+            return seed.phrase
+        elif hasattr(seed, 'phrase_or_hex'):
+            return seed.phrase_or_hex
+        else:
+            # Fallback to hex seed if phrase not available
+            return seed.hex_seed
     
     @classmethod
     def restore_from_seed(
@@ -179,13 +196,13 @@ class InHouseWallet:
             Seed phrase
         """
         if hasattr(self, '_seed'):
-            return self._seed.phrase_or_hex if hasattr(self._seed, 'phrase_or_hex') else self._seed.hex_seed
+            return self._get_seed_phrase_from_seed(self._seed)
         
         # If wallet is connected, get seed from RPC
         if self.wallet:
             try:
                 return self.wallet.seed().phrase
-            except:
+            except Exception:
                 return None
         return None
     
