@@ -264,7 +264,7 @@ class SignalHandler:
         Check if message listener is running
         
         Returns:
-            True if listening for messages
+            bool: True if listening for messages
         """
         return self.listening
     
