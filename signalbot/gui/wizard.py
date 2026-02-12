@@ -315,8 +315,22 @@ class NodeConfigPage(QWizardPage):
         layout.addStretch()
         self.setLayout(layout)
         
-        # Register field for node selection
-        self.registerField("selected_node_index", self.node_button_group, "checkedId")
+        # Register field for node selection using hidden proxy widget
+        # QButtonGroup is not a QWidget, so we use a hidden QLineEdit as proxy
+        self.selected_node_value = QLineEdit()
+        self.selected_node_value.setVisible(False)
+        self.registerField("selected_node_index", self.selected_node_value)
+        
+        # Update proxy widget when button selection changes
+        def update_selected_node():
+            checked_id = self.node_button_group.checkedId()
+            self.selected_node_value.setText(str(checked_id))
+        
+        self.node_button_group.buttonClicked.connect(update_selected_node)
+        
+        # Set initial value
+        if self.node_button_group.checkedButton():
+            update_selected_node()
     
     def nextId(self):
         """Determine next page based on node selection"""
@@ -583,7 +597,7 @@ class WalletCreationPage(QWizardPage):
         wallet_password = wizard.field("wallet_password")
         
         # Get node configuration
-        selected_node_index = wizard.field("selected_node_index")
+        selected_node_index = int(wizard.field("selected_node_index"))
         
         if selected_node_index == len(DEFAULT_NODES):  # Custom node
             node_config = MoneroNodeConfig(
