@@ -71,6 +71,39 @@ class PINDialog(QDialog):
         return self.pin_input.text()
 
 
+class WalletPasswordDialog(QDialog):
+    """Dialog for wallet password entry"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Enter Wallet Password")
+        self.setModal(True)
+        
+        layout = QVBoxLayout()
+        
+        label = QLabel("Enter your wallet password:")
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        
+        layout.addWidget(label)
+        layout.addWidget(self.password_input)
+        layout.addWidget(buttons)
+        
+        self.setLayout(layout)
+    
+    def get_password(self):
+        password = self.password_input.text()
+        self.password_input.clear()
+        return password
+
+
+
 class AddProductDialog(QDialog):
     """Dialog for adding/editing products"""
     
@@ -3677,14 +3710,24 @@ class WalletSettingsDialog(QDialog):
         )
         
         if reply == QMessageBox.Yes:
+            # Request wallet password
+            password_dialog = WalletPasswordDialog(self)
+            if password_dialog.exec_() != QDialog.Accepted:
+                return
+            
+            password = password_dialog.get_password()
+            if not password:
+                QMessageBox.warning(self, "Error", "Password is required")
+                return
+            
             self.progress_bar.setVisible(True)
             self.progress_label.setVisible(True)
             self.progress_label.setText("Reconnecting...")
             
-            # Create wallet instance
+            # Create wallet instance with password
             wallet = InHouseWallet(
                 self.seller.wallet_path,
-                "",  # Password would need to be requested
+                password,
                 default_node.address,
                 default_node.port,
                 default_node.use_ssl
@@ -3732,6 +3775,16 @@ class WalletSettingsDialog(QDialog):
         )
         
         if reply == QMessageBox.Yes:
+            # Request wallet password
+            password_dialog = WalletPasswordDialog(self)
+            if password_dialog.exec_() != QDialog.Accepted:
+                return
+            
+            password = password_dialog.get_password()
+            if not password:
+                QMessageBox.warning(self, "Error", "Password is required")
+                return
+            
             self.progress_bar.setVisible(True)
             self.progress_label.setVisible(True)
             self.progress_label.setText("Starting rescan...")
@@ -3740,12 +3793,14 @@ class WalletSettingsDialog(QDialog):
             default_node = self.node_manager.get_default_node()
             if not default_node:
                 QMessageBox.warning(self, "Error", "No default node configured")
+                self.progress_bar.setVisible(False)
+                self.progress_label.setVisible(False)
                 return
             
-            # Create wallet instance
+            # Create wallet instance with password
             wallet = InHouseWallet(
                 self.seller.wallet_path,
-                "",  # Password would need to be requested
+                password,
                 default_node.address,
                 default_node.port,
                 default_node.use_ssl

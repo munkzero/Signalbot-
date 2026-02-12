@@ -5,12 +5,15 @@ Verification script for node management features
 
 import ast
 import sys
+from pathlib import Path
 
 def verify_implementation():
     """Verify node management implementation"""
     print("Verifying node management implementation...")
     
-    dashboard_path = "signalbot/gui/dashboard.py"
+    # Use Path for cross-platform compatibility
+    base_dir = Path(__file__).parent
+    dashboard_path = base_dir / "signalbot" / "gui" / "dashboard.py"
     
     with open(dashboard_path, 'r') as f:
         content = f.read()

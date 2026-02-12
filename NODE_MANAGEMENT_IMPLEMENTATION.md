@@ -37,6 +37,19 @@ Replaces old `edit_wallet_settings()` method. Opens the new WalletSettingsDialog
 
 ## New Classes Implemented
 
+### Dialogs for User Input
+
+#### WalletPasswordDialog
+**Lines**: 74-102
+
+**Purpose**: Secure password entry for wallet operations
+
+**Features**:
+- Password input field (masked)
+- OK/Cancel buttons
+- Auto-clears password after retrieval
+- Required for reconnect and rescan operations
+
 ### Worker Threads (Async Operations)
 
 #### 1. TestNodeWorker (QThread)
@@ -248,6 +261,9 @@ or
 - Test connections use timeout (10s)
 - No credentials logged or displayed
 - Secure HTTPS support
+- **Wallet password requested via secure dialog before operations**
+- **Password cleared from dialog after retrieval**
+- No empty passwords accepted for wallet operations
 
 ## Compatibility
 - ✅ Works with existing InHouseWallet
