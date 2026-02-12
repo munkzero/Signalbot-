@@ -15,14 +15,12 @@ class Seller:
         self,
         id: Optional[int] = None,
         signal_id: Optional[str] = None,
-        wallet_type: Optional[str] = None,
-        wallet_config: Optional[Dict] = None,
+        wallet_path: Optional[str] = None,
         default_currency: str = "USD"
     ):
         self.id = id
         self.signal_id = signal_id
-        self.wallet_type = wallet_type
-        self.wallet_config = wallet_config or {}
+        self.wallet_path = wallet_path
         self.default_currency = default_currency
     
     @classmethod
@@ -47,22 +45,10 @@ class Seller:
             except:
                 signal_id = None
         
-        wallet_config = None
-        if db_seller.wallet_config and db_seller.wallet_config_salt:
-            try:
-                config_str = db_manager.decrypt_field(
-                    db_seller.wallet_config,
-                    db_seller.wallet_config_salt
-                )
-                wallet_config = json.loads(config_str)
-            except:
-                wallet_config = None
-        
         return cls(
             id=db_seller.id,
             signal_id=signal_id,
-            wallet_type=db_seller.wallet_type,
-            wallet_config=wallet_config,
+            wallet_path=db_seller.wallet_path,
             default_currency=db_seller.default_currency
         )
     
@@ -86,21 +72,12 @@ class Seller:
         if self.signal_id:
             signal_id_enc, signal_id_salt = db_manager.encrypt_field(self.signal_id)
         
-        # Encrypt wallet config
-        wallet_config_enc = None
-        wallet_config_salt = None
-        if self.wallet_config:
-            config_str = json.dumps(self.wallet_config)
-            wallet_config_enc, wallet_config_salt = db_manager.encrypt_field(config_str)
-        
         db_seller = SellerModel(
             pin_hash=pin_hash,
             pin_salt=pin_salt,
             signal_id=signal_id_enc,
             signal_id_salt=signal_id_salt,
-            wallet_type=self.wallet_type,
-            wallet_config=wallet_config_enc,
-            wallet_config_salt=wallet_config_salt,
+            wallet_path=self.wallet_path,
             default_currency=self.default_currency
         )
         
@@ -176,14 +153,7 @@ class SellerManager:
             db_seller.signal_id = signal_id_enc
             db_seller.signal_id_salt = signal_id_salt
         
-        # Update wallet config
-        if seller.wallet_config:
-            config_str = json.dumps(seller.wallet_config)
-            wallet_config_enc, wallet_config_salt = self.db.encrypt_field(config_str)
-            db_seller.wallet_config = wallet_config_enc
-            db_seller.wallet_config_salt = wallet_config_salt
-        
-        db_seller.wallet_type = seller.wallet_type
+        db_seller.wallet_path = seller.wallet_path
         db_seller.default_currency = seller.default_currency
         
         self.db.session.commit()

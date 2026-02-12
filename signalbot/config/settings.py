@@ -11,11 +11,15 @@ BASE_DIR = Path(__file__).parent.parent.parent
 DATA_DIR = BASE_DIR / "data"
 IMAGES_DIR = DATA_DIR / "images"
 DB_DIR = DATA_DIR / "db"
+WALLET_DIR = DATA_DIR / "wallet"
+BACKUP_DIR = DATA_DIR / "backups"
 
 # Create directories if they don't exist
 DATA_DIR.mkdir(exist_ok=True)
 IMAGES_DIR.mkdir(exist_ok=True)
 DB_DIR.mkdir(exist_ok=True)
+WALLET_DIR.mkdir(exist_ok=True)
+BACKUP_DIR.mkdir(exist_ok=True)
 
 # Database
 DATABASE_FILE = DB_DIR / "shopbot.db"
@@ -42,17 +46,23 @@ SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "CAD", "AUD", "NZD", "JPY"]
 MONERO_CONFIRMATIONS_REQUIRED = 10  # Number of confirmations for payment
 PAYMENT_CHECK_INTERVAL = 30  # Seconds between payment checks
 
-# Popular Monero nodes for easy switching
-PUBLIC_NODES = [
-    {'host': 'node.moneroworld.com', 'port': 18089},
-    {'host': 'nodes.hashvault.pro', 'port': 18081},
-    {'host': 'xmr-node.cakewallet.com', 'port': 18081},
-    {'host': 'node.community.rino.io', 'port': 18081},
+# Default Monero nodes for easy selection
+DEFAULT_NODES = [
+    {'address': 'node.moneroworld.com', 'port': 18089, 'use_ssl': True, 'name': 'MoneroWorld (Recommended)'},
+    {'address': 'nodes.hashvault.pro', 'port': 18081, 'use_ssl': False, 'name': 'HashVault Pro'},
+    {'address': 'xmr-node.cakewallet.com', 'port': 18081, 'use_ssl': False, 'name': 'Cake Wallet'},
+    {'address': 'node.community.rino.io', 'port': 18081, 'use_ssl': False, 'name': 'Rino Community'},
+    {'address': '127.0.0.1', 'port': 18081, 'use_ssl': False, 'name': 'Local Node'},
 ]
 
 # Wallet RPC settings (for auto-managed wallets)
 DEFAULT_RPC_PORT = 18082
-DEFAULT_DAEMON = 'node.moneroworld.com:18089'
+DEFAULT_DAEMON_ADDRESS = 'node.moneroworld.com'
+DEFAULT_DAEMON_PORT = 18089
+
+# Node connection settings
+NODE_CONNECTION_TIMEOUT = 30  # seconds
+NODE_SYNC_TIMEOUT = 120  # seconds
 
 # Signal settings
 SIGNAL_DATA_DIR = DATA_DIR / "signal"

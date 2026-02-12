@@ -24,9 +24,7 @@ class Seller(Base):
     pin_salt = Column(String(255), nullable=False)
     signal_id = Column(Text, nullable=True)  # Encrypted
     signal_id_salt = Column(String(255), nullable=True)
-    wallet_type = Column(String(20), nullable=True)  # 'rpc' or 'file'
-    wallet_config = Column(Text, nullable=True)  # Encrypted JSON
-    wallet_config_salt = Column(String(255), nullable=True)
+    wallet_path = Column(String(500), nullable=True)  # Path to in-house wallet file
     default_currency = Column(String(10), default='USD')
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -106,6 +104,24 @@ class Message(Base):
     is_outgoing = Column(Boolean, nullable=False)
     sent_at = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MoneroNode(Base):
+    """Monero node configurations"""
+    __tablename__ = 'monero_nodes'
+    
+    id = Column(Integer, primary_key=True)
+    address = Column(String(255), nullable=False)
+    port = Column(Integer, nullable=False)
+    use_ssl = Column(Boolean, default=False)
+    username = Column(Text, nullable=True)  # Encrypted
+    username_salt = Column(String(255), nullable=True)
+    password = Column(Text, nullable=True)  # Encrypted
+    password_salt = Column(String(255), nullable=True)
+    node_name = Column(String(255), nullable=True)
+    is_default = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class DatabaseManager:
