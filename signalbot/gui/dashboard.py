@@ -4351,13 +4351,8 @@ class DashboardWindow(QMainWindow):
                                     print("✓ Wallet connected successfully")
                                 else:
                                     print("⚠ Wallet initialized but connection failed")
-                                    QMessageBox.warning(
-                                        self,
-                                        "Connection Failed",
-                                        "Wallet was initialized but failed to connect to the node.\n\n"
-                                        "You can reconnect later in Wallet Settings.",
-                                        QMessageBox.Ok
-                                    )
+                                    # Defer warning dialog until after dashboard loads
+                                    QTimer.singleShot(500, lambda: self._show_connection_warning())
                                     self.wallet = None
                                     
                             except Exception as e:
@@ -4365,13 +4360,9 @@ class DashboardWindow(QMainWindow):
                                 import traceback
                                 traceback.print_exc()  # Print full stack trace
                                 
-                                QMessageBox.critical(
-                                    self,
-                                    "Wallet Initialization Error",
-                                    f"Failed to initialize wallet:\n\n{str(e)}\n\n"
-                                    "You can try again later in Wallet Settings.",
-                                    QMessageBox.Ok
-                                )
+                                # Defer error dialog until after dashboard loads
+                                error_msg = str(e)
+                                QTimer.singleShot(500, lambda: self._show_initialization_error(error_msg))
                                 self.wallet = None
                     
             except Exception as e:
@@ -4392,6 +4383,38 @@ class DashboardWindow(QMainWindow):
         tabs.addTab(SettingsTab(self.seller_manager, self.signal_handler), "Settings")
         
         self.setCentralWidget(tabs)
+        
+        print("✓ DEBUG: Dashboard initialization completed successfully")
+    
+    def _show_connection_warning(self):
+        """Show connection warning after dashboard is loaded"""
+        print("🔧 DEBUG: Showing deferred connection warning")
+        QMessageBox.warning(
+            self,
+            "Wallet Connection Failed",
+            "Wallet was initialized but failed to connect to the node.\n\n"
+            "Possible reasons:\n"
+            "• Node is down or unreachable\n"
+            "• Network/firewall blocking connection\n"
+            "• Incorrect node settings\n\n"
+            "You can:\n"
+            "1. Go to Settings → Wallet Settings → Manage Nodes\n"
+            "2. Try a different public node\n"
+            "3. Click 'Reconnect Now' after changing nodes",
+            QMessageBox.Ok
+        )
+    
+    def _show_initialization_error(self, error_msg):
+        """Show initialization error after dashboard is loaded"""
+        print("🔧 DEBUG: Showing deferred initialization error")
+        QMessageBox.critical(
+            self,
+            "Wallet Initialization Error",
+            f"Failed to initialize wallet:\n\n{error_msg}\n\n"
+            "You can try again from:\n"
+            "Settings → Wallet Settings → Connect & Sync → Reconnect Now",
+            QMessageBox.Ok
+        )
     
     @staticmethod
     def verify_pin(db_manager: DatabaseManager) -> bool:
