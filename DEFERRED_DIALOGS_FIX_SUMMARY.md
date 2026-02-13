@@ -23,7 +23,7 @@ The application was crashing when wallet connection failed during startup becaus
 
 ## Solution Implemented
 
-All blocking dialogs are now deferred until **after** the dashboard has fully initialized, using `QTimer.singleShot()` with a 500ms delay.
+All blocking dialogs are now deferred until **after** the dashboard has fully initialized, using `QTimer.singleShot()` with a delay defined by `DIALOG_DEFER_DELAY_MS` (500ms).
 
 ### Changes Made
 
@@ -46,7 +46,7 @@ self.wallet = None
 ```python
 print("⚠ Wallet initialized but connection failed")
 # Defer warning dialog until after dashboard loads
-QTimer.singleShot(500, lambda: self._show_connection_warning())
+QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, lambda: self._show_connection_warning())
 self.wallet = None
 ```
 
@@ -78,11 +78,22 @@ except Exception as e:
     
     # Defer error dialog until after dashboard loads
     error_msg = str(e)
-    QTimer.singleShot(500, lambda: self._show_initialization_error(error_msg))
+    QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, lambda: self._show_initialization_error(error_msg))
     self.wallet = None
 ```
 
-#### 3. Helper Methods Added (Lines 4389-4417)
+#### 3. Class Constant Added (Line 4259)
+
+A named constant was added for the dialog defer delay:
+
+```python
+# Delay (in milliseconds) before showing deferred dialogs to allow dashboard to fully load
+# 500ms provides enough time for the window to render and become responsive
+# while still being quick enough that users notice the dialog immediately
+DIALOG_DEFER_DELAY_MS = 500
+```
+
+#### 4. Helper Methods Added (Lines 4391-4419)
 
 Two new helper methods were added to display the deferred dialogs:
 

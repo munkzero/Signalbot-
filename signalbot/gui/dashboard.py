@@ -4256,6 +4256,8 @@ class DashboardWindow(QMainWindow):
     """Main dashboard window"""
     
     # Delay (in milliseconds) before showing deferred dialogs to allow dashboard to fully load
+    # 500ms provides enough time for the window to render and become responsive
+    # while still being quick enough that users notice the dialog immediately
     DIALOG_DEFER_DELAY_MS = 500
     
     def __init__(self, db_manager: DatabaseManager, signal_handler: Optional[SignalHandler] = None):
