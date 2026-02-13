@@ -4272,10 +4272,62 @@ class DashboardWindow(QMainWindow):
                 
                 if default_node:
                     # Initialize in-house wallet
-                    # Note: In production, wallet password should be requested from user
-                    # For now, we'll skip auto-initialization of the wallet
-                    # The WalletTab will handle wallet initialization on demand
-                    pass
+                    # Ask user if they want to unlock wallet now
+                    reply = QMessageBox.question(
+                        None,
+                        "Unlock Wallet",
+                        "Would you like to unlock your wallet now?\n\n"
+                        "You can unlock it later from Wallet Settings.",
+                        QMessageBox.Yes | QMessageBox.No
+                    )
+                    
+                    if reply == QMessageBox.Yes:
+                        # Request wallet password
+                        password, ok = QInputDialog.getText(
+                            None,
+                            "Wallet Password",
+                            "Enter your wallet password to unlock:",
+                            QLineEdit.Password
+                        )
+                        
+                        if ok and password:
+                            try:
+                                # Initialize in-house wallet
+                                self.wallet = InHouseWallet(
+                                    seller.wallet_path,
+                                    password,
+                                    default_node.address,
+                                    default_node.port,
+                                    default_node.use_ssl
+                                )
+                                
+                                # Connect to node
+                                if self.wallet.connect():
+                                    print("✓ Wallet connected successfully")
+                                else:
+                                    print("⚠ Wallet initialized but connection failed")
+                                    QMessageBox.warning(
+                                        None,
+                                        "Wallet Connection Failed",
+                                        "Wallet was initialized but failed to connect to the node.\n\n"
+                                        "You can reconnect later in Wallet Settings."
+                                    )
+                                    self.wallet = None
+                                    
+                            except Exception as e:
+                                print(f"ERROR: Failed to initialize wallet: {e}")
+                                QMessageBox.warning(
+                                    None,
+                                    "Wallet Error",
+                                    f"Failed to initialize wallet: {e}\n\n"
+                                    "You can reconnect later in Wallet Settings."
+                                )
+                                self.wallet = None
+                        else:
+                            print("User cancelled wallet unlock")
+                            self.wallet = None
+                    else:
+                        print("User chose to skip wallet unlock")
                     
             except Exception as e:
                 print(f"WARNING: Failed to initialize wallet: {e}")
