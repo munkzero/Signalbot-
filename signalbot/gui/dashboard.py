@@ -4274,7 +4274,7 @@ class DashboardWindow(QMainWindow):
                     # Initialize in-house wallet
                     # Ask user if they want to unlock wallet now
                     reply = QMessageBox.question(
-                        None,
+                        self,
                         "Unlock Wallet",
                         "Would you like to unlock your wallet now?\n\n"
                         "You can unlock it later from Wallet Settings.",
@@ -4284,7 +4284,7 @@ class DashboardWindow(QMainWindow):
                     if reply == QMessageBox.Yes:
                         # Request wallet password
                         password, ok = QInputDialog.getText(
-                            None,
+                            self,
                             "Wallet Password",
                             "Enter your wallet password to unlock:",
                             QLineEdit.Password
@@ -4307,7 +4307,7 @@ class DashboardWindow(QMainWindow):
                                 else:
                                     print("⚠ Wallet initialized but connection failed")
                                     QMessageBox.warning(
-                                        None,
+                                        self,
                                         "Wallet Connection Failed",
                                         "Wallet was initialized but failed to connect to the node.\n\n"
                                         "You can reconnect later in Wallet Settings."
@@ -4317,17 +4317,12 @@ class DashboardWindow(QMainWindow):
                             except Exception as e:
                                 print(f"ERROR: Failed to initialize wallet: {e}")
                                 QMessageBox.warning(
-                                    None,
+                                    self,
                                     "Wallet Error",
                                     f"Failed to initialize wallet: {e}\n\n"
                                     "You can reconnect later in Wallet Settings."
                                 )
                                 self.wallet = None
-                        else:
-                            print("User cancelled wallet unlock")
-                            self.wallet = None
-                    else:
-                        print("User chose to skip wallet unlock")
                     
             except Exception as e:
                 print(f"WARNING: Failed to initialize wallet: {e}")
