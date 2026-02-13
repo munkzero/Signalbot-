@@ -4255,6 +4255,9 @@ class EditNodeDialog(QDialog):
 class DashboardWindow(QMainWindow):
     """Main dashboard window"""
     
+    # Delay (in milliseconds) before showing deferred dialogs to allow dashboard to fully load
+    DIALOG_DEFER_DELAY_MS = 500
+    
     def __init__(self, db_manager: DatabaseManager, signal_handler: Optional[SignalHandler] = None):
         super().__init__()
         
@@ -4352,7 +4355,7 @@ class DashboardWindow(QMainWindow):
                                 else:
                                     print("⚠ Wallet initialized but connection failed")
                                     # Defer warning dialog until after dashboard loads
-                                    QTimer.singleShot(500, lambda: self._show_connection_warning())
+                                    QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, lambda: self._show_connection_warning())
                                     self.wallet = None
                                     
                             except Exception as e:
@@ -4362,7 +4365,7 @@ class DashboardWindow(QMainWindow):
                                 
                                 # Defer error dialog until after dashboard loads
                                 error_msg = str(e)
-                                QTimer.singleShot(500, lambda: self._show_initialization_error(error_msg))
+                                QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, lambda: self._show_initialization_error(error_msg))
                                 self.wallet = None
                     
             except Exception as e:

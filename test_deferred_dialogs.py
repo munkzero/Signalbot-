@@ -19,9 +19,12 @@ def check_deferred_connection_warning():
         content = f.read()
     
     required_elements = [
-        # Check deferred call
-        ('QTimer.singleShot(500, lambda: self._show_connection_warning())', 
-         'Deferred connection warning call'),
+        # Check class constant
+        ('DIALOG_DEFER_DELAY_MS = 500',
+         'Dialog defer delay constant'),
+        # Check deferred call uses constant
+        ('QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, lambda: self._show_connection_warning())', 
+         'Deferred connection warning call with constant'),
         # Check helper method exists
         ('def _show_connection_warning(self):', 
          'Connection warning helper method'),
@@ -79,8 +82,8 @@ def check_deferred_initialization_error():
         # Check deferred call
         ('error_msg = str(e)', 
          'Error message captured'),
-        ('QTimer.singleShot(500, lambda: self._show_initialization_error(error_msg))', 
-         'Deferred initialization error call'),
+        ('QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, lambda: self._show_initialization_error(error_msg))', 
+         'Deferred initialization error call with constant'),
         # Check helper method exists
         ('def _show_initialization_error(self, error_msg):', 
          'Initialization error helper method'),
