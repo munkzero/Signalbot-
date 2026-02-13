@@ -1829,9 +1829,20 @@ class WalletTab(QWidget):
     
     def refresh_all(self):
         """Refresh all wallet data"""
+        print(f"🔧 DEBUG: WalletTab.refresh_all() called")
+        print(f"   Wallet instance: {self.wallet}")
+        
+        if not self.wallet:
+            print("⚠ DEBUG: Wallet is None, skipping refresh")
+            return
+        
+        print("✓ DEBUG: Refreshing balance...")
         self.refresh_balance()
+        print("✓ DEBUG: Refreshing addresses...")
         self.refresh_addresses()
+        print("✓ DEBUG: Refreshing transactions...")
         self.refresh_transactions()
+        print("✓ DEBUG: Refresh complete")
     
     def refresh_balance(self):
         """Refresh wallet balance"""
@@ -3426,7 +3437,7 @@ class SettingsTab(QWidget):
             QMessageBox.warning(self, "Error", "Seller not found")
             return
         
-        dialog = WalletSettingsDialog(self.seller_manager, seller, self)
+        dialog = WalletSettingsDialog(self.seller_manager, seller, self, dashboard=self)
         if dialog.exec_() == QDialog.Accepted:
             QMessageBox.information(
                 self,
@@ -3547,10 +3558,11 @@ class RescanBlockchainWorker(QThread):
 class WalletSettingsDialog(QDialog):
     """Comprehensive wallet settings dialog with tabs"""
     
-    def __init__(self, seller_manager, seller, parent=None):
+    def __init__(self, seller_manager, seller, parent=None, dashboard=None):
         super().__init__(parent)
         self.seller_manager = seller_manager
         self.seller = seller
+        self.dashboard = dashboard  # Reference to main dashboard
         self.node_manager = NodeManager(seller_manager.db)
         
         self.setWindowTitle("Wallet Settings")
@@ -3789,7 +3801,18 @@ class WalletSettingsDialog(QDialog):
         self.progress_label.setVisible(False)
         
         if success:
-            QMessageBox.information(self, "Success", message)
+            # Update dashboard's wallet instance
+            if self.dashboard and hasattr(self, 'reconnect_worker'):
+                print("✓ DEBUG: Updating dashboard wallet reference")
+                self.dashboard.wallet = self.reconnect_worker.wallet
+                
+                # Refresh WalletTab to show new connection
+                if hasattr(self.dashboard, 'wallet_tab'):
+                    print("✓ DEBUG: Refreshing WalletTab")
+                    self.dashboard.wallet_tab.wallet = self.reconnect_worker.wallet
+                    self.dashboard.wallet_tab.refresh_all()
+            
+            QMessageBox.information(self, "Success", message + "\n\nWallet reconnected successfully!")
         else:
             QMessageBox.warning(self, "Error", message)
     
@@ -3857,7 +3880,18 @@ class WalletSettingsDialog(QDialog):
         self.progress_label.setVisible(False)
         
         if success:
-            QMessageBox.information(self, "Success", message)
+            # Update dashboard's wallet instance after rescan
+            if self.dashboard and hasattr(self, 'rescan_worker'):
+                print("✓ DEBUG: Updating dashboard wallet reference after rescan")
+                self.dashboard.wallet = self.rescan_worker.wallet
+                
+                # Refresh WalletTab
+                if hasattr(self.dashboard, 'wallet_tab'):
+                    print("✓ DEBUG: Refreshing WalletTab after rescan")
+                    self.dashboard.wallet_tab.wallet = self.rescan_worker.wallet
+                    self.dashboard.wallet_tab.refresh_all()
+            
+            QMessageBox.information(self, "Success", message + "\n\nWallet rescanned successfully!")
         else:
             QMessageBox.warning(self, "Error", message)
     
@@ -4292,6 +4326,11 @@ class DashboardWindow(QMainWindow):
                         
                         if ok and password:
                             try:
+                                print(f"🔧 DEBUG: Attempting to initialize wallet...")
+                                print(f"   Wallet path: {seller.wallet_path}")
+                                print(f"   Node: {default_node.address}:{default_node.port}")
+                                print(f"   SSL: {default_node.use_ssl}")
+                                
                                 # Initialize in-house wallet
                                 self.wallet = InHouseWallet(
                                     seller.wallet_path,
@@ -4301,26 +4340,37 @@ class DashboardWindow(QMainWindow):
                                     default_node.use_ssl
                                 )
                                 
+                                print(f"✓ DEBUG: Wallet instance created")
+                                
                                 # Connect to node
-                                if self.wallet.connect():
+                                print(f"🔧 DEBUG: Attempting to connect to node...")
+                                connection_result = self.wallet.connect()
+                                print(f"🔧 DEBUG: Connection result: {connection_result}")
+                                
+                                if connection_result:
                                     print("✓ Wallet connected successfully")
                                 else:
                                     print("⚠ Wallet initialized but connection failed")
                                     QMessageBox.warning(
                                         self,
-                                        "Wallet Connection Failed",
+                                        "Connection Failed",
                                         "Wallet was initialized but failed to connect to the node.\n\n"
-                                        "You can reconnect later in Wallet Settings."
+                                        "You can reconnect later in Wallet Settings.",
+                                        QMessageBox.Ok
                                     )
                                     self.wallet = None
                                     
                             except Exception as e:
-                                print(f"ERROR: Failed to initialize wallet: {e}")
-                                QMessageBox.warning(
+                                print(f"❌ ERROR: Failed to initialize wallet: {e}")
+                                import traceback
+                                traceback.print_exc()  # Print full stack trace
+                                
+                                QMessageBox.critical(
                                     self,
-                                    "Wallet Error",
-                                    f"Failed to initialize wallet: {e}\n\n"
-                                    "You can reconnect later in Wallet Settings."
+                                    "Wallet Initialization Error",
+                                    f"Failed to initialize wallet:\n\n{str(e)}\n\n"
+                                    "You can try again later in Wallet Settings.",
+                                    QMessageBox.Ok
                                 )
                                 self.wallet = None
                     
