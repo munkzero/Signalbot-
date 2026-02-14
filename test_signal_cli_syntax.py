@@ -79,9 +79,6 @@ def test_catalog_image_sending():
         with open(buyer_handler_path, 'r') as f:
             buyer_source = f.read()
         
-        with open(buyer_handler_path, 'r') as f:
-            buyer_source = f.read()
-        
         # Find send_catalog method in dashboard
         dashboard_catalog_start = dashboard_source.find('def send_catalog(self):')
         if dashboard_catalog_start == -1:
@@ -101,8 +98,6 @@ def test_catalog_image_sending():
         # Extract just the send_catalog method (approximate)
         buyer_catalog_end = buyer_source.find('\n    def ', buyer_catalog_start + 10)
         buyer_catalog_method = buyer_source[buyer_catalog_start:buyer_catalog_end]
-        
-        checks_passed = []
         
         checks_passed = []
         
