@@ -256,12 +256,27 @@ To order: "order {product_id_str} qty [amount]"
                 
                 if resolved_path:
                     attachments.append(resolved_path)
-                    print(f"  ✓ Image found: {os.path.basename(resolved_path)}")
+                    
+                    # Add file size detection and display info
+                    try:
+                        file_size = os.path.getsize(resolved_path)
+                        file_size_mb = file_size / (1024 * 1024)
+                        file_ext = os.path.splitext(resolved_path)[1].upper()
+                        
+                        print(f"  ✓ Image found: {os.path.basename(resolved_path)}")
+                        print(f"     Size: {file_size_mb:.2f} MB, Format: {file_ext}")
+                        
+                        if file_size_mb > 2.0:
+                            print(f"  ⚠️  WARNING: Large file ({file_size_mb:.2f} MB) may timeout")
+                            print(f"     Consider converting to JPG or compressing")
+                    except Exception as e:
+                        print(f"  ✓ Image found: {os.path.basename(resolved_path)}")
+                        print(f"  ⚠️  Could not determine file size: {e}")
                 else:
                     print(f"  ⚠ No image found (will send text only)")
             
             # Attempt to send with retry logic
-            max_retries = 2
+            max_retries = 5
             success = False
             
             for attempt in range(1, max_retries + 1):
@@ -282,20 +297,43 @@ To order: "order {product_id_str} qty [amount]"
                     else:
                         print(f"  ⚠ Attempt {attempt} failed (no exception but returned False)")
                         if attempt < max_retries:
-                            print(f"  ⏳ Waiting 3 seconds before retry...")
-                            time.sleep(3)
+                            retry_delay = 3 * attempt  # 3s, 6s, 9s, 12s...
+                            print(f"  ⏳ Waiting {retry_delay}s before retry...")
+                            time.sleep(retry_delay)
                         
                 except Exception as e:
                     print(f"  ✗ Attempt {attempt} failed: {e}")
                     
                     if attempt < max_retries:
-                        print(f"  ⏳ Waiting 3 seconds before retry...")
-                        time.sleep(3)
+                        retry_delay = 3 * attempt  # 3s, 6s, 9s, 12s...
+                        print(f"  ⏳ Waiting {retry_delay}s before retry...")
+                        time.sleep(retry_delay)
             
             # Track failure if all attempts failed
             if not success:
                 print(f"  ❌ FAILED after {max_retries} attempts")
-                failed_products.append(product.name)
+                
+                # Try one final time without image (text-only fallback)
+                if attachments:
+                    print(f"  📝 Attempting text-only fallback (no image)...")
+                    try:
+                        result = self.signal_handler.send_message(
+                            recipient=buyer_signal_id,
+                            message=message.strip(),
+                            attachments=None  # No image
+                        )
+                        if result:
+                            print(f"  ✅ Text-only version sent successfully")
+                            sent_count += 1
+                            success = True
+                        else:
+                            print(f"  ✗ Text-only fallback also failed")
+                            failed_products.append(product.name)
+                    except Exception as e:
+                        print(f"  ✗ Text-only fallback error: {e}")
+                        failed_products.append(product.name)
+                else:
+                    failed_products.append(product.name)
             
             # Delay between products (avoid rate limiting)
             if index < total_products:  # Don't delay after last product

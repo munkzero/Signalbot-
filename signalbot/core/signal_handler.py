@@ -16,13 +16,13 @@ class SignalHandler:
     Note: Requires signal-cli to be installed and configured
     """
     
-    def __init__(self, phone_number: Optional[str] = None, auto_daemon: bool = False):
+    def __init__(self, phone_number: Optional[str] = None, auto_daemon: bool = True):
         """
         Initialize Signal handler
         
         Args:
             phone_number: Seller's Signal phone number
-            auto_daemon: Automatically start daemon mode for faster messaging (disabled by default due to reliability issues)
+            auto_daemon: Automatically start daemon mode for faster messaging (enabled by default for 5x speed improvement)
         """
         self.phone_number = phone_number
         self.message_callbacks = []
@@ -207,7 +207,7 @@ class SignalHandler:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=20  # Increased timeout for reliability
+                timeout=45  # Longer timeout for images with attachments
             )
             
             if result.returncode == 0:
@@ -218,9 +218,13 @@ class SignalHandler:
                 return False
         except subprocess.TimeoutExpired:
             print(f"ERROR: Timeout sending message to {recipient}")
+            print(f"  Timeout was set to 45 seconds - connection may be unstable")
+            print(f"  Consider checking network or using smaller images")
             return False
         except Exception as e:
             print(f"ERROR: Failed to send Signal message: {e}")
+            print(f"  Recipient: {recipient}")
+            print(f"  Attachments: {len(attachments) if attachments else 0}")
             return False
     
     def send_image(self, recipient: str, image_path: str, caption: Optional[str] = None) -> bool:
