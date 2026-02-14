@@ -81,6 +81,11 @@ else
     echo "Warning: No virtual environment found"
 fi
 
+# Set log level (DEBUG for development, INFO for production)
+export LOG_LEVEL="${LOG_LEVEL:-INFO}"
+echo "Log level: $LOG_LEVEL"
+echo ""
+
 # Launch the application
 echo "Starting Signal Shop Bot..."
 echo ""
