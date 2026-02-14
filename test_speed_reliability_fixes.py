@@ -232,16 +232,16 @@ def test_exponential_backoff():
     
     errors = []
     
-    # Check buyer_handler.py
+    # Check buyer_handler.py - uses 3s multiplier
     if "retry_delay = 3 * attempt" in buyer_source or "3 * attempt" in buyer_source:
-        print("  ✓ buyer_handler.py: Exponential backoff implemented")
+        print("  ✓ buyer_handler.py: Exponential backoff implemented (3s multiplier)")
     else:
         errors.append("❌ buyer_handler.py: Exponential backoff not implemented")
         print("  ✗ buyer_handler.py: Exponential backoff not implemented")
     
-    # Check dashboard.py
+    # Check dashboard.py - uses 2s multiplier for GUI responsiveness
     if "retry_delay = 2 * attempt" in dashboard_source or "2 * attempt" in dashboard_source:
-        print("  ✓ dashboard.py: Exponential backoff implemented")
+        print("  ✓ dashboard.py: Exponential backoff implemented (2s multiplier for GUI)")
     else:
         errors.append("❌ dashboard.py: Exponential backoff not implemented")
         print("  ✗ dashboard.py: Exponential backoff not implemented")

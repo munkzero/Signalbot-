@@ -3087,15 +3087,13 @@ class MessagesTab(QWidget):
                 if resolved_path:
                     attachments.append(resolved_path)
                     
-                    # Add file size detection
+                    # Add file size detection and display info
                     try:
                         file_size = os.path.getsize(resolved_path)
                         file_size_mb = file_size / (1024 * 1024)
                         file_ext = os.path.splitext(resolved_path)[1].upper()
                         
-                        print(f"  📊 Image: {os.path.basename(resolved_path)}")
-                        print(f"     Size: {file_size_mb:.2f} MB")
-                        print(f"     Format: {file_ext}")
+                        print(f"  📊 Image: {os.path.basename(resolved_path)}, Size: {file_size_mb:.2f} MB, Format: {file_ext}")
                         
                         if file_size_mb > 2.0:
                             print(f"  ⚠️  WARNING: Large file ({file_size_mb:.2f} MB) may timeout")
