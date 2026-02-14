@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 from typing import Optional
 import json
+import base64
 from ..config.settings import DATABASE_FILE
 from ..core.security import security_manager
 
@@ -178,7 +179,3 @@ class DatabaseManager:
     def close(self):
         """Close database connection"""
         self.session.close()
-
-
-# Import base64 for decrypt_field
-import base64

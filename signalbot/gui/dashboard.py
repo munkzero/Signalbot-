@@ -3009,8 +3009,16 @@ class MessagesTab(QWidget):
             
             # Attach product image if exists
             attachments = []
-            if product.image_path and os.path.exists(product.image_path):
-                attachments.append(product.image_path)
+            if product.image_path:
+                print(f"DEBUG: Product {product.name} has image_path: {product.image_path}")
+                if os.path.exists(product.image_path):
+                    attachments.append(product.image_path)
+                    print(f"DEBUG: Attaching image for {product.name}: {product.image_path}")
+                else:
+                    print(f"WARNING: Image path set but file missing for {product.name}: {product.image_path}")
+                    if not os.path.isabs(product.image_path):
+                        print(f"  Note: Path is relative, not absolute")
+                    print(f"  Current working directory: {os.getcwd()}")
             
             # Send via Signal
             try:
