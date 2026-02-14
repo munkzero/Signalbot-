@@ -178,14 +178,18 @@ class BuyerHandler:
 To order: "order {product_id_str} qty [amount]"
 """
             
-            # CRITICAL FIX: Check if image file actually exists before attaching
+            # Check if image file actually exists before attaching
             attachments = []
             if product.image_path:
+                print(f"DEBUG: Product {product.name} has image_path: {product.image_path}")
                 if os.path.exists(product.image_path) and os.path.isfile(product.image_path):
                     attachments.append(product.image_path)
                     print(f"DEBUG: Attaching image for {product.name}: {product.image_path}")
                 else:
                     print(f"WARNING: Image path set but file missing for {product.name}: {product.image_path}")
+                    if not os.path.isabs(product.image_path):
+                        print(f"  Note: Path is relative, not absolute")
+                    print(f"  Current working directory: {os.getcwd()}")
             
             self.signal_handler.send_message(
                 recipient=buyer_signal_id,

@@ -54,7 +54,9 @@ class Product:
                     db_product.image_path,
                     db_product.image_path_salt
                 )
-            except:
+            except Exception as e:
+                print(f"ERROR: Failed to decrypt image path for product {db_product.product_id}: {e}")
+                print(f"  Encrypted value: {db_product.image_path[:50] if db_product.image_path else 'None'}...")
                 image_path = None
         
         return cls(
