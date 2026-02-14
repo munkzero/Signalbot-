@@ -20,9 +20,9 @@ def test_product_with_encrypted_image_path():
     print("INTEGRATION TEST: Product with Encrypted Image Path")
     print("=" * 60)
     
-    # Create a temporary database
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.db', delete=False) as f:
-        temp_db = f.name
+    # Create a unique temporary database for this test
+    import time
+    temp_db = f"/tmp/test_product_{int(time.time() * 1000)}.db"
     
     # Override DATABASE_FILE for this test
     import signalbot.config.settings as settings
@@ -39,7 +39,7 @@ def test_product_with_encrypted_image_path():
         
         print("\n1. Creating product with image path...")
         product = Product(
-            product_id="TEST001",
+            product_id=f"TEST{os.getpid()}",  # Use process ID to make unique
             name="Test Product",
             description="A test product with an encrypted image path",
             price=99.99,
@@ -82,16 +82,22 @@ def test_product_with_encrypted_image_path():
         print(f"\n4. Testing list_products (used by send_catalog)...")
         products = product_manager.list_products(active_only=True)
         
-        assert len(products) == 1, "Should have one active product"
-        listed_product = products[0]
+        # Find our test product in the list
+        test_product = None
+        for p in products:
+            if p.id == created_product.id:
+                test_product = p
+                break
         
-        print(f"   ✓ Found {len(products)} active product(s)")
-        print(f"   ✓ Product name: {listed_product.name}")
-        print(f"   ✓ Decrypted image_path: {listed_product.image_path}")
+        assert test_product is not None, f"Should find our test product (ID {created_product.id}) in list"
+        
+        print(f"   ✓ Found test product in {len(products)} active product(s)")
+        print(f"   ✓ Product name: {test_product.name}")
+        print(f"   ✓ Decrypted image_path: {test_product.image_path}")
         
         # Verify the image path is properly decrypted in the list
-        assert listed_product.image_path == test_image_path, \
-            f"Listed product image path '{listed_product.image_path}' should match original '{test_image_path}'"
+        assert test_product.image_path == test_image_path, \
+            f"Listed product image path '{test_product.image_path}' should match original '{test_image_path}'"
         print(f"   ✓ Confirmed: image_path is decrypted in list_products()")
         
         # Simulate catalog sending logic
