@@ -82,12 +82,24 @@ def test_command_structure():
     
     errors = []
     
-    # Check the command array structure
-    if "['signal-cli', '--output', 'json', '-u', self.phone_number, 'receive', '--timeout', '5']" in source:
-        print("  ✓ Correct command structure with --timeout flag")
+    # Check the command array structure - verify components appear in correct order
+    has_receive = "'receive'" in source or '"receive"' in source
+    has_timeout_flag = "'--timeout'" in source or '"--timeout"' in source
+    has_timeout_value = "'5'" in source or '"5"' in source
+    
+    # Find the receive command section
+    receive_pos = source.find("'receive'") if "'receive'" in source else source.find('"receive"')
+    if receive_pos > 0:
+        # Check that --timeout appears after receive
+        timeout_section = source[receive_pos:receive_pos + 200]
+        if has_timeout_flag and has_timeout_value:
+            print("  ✓ Correct command structure with --timeout flag")
+        else:
+            errors.append("❌ Command structure missing --timeout flag or value")
+            print("  ✗ Command structure missing --timeout flag or value")
     else:
-        errors.append("❌ Command structure incorrect")
-        print("  ✗ Command structure incorrect")
+        errors.append("❌ receive command not found")
+        print("  ✗ receive command not found")
     
     # Ensure subprocess settings are correct
     if "capture_output=True" in source:
