@@ -217,6 +217,27 @@ class MessageManager:
         
         return conversations
     
+    def delete_message(self, message_id: int) -> bool:
+        """
+        Delete a single message by ID
+        
+        Args:
+            message_id: Database ID of message to delete
+            
+        Returns:
+            True if message deleted successfully
+        """
+        try:
+            db_message = self.db.session.query(MessageModel).filter_by(id=message_id).first()
+            if db_message:
+                self.db.session.delete(db_message)
+                self.db.session.commit()
+                return True
+            return False
+        except Exception as e:
+            print(f"Error deleting message: {e}")
+            return False
+    
     def delete_conversation(self, contact_signal_id: str, my_signal_id: str) -> bool:
         """
         Delete all messages in a conversation

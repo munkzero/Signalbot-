@@ -2559,6 +2559,7 @@ class MessagesTab(QWidget):
         self.conversations_cache = {}  # Cache for conversation data
         self.current_recipient = None
         self.my_signal_id = None
+        self.current_messages = []  # Store message objects for current conversation
         
         # Get seller's Signal ID
         seller = self.seller_manager.get_seller(1)
@@ -2756,10 +2757,14 @@ class MessagesTab(QWidget):
             self.message_history.clear()
             messages = self.message_manager.get_conversation(recipient, self.my_signal_id)
             
+            # Store messages for deletion feature
+            self.current_messages = messages
+            
             for msg in messages:
                 timestamp = msg.sent_at.strftime("%H:%M") if msg.sent_at else "??:??"
                 sender_name = "You" if msg.is_outgoing else display_name
                 text = msg.message_body or "[Attachment]"
+                # Store message ID in the text for later retrieval
                 self.message_history.append(f"[{timestamp}] {sender_name}: {text}\n")
     
     def compose_message(self):
@@ -2787,6 +2792,9 @@ class MessagesTab(QWidget):
                 # Load message history
                 self.message_history.clear()
                 messages = self.message_manager.get_conversation(contact.signal_id, self.my_signal_id)
+                
+                # Store messages for deletion feature
+                self.current_messages = messages
                 
                 for msg in messages:
                     timestamp = msg.sent_at.strftime("%H:%M") if msg.sent_at else "??:??"
@@ -3118,6 +3126,15 @@ class MessagesTab(QWidget):
         
         if self.current_recipient:
             menu.addSeparator()
+            
+            # Add delete individual message option
+            cursor = self.message_history.textCursor()
+            if cursor.hasSelection() or cursor.block().text():
+                delete_msg_action = QAction("Delete This Message", self)
+                delete_msg_action.triggered.connect(self.delete_selected_message)
+                menu.addAction(delete_msg_action)
+            
+            menu.addSeparator()
             clear_action = QAction("Clear All Messages", self)
             clear_action.triggered.connect(self.clear_all_messages)
             menu.addAction(clear_action)
@@ -3130,6 +3147,88 @@ class MessagesTab(QWidget):
         if cursor.hasSelection():
             selected_text = cursor.selectedText()
             QApplication.clipboard().setText(selected_text)
+    
+    def delete_selected_message(self):
+        """Delete individual message at cursor position"""
+        if not self.current_recipient or not self.current_messages:
+            return
+        
+        # Get cursor position and block text
+        cursor = self.message_history.textCursor()
+        cursor.select(cursor.BlockUnderCursor)
+        block_text = cursor.selectedText().strip()
+        
+        if not block_text:
+            QMessageBox.warning(self, "No Message", "No message selected")
+            return
+        
+        # Find matching message in current_messages
+        # Message format: "[HH:MM] Sender: Text"
+        message_to_delete = None
+        for msg in self.current_messages:
+            timestamp = msg.sent_at.strftime("%H:%M") if msg.sent_at else "??:??"
+            sender_name = "You" if msg.is_outgoing else self.current_recipient
+            text = msg.message_body or "[Attachment]"
+            expected_text = f"[{timestamp}] {sender_name}: {text}"
+            
+            if expected_text in block_text:
+                message_to_delete = msg
+                break
+        
+        if not message_to_delete:
+            QMessageBox.warning(self, "Error", "Could not identify message")
+            return
+        
+        # Only allow deleting outgoing messages (seller's messages)
+        if not message_to_delete.is_outgoing:
+            QMessageBox.warning(
+                self, 
+                "Cannot Delete", 
+                "You can only delete messages you sent, not received messages."
+            )
+            return
+        
+        # Confirm deletion
+        reply = QMessageBox.question(
+            self,
+            "Delete Message",
+            "Are you sure you want to delete this message?\nThis action cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.message_manager.delete_message(message_to_delete.id):
+                # Reload conversation to show updated message list
+                self.load_conversation_refresh()
+                QMessageBox.information(self, "Success", "Message deleted")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to delete message")
+    
+    def load_conversation_refresh(self):
+        """Reload current conversation without changing selection"""
+        if not self.current_recipient or not self.my_signal_id:
+            return
+        
+        # Get contact name
+        contact = self.contact_manager.get_contact_by_signal_id(self.current_recipient)
+        display_name = contact.name if contact else self.current_recipient
+        
+        # Reload message history from database
+        self.message_history.clear()
+        messages = self.message_manager.get_conversation(self.current_recipient, self.my_signal_id)
+        
+        # Store messages for deletion feature
+        self.current_messages = messages
+        
+        for msg in messages:
+            timestamp = msg.sent_at.strftime("%H:%M") if msg.sent_at else "??:??"
+            sender_name = "You" if msg.is_outgoing else display_name
+            text = msg.message_body or "[Attachment]"
+            self.message_history.append(f"[{timestamp}] {sender_name}: {text}\n")
+        
+        # Refresh conversation list
+        self.load_conversations(force_refresh=True)
     
     def clear_all_messages(self):
         """Clear all messages in current conversation"""
