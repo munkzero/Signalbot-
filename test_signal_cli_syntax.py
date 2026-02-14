@@ -68,8 +68,6 @@ def test_catalog_image_sending():
     
     try:
         # Read source files directly to avoid PyQt5 dependency
-        import inspect
-        
         dashboard_path = os.path.join(os.path.dirname(__file__), 'signalbot', 'gui', 'dashboard.py')
         buyer_handler_path = os.path.join(os.path.dirname(__file__), 'signalbot', 'core', 'buyer_handler.py')
         
@@ -87,6 +85,9 @@ def test_catalog_image_sending():
         
         # Extract just the send_catalog method (approximate)
         dashboard_catalog_end = dashboard_source.find('\n    def ', dashboard_catalog_start + 10)
+        if dashboard_catalog_end == -1:
+            # If no next method found, extract till end of file
+            dashboard_catalog_end = len(dashboard_source)
         dashboard_catalog_method = dashboard_source[dashboard_catalog_start:dashboard_catalog_end]
         
         # Find send_catalog method in buyer_handler
@@ -97,6 +98,9 @@ def test_catalog_image_sending():
         
         # Extract just the send_catalog method (approximate)
         buyer_catalog_end = buyer_source.find('\n    def ', buyer_catalog_start + 10)
+        if buyer_catalog_end == -1:
+            # If no next method found, extract till end of file
+            buyer_catalog_end = len(buyer_source)
         buyer_catalog_method = buyer_source[buyer_catalog_start:buyer_catalog_end]
         
         checks_passed = []
