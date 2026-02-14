@@ -2698,6 +2698,46 @@ class MessagesTab(QWidget):
         
         return product_id
     
+    def _resolve_image_path(self, image_path: str) -> Optional[str]:
+        """
+        Resolve image path by checking multiple common locations.
+        Handles both relative and absolute paths.
+        
+        Args:
+            image_path: Image path from database (may be relative)
+            
+        Returns:
+            Absolute path if file found, None otherwise
+        """
+        import os
+        
+        if not image_path:
+            return None
+        
+        # If already absolute and exists, return it
+        if os.path.isabs(image_path):
+            if os.path.exists(image_path) and os.path.isfile(image_path):
+                return image_path
+            return None
+        
+        # Relative path - search common directories
+        base_dir = os.getcwd()
+        
+        search_dirs = [
+            'data/products/images',
+            'data/images',
+            'data/product_images',
+            'images',
+            '.',
+        ]
+        
+        for search_dir in search_dirs:
+            full_path = os.path.join(base_dir, search_dir, image_path)
+            if os.path.exists(full_path) and os.path.isfile(full_path):
+                return full_path
+        
+        return None
+    
     @staticmethod
     def _format_message_display(msg, display_name: str) -> str:
         """
@@ -2991,6 +3031,8 @@ class MessagesTab(QWidget):
         progress.setWindowModality(Qt.WindowModal)
         
         sent_count = 0
+        missing_images = []
+        
         for i, product in enumerate(products):
             if progress.wasCanceled():
                 break
@@ -3007,18 +3049,15 @@ class MessagesTab(QWidget):
 🏷️ Category: {product.category or 'N/A'}
 """
             
-            # Attach product image if exists
+            # Resolve image path intelligently
             attachments = []
             if product.image_path:
-                print(f"DEBUG: Product {product.name} has image_path: {product.image_path}")
-                if os.path.exists(product.image_path):
-                    attachments.append(product.image_path)
-                    print(f"DEBUG: Attaching image for {product.name}: {product.image_path}")
+                resolved_path = self._resolve_image_path(product.image_path)
+                
+                if resolved_path:
+                    attachments.append(resolved_path)
                 else:
-                    print(f"WARNING: Image path set but file missing for {product.name}: {product.image_path}")
-                    if not os.path.isabs(product.image_path):
-                        print(f"  Note: Path is relative, not absolute")
-                    print(f"  Current working directory: {os.getcwd()}")
+                    missing_images.append(product.name)
             
             # Send via Signal
             try:
@@ -3048,7 +3087,14 @@ class MessagesTab(QWidget):
             time.sleep(MESSAGE_SEND_DELAY_SECONDS)  # Avoid rate limiting
         
         progress.close()
-        QMessageBox.information(self, "Success", f"Sent {sent_count} of {len(products)} products")
+        
+        # Show results with information about missing images
+        result_msg = f"Sent {sent_count} of {len(products)} products"
+        if missing_images:
+            result_msg += f"\n\nImages not found for:\n" + "\n".join(f"  • {name}" for name in missing_images)
+            result_msg += f"\n\nSearched in: data/products/images/, data/images/, and other common directories"
+        
+        QMessageBox.information(self, "Catalog Sent", result_msg)
         self.load_conversations(force_refresh=True)
     
     def attach_image(self):
