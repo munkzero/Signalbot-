@@ -283,10 +283,10 @@ class SignalHandler:
                 print("DEBUG: Checking for messages...")
                 # Receive messages using signal-cli
                 result = subprocess.run(
-                    ['signal-cli', '--output', 'json', '-u', self.phone_number, 'receive'],
+                    ['signal-cli', '--output', 'json', '-u', self.phone_number, 'receive', '--timeout', '5'],
                     capture_output=True,
                     text=True,
-                    timeout=10
+                    timeout=15
                 )
                 
                 if result.returncode != 0 and result.stderr:
@@ -303,6 +303,9 @@ class SignalHandler:
                             except json.JSONDecodeError:
                                 print(f"DEBUG: Failed to parse JSON: {line[:100]}")
                 
+            except subprocess.TimeoutExpired:
+                # This should rarely happen now with --timeout flag
+                print(f"WARNING: signal-cli receive command timed out after 15 seconds")
             except Exception as e:
                 print(f"ERROR: Error receiving messages: {e}")
             
