@@ -320,14 +320,36 @@ class SignalHandler:
         """
         # Extract message info
         envelope = message_data.get('envelope', {})
-        source = envelope.get('source') or envelope.get('sourceNumber', '')
-        timestamp = envelope.get('timestamp', 0)
         
-        data_message = envelope.get('dataMessage', {})
-        message_text = data_message.get('message', '')
-        group_info = data_message.get('groupInfo')
+        # Check if this is a sync message (self-sent) or regular message
+        sync_message = envelope.get('syncMessage', {})
+        sent_message = sync_message.get('sentMessage', {})
         
-        print(f"DEBUG: Received message from {source}: {message_text[:50] if message_text else '(no text)'}")
+        if sent_message:
+            # This is a message we sent to ourselves or others
+            source = envelope.get('source') or envelope.get('sourceNumber', '')
+            timestamp = sent_message.get('timestamp', 0)
+            message_text = sent_message.get('message', '')
+            destination = sent_message.get('destination') or sent_message.get('destinationNumber', '')
+            group_info = sent_message.get('groupInfo')
+            
+            # For self-messages, we might want to skip processing
+            if destination == self.phone_number:
+                # Skip messages we sent to ourselves
+                print(f"DEBUG: Skipping self-sent message (syncMessage)")
+                return
+            
+            print(f"DEBUG: Received syncMessage from {source}: {message_text[:50] if message_text else '(no text)'}")
+        else:
+            # Regular incoming message from someone else
+            source = envelope.get('source') or envelope.get('sourceNumber', '')
+            timestamp = envelope.get('timestamp', 0)
+            
+            data_message = envelope.get('dataMessage', {})
+            message_text = data_message.get('message', '')
+            group_info = data_message.get('groupInfo')
+            
+            print(f"DEBUG: Received dataMessage from {source}: {message_text[:50] if message_text else '(no text)'}")
         
         # Create message object
         message = {
