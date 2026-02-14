@@ -28,6 +28,7 @@ def demonstrate_fix():
     print("-" * 70)
     
     # This is the EXACT JSON from the problem statement
+    # Note: JSON uses lowercase 'false', which json.loads() parses correctly
     self_message_json = """
 {
   "envelope": {

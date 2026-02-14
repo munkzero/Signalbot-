@@ -15,7 +15,7 @@ Updated the `_handle_message()` method in `signalbot/core/signal_handler.py` to:
 
 ### File: `signalbot/core/signal_handler.py`
 
-**Before (lines 314-354):**
+**Before (lines 314-330, excerpt):**
 ```python
 def _handle_message(self, message_data: Dict):
     """Handle received message"""
@@ -28,10 +28,13 @@ def _handle_message(self, message_data: Dict):
     group_info = data_message.get('groupInfo')
     
     print(f"DEBUG: Received message from {source}: {message_text[:50] if message_text else '(no text)'}")
+    
+    # Create message object and process...
+    message = {...}
     # ... rest of processing
 ```
 
-**After (lines 314-375):**
+**After (lines 314-375, excerpt):**
 ```python
 def _handle_message(self, message_data: Dict):
     """Handle received message"""
@@ -66,7 +69,9 @@ def _handle_message(self, message_data: Dict):
         
         print(f"DEBUG: Received dataMessage from {source}: {message_text[:50] if message_text else '(no text)'}")
     
-    # ... rest of processing (unchanged)
+    # Create message object and process (unchanged from original)
+    message = {...}
+    # ... rest of processing
 ```
 
 ## Test Coverage
