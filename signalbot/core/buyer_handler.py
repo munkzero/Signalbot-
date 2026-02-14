@@ -2,6 +2,7 @@
 Buyer Handler - Processes buyer commands and order creation
 """
 
+import os
 import re
 from typing import Optional, Tuple
 from datetime import datetime, timedelta
@@ -13,6 +14,18 @@ from ..utils.qr_generator import qr_generator
 
 # TODO: Replace with real-time exchange rate API
 XMR_EXCHANGE_RATE_USD = 150.0  # Placeholder: 1 XMR = $150 USD
+
+# Delay between catalog product messages to avoid rate limiting
+CATALOG_SEND_DELAY_SECONDS = 1.5
+
+# Common image directories to search for product images (in order of priority)
+COMMON_IMAGE_SEARCH_DIRS = [
+    'data/products/images',      # Expected location
+    'data/images',                # Alternative location
+    'data/product_images',        # Another common location
+    'images',                     # Simple location
+    '.',                          # Current directory
+]
 
 
 class BuyerHandler:
@@ -52,6 +65,45 @@ class BuyerHandler:
             return f"#{product_id}"
         
         return product_id
+    
+    def _resolve_image_path(self, image_path: str) -> Optional[str]:
+        """
+        Resolve image path by checking multiple common locations.
+        Handles both relative and absolute paths.
+        
+        Args:
+            image_path: Image path from database (may be relative)
+            
+        Returns:
+            Absolute path if file found, None otherwise
+        """
+        if not image_path:
+            return None
+        
+        # If already absolute and exists, return it
+        if os.path.isabs(image_path):
+            if os.path.exists(image_path) and os.path.isfile(image_path):
+                return image_path
+            else:
+                print(f"  Absolute path doesn't exist: {image_path}")
+                return None
+        
+        # Relative path - search common directories
+        base_dir = os.getcwd()
+        
+        # Try each directory
+        for search_dir in COMMON_IMAGE_SEARCH_DIRS:
+            full_path = os.path.join(base_dir, search_dir, image_path)
+            
+            if os.path.exists(full_path) and os.path.isfile(full_path):
+                print(f"  ✓ Found image: {full_path}")
+                return full_path
+            else:
+                print(f"  ✗ Not found: {full_path}")
+        
+        print(f"  ✗ Image not found in any common directory: {image_path}")
+        print(f"    Searched: {', '.join(COMMON_IMAGE_SEARCH_DIRS)}")
+        return None
     
     def handle_buyer_message(self, buyer_signal_id: str, message_text: str):
         """
@@ -145,7 +197,7 @@ class BuyerHandler:
         Args:
             buyer_signal_id: Buyer's Signal ID
         """
-        import os
+        import time
         
         products = self.product_manager.list_products(active_only=True)
         
@@ -178,24 +230,29 @@ class BuyerHandler:
 To order: "order {product_id_str} qty [amount]"
 """
             
-            # Check if image file actually exists before attaching
+            # Resolve image path intelligently
             attachments = []
             if product.image_path:
-                print(f"DEBUG: Product {product.name} has image_path: {product.image_path}")
-                if os.path.exists(product.image_path) and os.path.isfile(product.image_path):
-                    attachments.append(product.image_path)
-                    print(f"DEBUG: Attaching image for {product.name}: {product.image_path}")
+                print(f"DEBUG: Resolving image for {product.name}...")
+                print(f"  Raw path from DB: {product.image_path}")
+                
+                # Use intelligent path resolution
+                resolved_path = self._resolve_image_path(product.image_path)
+                
+                if resolved_path:
+                    attachments.append(resolved_path)
+                    print(f"  ✅ Image will be attached: {resolved_path}")
                 else:
-                    print(f"WARNING: Image path set but file missing for {product.name}: {product.image_path}")
-                    if not os.path.isabs(product.image_path):
-                        print(f"  Note: Path is relative, not absolute")
-                    print(f"  Current working directory: {os.getcwd()}")
+                    print(f"  ❌ No image found for {product.name}")
             
             self.signal_handler.send_message(
                 recipient=buyer_signal_id,
                 message=message.strip(),
                 attachments=attachments if attachments else None
             )
+            
+            # Small delay between products
+            time.sleep(CATALOG_SEND_DELAY_SECONDS)
     
     def create_order(self, buyer_signal_id: str, product_id: str, quantity: int):
         """
