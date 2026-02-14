@@ -60,6 +60,14 @@ pip install -r requirements.txt
 
 ### First Run
 
+**Recommended:** Use the startup script for automatic temp directory management:
+
+```bash
+./start.sh
+```
+
+Or run directly (without temp directory management):
+
 ```bash
 python signalbot/main.py
 ```
@@ -69,6 +77,8 @@ The setup wizard will guide you through:
 2. Linking your Signal account (QR code)
 3. Configuring Monero wallet (RPC or file mode)
 4. Selecting default currency
+
+> **Note on Disk Space:** Signal-cli extracts ~127MB of native libraries to temp directories on each startup. If the application crashes, these files may not be cleaned up automatically. The `start.sh` script manages this by using a project-local temp directory and cleaning up orphaned files. See [TEMP_DIRECTORY_MANAGEMENT.md](TEMP_DIRECTORY_MANAGEMENT.md) for details.
 
 ## Configuration
 
@@ -237,6 +247,39 @@ export MASTER_PASSWORD="your_secure_password"
 export DEBUG="True"
 ```
 
+## Startup and Monitoring
+
+### Using the Startup Script (Recommended)
+
+The `start.sh` script provides automatic temp directory management:
+
+```bash
+./start.sh
+```
+
+This script:
+- Sets up a project-local temp directory (./tmp)
+- Cleans up orphaned signal-cli temp files from previous crashes
+- Shows current temp directory usage
+- Activates the virtual environment
+- Launches the application
+
+### Monitoring Temp Directory
+
+Check temp directory usage at any time:
+
+```bash
+./check_temp.sh
+```
+
+This will show:
+- Current temp directory size
+- Number of active/orphaned libsignal directories
+- Alerts if usage exceeds 1GB threshold
+- Recommendations for cleanup if needed
+
+See [TEMP_DIRECTORY_MANAGEMENT.md](TEMP_DIRECTORY_MANAGEMENT.md) for detailed information about temp directory management.
+
 ## Troubleshooting
 
 ### Signal Connection Issues
@@ -253,6 +296,32 @@ export DEBUG="True"
 - Check data directory permissions
 - Ensure master password matches
 - Delete `data/db/shopbot.db` to reset (loses all data!)
+
+### Disk Space Issues
+
+If you encounter "No space left on device" errors:
+
+1. **Check temp directory usage:**
+   ```bash
+   ./check_temp.sh
+   ```
+
+2. **Clean up orphaned files:**
+   ```bash
+   ./start.sh  # Automatically cleans up old files
+   ```
+
+3. **Manual cleanup (if needed):**
+   ```bash
+   rm -rf ./tmp/libsignal*
+   ```
+
+4. **Check overall disk space:**
+   ```bash
+   df -h
+   ```
+
+See [TEMP_DIRECTORY_MANAGEMENT.md](TEMP_DIRECTORY_MANAGEMENT.md) for more details on managing temp directory disk usage.
 
 ## Development
 
