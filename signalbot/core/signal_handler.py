@@ -16,81 +16,20 @@ class SignalHandler:
     Note: Requires signal-cli to be installed and configured
     """
     
-    def __init__(self, phone_number: Optional[str] = None, auto_daemon: bool = True):
+    def __init__(self, phone_number: Optional[str] = None):
         """
         Initialize Signal handler
         
         Args:
             phone_number: Seller's Signal phone number
-            auto_daemon: Automatically start daemon mode for faster messaging (enabled by default for 5x speed improvement)
         """
         self.phone_number = phone_number
         self.message_callbacks = []
         self.buyer_handler = None  # Will be set by dashboard
         self.listening = False
         self.listen_thread = None
-        self.daemon_process = None
-        self.daemon_running = False
         
-        print(f"DEBUG: SignalHandler initialized with phone_number={phone_number}, auto_daemon={auto_daemon}")
-        
-        # Auto-start daemon for faster messaging (disabled by default)
-        if auto_daemon and phone_number:
-            self.start_daemon()
-    
-    def start_daemon(self):
-        """
-        Start signal-cli in daemon mode for faster messaging
-        
-        Returns:
-            True if daemon started successfully
-        """
-        if self.daemon_running and self.daemon_process and self.daemon_process.poll() is None:
-            return True  # Already running
-        
-        if not self.phone_number:
-            print("Cannot start daemon: No phone number configured")
-            return False
-        
-        try:
-            # Start daemon in background
-            self.daemon_process = subprocess.Popen(
-                ['signal-cli', '--output', 'json', '-u', self.phone_number, 'daemon'],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.PIPE
-            )
-            print(f"Signal daemon started (PID: {self.daemon_process.pid})")
-            
-            # Give it 2 seconds to initialize
-            time.sleep(2)
-            
-            # Check if it's still running
-            if self.daemon_process.poll() is None:
-                self.daemon_running = True
-                return True
-            else:
-                print("Daemon failed to start")
-                return False
-        except FileNotFoundError:
-            print("signal-cli not found - falling back to direct mode")
-            return False
-        except Exception as e:
-            print(f"Failed to start daemon: {e}")
-            return False
-    
-    def stop_daemon(self):
-        """Stop the signal-cli daemon"""
-        if self.daemon_process:
-            try:
-                self.daemon_process.terminate()
-                self.daemon_process.wait(timeout=5)
-                print("Signal daemon stopped")
-            except Exception as e:
-                print(f"Error stopping daemon: {e}")
-            finally:
-                self.daemon_process = None
-                self.daemon_running = False
+        print(f"DEBUG: SignalHandler initialized with phone_number={phone_number}")
     
     def link_device(self) -> str:
         """
@@ -124,8 +63,7 @@ class SignalHandler:
         attachments: Optional[List[str]] = None
     ) -> bool:
         """
-        Send message via Signal
-        Uses daemon mode if available for faster sending (2-3s vs 10-15s)
+        Send message via Signal using direct mode
         
         Args:
             recipient: Recipient phone number (e.g., "+15555550123") or username (e.g., "randomuser.01")
@@ -138,37 +76,11 @@ class SignalHandler:
         if not self.phone_number:
             raise RuntimeError("Signal not configured")
         
-        # Try daemon mode first (faster)
-        if self.daemon_running and self.daemon_process and self.daemon_process.poll() is None:
-            try:
-                return self._send_via_daemon(recipient, message, attachments)
-            except Exception as e:
-                print(f"Daemon send failed, falling back to direct: {e}")
-                self.daemon_running = False
-        
-        # Fallback to direct mode (slower but more reliable)
-        return self._send_direct(recipient, message, attachments)
-    
-    def _send_via_daemon(self, recipient: str, message: str, attachments: Optional[List[str]] = None) -> bool:
-        """
-        Send message via running daemon (faster: 2-3 seconds)
-        
-        Args:
-            recipient: Recipient phone number or username
-            message: Message text
-            attachments: Optional list of file paths
-            
-        Returns:
-            True if sent successfully
-        """
-        # For daemon mode, we still use direct for now
-        # Full daemon integration would require D-Bus or JSON-RPC
-        # For this implementation, just fall back to direct
         return self._send_direct(recipient, message, attachments)
     
     def _send_direct(self, recipient: str, message: str, attachments: Optional[List[str]] = None) -> bool:
         """
-        Send message directly via signal-cli (slower: 10-15 seconds)
+        Send message directly via signal-cli
         
         Args:
             recipient: Recipient phone number or username
@@ -255,13 +167,10 @@ class SignalHandler:
         print("DEBUG: Listen thread started successfully")
     
     def stop_listening(self):
-        """Stop listening for messages and clean up daemon"""
+        """Stop listening for messages"""
         self.listening = False
         if self.listen_thread:
             self.listen_thread.join(timeout=5)
-        
-        # Also stop daemon if running
-        self.stop_daemon()
     
     def is_listening(self):
         """
@@ -273,19 +182,21 @@ class SignalHandler:
         return self.listening
     
     def _listen_loop(self):
-        """
-        Background loop to receive messages
-        """
+        """Background loop to receive messages with adaptive polling"""
         if not self.phone_number:
             print("DEBUG: _listen_loop cannot start - no phone number configured")
             return
         
         print(f"DEBUG: Listen loop active for {self.phone_number}")
         
+        # Adaptive polling: longer sleep when idle, shorter when active
+        idle_sleep = 5  # 5 seconds when no messages
+        active_sleep = 2  # 2 seconds after receiving messages
+        current_sleep = idle_sleep
+        
         while self.listening:
             try:
                 print("DEBUG: Checking for messages...")
-                # Receive messages using signal-cli
                 result = subprocess.run(
                     ['signal-cli', '--output', 'json', '-u', self.phone_number, 'receive', '--timeout', '5'],
                     capture_output=True,
@@ -296,6 +207,8 @@ class SignalHandler:
                 if result.returncode != 0 and result.stderr:
                     print(f"DEBUG: signal-cli receive error: {result.stderr}")
                 
+                messages_received = False
+                
                 if result.returncode == 0 and result.stdout:
                     print(f"DEBUG: Received data from signal-cli")
                     # Parse JSON messages
@@ -304,16 +217,23 @@ class SignalHandler:
                             try:
                                 message_data = json.loads(line)
                                 self._handle_message(message_data)
+                                messages_received = True
                             except json.JSONDecodeError:
                                 print(f"DEBUG: Failed to parse JSON: {line[:100]}")
                 
+                # Adaptive sleep: poll faster when active, slower when idle
+                if messages_received:
+                    current_sleep = active_sleep
+                    print(f"DEBUG: Active mode - next check in {active_sleep}s")
+                else:
+                    current_sleep = idle_sleep
+                
             except subprocess.TimeoutExpired:
-                # This should rarely happen now with --timeout flag
                 print(f"WARNING: signal-cli receive command timed out after 15 seconds")
             except Exception as e:
                 print(f"ERROR: Error receiving messages: {e}")
             
-            time.sleep(2)
+            time.sleep(current_sleep)
     
     def _handle_message(self, message_data: Dict):
         """
