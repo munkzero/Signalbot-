@@ -2698,6 +2698,23 @@ class MessagesTab(QWidget):
         
         return product_id
     
+    @staticmethod
+    def _format_message_display(msg, display_name: str) -> str:
+        """
+        Format a message for display in the message history
+        
+        Args:
+            msg: Message object
+            display_name: Display name for the other party
+            
+        Returns:
+            Formatted message string
+        """
+        timestamp = msg.sent_at.strftime("%H:%M") if msg.sent_at else "??:??"
+        sender_name = "You" if msg.is_outgoing else display_name
+        text = msg.message_body or "[Attachment]"
+        return f"[{timestamp}] {sender_name}: {text}\n"
+    
     def load_conversations(self, force_refresh=False):
         """Load conversation list from database with caching"""
         self.conversations_list.clear()
@@ -2761,11 +2778,7 @@ class MessagesTab(QWidget):
             self.current_messages = messages
             
             for msg in messages:
-                timestamp = msg.sent_at.strftime("%H:%M") if msg.sent_at else "??:??"
-                sender_name = "You" if msg.is_outgoing else display_name
-                text = msg.message_body or "[Attachment]"
-                # Store message ID in the text for later retrieval
-                self.message_history.append(f"[{timestamp}] {sender_name}: {text}\n")
+                self.message_history.append(self._format_message_display(msg, display_name))
     
     def compose_message(self):
         """Open compose message dialog"""
@@ -2797,10 +2810,7 @@ class MessagesTab(QWidget):
                 self.current_messages = messages
                 
                 for msg in messages:
-                    timestamp = msg.sent_at.strftime("%H:%M") if msg.sent_at else "??:??"
-                    sender_name = "You" if msg.is_outgoing else contact.name
-                    text = msg.message_body or "[Attachment]"
-                    self.message_history.append(f"[{timestamp}] {sender_name}: {text}\n")
+                    self.message_history.append(self._format_message_display(msg, contact.name))
                 
                 # Focus on message input
                 self.message_input.setFocus()
@@ -3154,25 +3164,27 @@ class MessagesTab(QWidget):
             return
         
         # Get cursor position and block text
-        cursor = self.message_history.textCursor()
-        cursor.select(cursor.BlockUnderCursor)
-        block_text = cursor.selectedText().strip()
+        text_cursor = self.message_history.textCursor()
+        text_cursor.select(text_cursor.BlockUnderCursor)
+        block_text = text_cursor.selectedText().strip()
         
         if not block_text:
             QMessageBox.warning(self, "No Message", "No message selected")
             return
         
         # Find matching message in current_messages
-        # Message format: "[HH:MM] Sender: Text"
+        # Get contact name for formatting
+        contact = self.contact_manager.get_contact_by_signal_id(self.current_recipient)
+        display_name = contact.name if contact else self.current_recipient
+        
         message_to_delete = None
         for msg in self.current_messages:
-            timestamp = msg.sent_at.strftime("%H:%M") if msg.sent_at else "??:??"
-            sender_name = "You" if msg.is_outgoing else self.current_recipient
-            text = msg.message_body or "[Attachment]"
-            expected_text = f"[{timestamp}] {sender_name}: {text}"
+            # Use helper method to format message text
+            expected_text = self._format_message_display(msg, display_name).strip()
             
             if expected_text in block_text:
                 message_to_delete = msg
+                break
                 break
         
         if not message_to_delete:
@@ -3222,10 +3234,7 @@ class MessagesTab(QWidget):
         self.current_messages = messages
         
         for msg in messages:
-            timestamp = msg.sent_at.strftime("%H:%M") if msg.sent_at else "??:??"
-            sender_name = "You" if msg.is_outgoing else display_name
-            text = msg.message_body or "[Attachment]"
-            self.message_history.append(f"[{timestamp}] {sender_name}: {text}\n")
+            self.message_history.append(self._format_message_display(msg, display_name))
         
         # Refresh conversation list
         self.load_conversations(force_refresh=True)
