@@ -3132,6 +3132,7 @@ class MessagesTab(QWidget):
             
             if not success:
                 failed_count += 1
+                print(f"Product {product.name} failed after {max_retries} attempts")
             
             # Delay between products
             if index < total_products:

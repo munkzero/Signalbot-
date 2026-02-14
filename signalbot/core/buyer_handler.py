@@ -291,9 +291,11 @@ To order: "order {product_id_str} qty [amount]"
                     if attempt < max_retries:
                         print(f"  ⏳ Waiting 3 seconds before retry...")
                         time.sleep(3)
-                    else:
-                        print(f"  ❌ FAILED after {max_retries} attempts")
-                        failed_products.append(product.name)
+            
+            # Track failure if all attempts failed
+            if not success:
+                print(f"  ❌ FAILED after {max_retries} attempts")
+                failed_products.append(product.name)
             
             # Delay between products (avoid rate limiting)
             if index < total_products:  # Don't delay after last product
