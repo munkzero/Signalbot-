@@ -3010,9 +3010,9 @@ class MessagesTab(QWidget):
                 QMessageBox.warning(self, "Failed", "Failed to send products")
     
     def send_catalog(self):
-        """Send all active products to buyer with images"""
+        """Send product catalog to current recipient with robust error handling"""
         if not self.current_recipient:
-            QMessageBox.warning(self, "No Recipient", "Select a conversation first")
+            QMessageBox.warning(self, "No Recipient", "Please select a conversation first.")
             return
         
         if not self.product_manager:
@@ -3023,21 +3023,51 @@ class MessagesTab(QWidget):
         products = self.product_manager.list_products(active_only=True)
         
         if not products:
-            QMessageBox.warning(self, "No Products", "No products available to send")
+            QMessageBox.information(self, "No Products", "No active products to send.")
             return
         
-        # Show progress dialog
-        progress = QProgressDialog(f"Sending {len(products)} products...", "Cancel", 0, len(products), self)
-        progress.setWindowModality(Qt.WindowModal)
+        total_products = len(products)
+        
+        # Send catalog header
+        header = f"🛍️ PRODUCT CATALOG ({total_products} items)\n"
+        try:
+            self.signal_handler.send_message(
+                recipient=self.current_recipient,
+                message=header
+            )
+        except Exception as e:
+            print(f"Failed to send catalog header: {e}")
         
         sent_count = 0
+        failed_count = 0
         missing_images = []
         
-        for i, product in enumerate(products):
-            if progress.wasCanceled():
-                break
+        # Progress dialog
+        progress = QProgressDialog(
+            f"Sending catalog...",
+            "Cancel",
+            0,
+            total_products,
+            self
+        )
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setWindowTitle("Sending Catalog")
+        
+        # Send each product
+        for index, product in enumerate(products, 1):
+            # Update progress
+            progress.setValue(index - 1)
+            progress.setLabelText(f"Sending product {index}/{total_products}: {product.name}")
             
-            # Format product message with ID
+            # Check if user cancelled
+            if progress.wasCanceled():
+                QMessageBox.information(
+                    self,
+                    "Cancelled",
+                    f"Catalog sending cancelled. Sent {sent_count}/{total_products} products."
+                )
+                return
+            
             product_id_str = self._format_product_id(product.product_id)
             message = f"""━━━━━━━━━━━━━━━━━
 {product_id_str} - {product.name}
@@ -3049,7 +3079,7 @@ class MessagesTab(QWidget):
 🏷️ Category: {product.category or 'N/A'}
 """
             
-            # Resolve image path intelligently
+            # Resolve image path
             attachments = []
             if product.image_path:
                 resolved_path = self._resolve_image_path(product.image_path)
@@ -3059,44 +3089,74 @@ class MessagesTab(QWidget):
                 else:
                     missing_images.append(product.name)
             
-            # Send via Signal
-            try:
-                success = self.signal_handler.send_message(
-                    recipient=self.current_recipient,
-                    message=message.strip(),
-                    attachments=attachments if attachments else None
-                )
-                
-                if success:
-                    # Save to message history
-                    if self.my_signal_id:
-                        try:
-                            self.message_manager.add_message(
-                                sender_signal_id=self.my_signal_id,
-                                recipient_signal_id=self.current_recipient,
-                                message_body=message.strip(),
-                                is_outgoing=True
-                            )
-                        except Exception as e:
-                            print(f"Error saving catalog message: {e}")
-                    sent_count += 1
-            except Exception as e:
-                print(f"Error sending product {product.name}: {e}")
+            # Send with retry logic
+            max_retries = 2
+            success = False
             
-            progress.setValue(i + 1)
-            time.sleep(MESSAGE_SEND_DELAY_SECONDS)  # Avoid rate limiting
+            for attempt in range(1, max_retries + 1):
+                try:
+                    result = self.signal_handler.send_message(
+                        recipient=self.current_recipient,
+                        message=message.strip(),
+                        attachments=attachments if attachments else None
+                    )
+                    
+                    if result:
+                        sent_count += 1
+                        success = True
+                        
+                        # Save to message history
+                        if self.my_signal_id:
+                            try:
+                                self.message_manager.add_message(
+                                    sender_signal_id=self.my_signal_id,
+                                    recipient_signal_id=self.current_recipient,
+                                    message_body=message.strip(),
+                                    is_outgoing=True
+                                )
+                            except Exception as e:
+                                print(f"Failed to save message to history: {e}")
+                        
+                        break  # Success, exit retry loop
+                        
+                    else:
+                        print(f"Attempt {attempt} for {product.name} returned False")
+                        if attempt < max_retries:
+                            time.sleep(2)
+                            
+                except Exception as e:
+                    print(f"Attempt {attempt} for {product.name} failed: {e}")
+                    
+                    if attempt < max_retries:
+                        time.sleep(2)
+            
+            if not success:
+                failed_count += 1
+            
+            # Delay between products
+            if index < total_products:
+                time.sleep(2.5)
         
-        progress.close()
+        progress.setValue(total_products)
         
-        # Show results with information about missing images
-        result_msg = f"Sent {sent_count} of {len(products)} products"
+        # Show results
+        result_msg = f"Catalog Send Complete\n\n"
+        result_msg += f"✅ Successfully sent: {sent_count}/{total_products} products\n"
+        
+        if failed_count > 0:
+            result_msg += f"❌ Failed: {failed_count} products\n"
+        
         if missing_images:
-            result_msg += f"\n\nImages not found for:\n" + "\n".join(f"  • {name}" for name in missing_images)
-            # Create readable list of search directories
-            search_dirs_display = ", ".join(f"{d}/" for d in COMMON_IMAGE_SEARCH_DIRS if d != '.')
-            result_msg += f"\n\nSearched in: {search_dirs_display}"
+            result_msg += f"\n⚠ Images not found for:\n"
+            result_msg += "\n".join(f"  • {name}" for name in missing_images)
         
-        QMessageBox.information(self, "Catalog Sent", result_msg)
+        if sent_count == total_products:
+            QMessageBox.information(self, "Success", result_msg)
+        elif sent_count > 0:
+            QMessageBox.warning(self, "Partial Success", result_msg)
+        else:
+            QMessageBox.critical(self, "Failed", result_msg)
+        
         self.load_conversations(force_refresh=True)
     
     def attach_image(self):
