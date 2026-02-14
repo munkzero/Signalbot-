@@ -192,7 +192,7 @@ class BuyerHandler:
     
     def send_catalog(self, buyer_signal_id: str):
         """
-        Send catalog to buyer
+        Send catalog to buyer with robust error handling
         
         Args:
             buyer_signal_id: Buyer's Signal ID
@@ -208,16 +208,34 @@ class BuyerHandler:
             )
             return
         
-        # Send catalog header
-        header = f"🛍️ PRODUCT CATALOG ({len(products)} items)\n\n"
-        self.signal_handler.send_message(
-            recipient=buyer_signal_id,
-            message=header
-        )
+        total_products = len(products)
+        print(f"\n{'='*60}")
+        print(f"📦 SENDING CATALOG: {total_products} products")
+        print(f"{'='*60}\n")
         
-        # Send each product
-        for product in products:
+        # Send catalog header
+        header = f"🛍️ PRODUCT CATALOG ({total_products} items)\n\n"
+        try:
+            self.signal_handler.send_message(
+                recipient=buyer_signal_id,
+                message=header
+            )
+            print(f"✓ Catalog header sent\n")
+        except Exception as e:
+            print(f"✗ Failed to send header: {e}\n")
+        
+        # Track success/failure
+        sent_count = 0
+        failed_products = []
+        
+        # Send each product with robust error handling
+        for index, product in enumerate(products, 1):
             product_id_str = self._format_product_id(product.product_id)
+            
+            print(f"{'─'*60}")
+            print(f"📦 Product {index}/{total_products}: {product.name} ({product_id_str})")
+            print(f"{'─'*60}")
+            
             message = f"""━━━━━━━━━━━━━━━━━
 {product_id_str} - {product.name}
 ━━━━━━━━━━━━━━━━━
@@ -230,29 +248,93 @@ class BuyerHandler:
 To order: "order {product_id_str} qty [amount]"
 """
             
-            # Resolve image path intelligently
+            # Resolve image path
             attachments = []
             if product.image_path:
-                print(f"DEBUG: Resolving image for {product.name}...")
-                print(f"  Raw path from DB: {product.image_path}")
-                
-                # Use intelligent path resolution
+                print(f"  🔍 Resolving image path...")
                 resolved_path = self._resolve_image_path(product.image_path)
                 
                 if resolved_path:
                     attachments.append(resolved_path)
-                    print(f"  ✅ Image will be attached: {resolved_path}")
+                    print(f"  ✓ Image found: {os.path.basename(resolved_path)}")
                 else:
-                    print(f"  ❌ No image found for {product.name}")
+                    print(f"  ⚠ No image found (will send text only)")
             
+            # Attempt to send with retry logic
+            max_retries = 2
+            success = False
+            
+            for attempt in range(1, max_retries + 1):
+                try:
+                    print(f"  📤 Sending (attempt {attempt}/{max_retries})...")
+                    
+                    result = self.signal_handler.send_message(
+                        recipient=buyer_signal_id,
+                        message=message.strip(),
+                        attachments=attachments if attachments else None
+                    )
+                    
+                    if result:
+                        sent_count += 1
+                        success = True
+                        print(f"  ✅ SUCCESS - Product sent!")
+                        break  # Success, exit retry loop
+                    else:
+                        print(f"  ⚠ Attempt {attempt} failed (no exception but returned False)")
+                        if attempt < max_retries:
+                            print(f"  ⏳ Waiting 3 seconds before retry...")
+                            time.sleep(3)
+                        
+                except Exception as e:
+                    print(f"  ✗ Attempt {attempt} failed: {e}")
+                    
+                    if attempt < max_retries:
+                        print(f"  ⏳ Waiting 3 seconds before retry...")
+                        time.sleep(3)
+            
+            # Track failure if all attempts failed
+            if not success:
+                print(f"  ❌ FAILED after {max_retries} attempts")
+                failed_products.append(product.name)
+            
+            # Delay between products (avoid rate limiting)
+            if index < total_products:  # Don't delay after last product
+                delay = 2.5
+                print(f"  ⏸ Waiting {delay}s before next product...\n")
+                time.sleep(delay)
+            else:
+                print()  # Just newline for last product
+        
+        # Send footer
+        print(f"{'─'*60}")
+        print(f"📋 Sending catalog footer...")
+        print(f"{'─'*60}")
+        
+        footer = f"\n✨ End of catalog\n\nTo order, reply with 'ORDER {product_id_str} QTY X'"
+        try:
             self.signal_handler.send_message(
                 recipient=buyer_signal_id,
-                message=message.strip(),
-                attachments=attachments if attachments else None
+                message=footer
             )
-            
-            # Small delay between products
-            time.sleep(CATALOG_SEND_DELAY_SECONDS)
+            print(f"✓ Footer sent\n")
+        except Exception as e:
+            print(f"✗ Failed to send footer: {e}\n")
+        
+        # Summary report
+        print(f"\n{'='*60}")
+        print(f"📊 CATALOG SEND COMPLETE")
+        print(f"{'='*60}")
+        print(f"✅ Sent: {sent_count}/{total_products} products")
+        
+        if failed_products:
+            print(f"❌ Failed: {len(failed_products)} products")
+            print(f"   Products that failed:")
+            for name in failed_products:
+                print(f"     • {name}")
+        else:
+            print(f"🎉 All products sent successfully!")
+        
+        print(f"{'='*60}\n")
     
     def create_order(self, buyer_signal_id: str, product_id: str, quantity: int):
         """
