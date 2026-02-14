@@ -81,6 +81,12 @@ IMAGE_QUALITY = 85  # JPEG quality after compression
 LOG_DIR = DATA_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 LOG_FILE = LOG_DIR / "shopbot.log"
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')  # DEBUG, INFO, WARNING, ERROR
+
+def should_log(level: str) -> bool:
+    """Check if message should be logged based on current level"""
+    levels = {'DEBUG': 0, 'INFO': 1, 'WARNING': 2, 'ERROR': 3}
+    return levels.get(level, 0) >= levels.get(LOG_LEVEL, 1)
 
 # GUI settings
 WINDOW_TITLE = "Signal Shop Bot - Seller Dashboard"

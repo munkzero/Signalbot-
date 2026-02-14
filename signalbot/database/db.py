@@ -2,7 +2,7 @@
 Database models and encrypted storage for Signal Shop Bot
 """
 
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, Text
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, Text, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
@@ -140,6 +140,57 @@ class DatabaseManager:
         Base.metadata.create_all(self.engine)
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
+        
+        # Create performance indexes
+        self._create_indexes()
+    
+    def _create_indexes(self):
+        """Create database indexes for performance optimization"""
+        try:
+            with self.engine.connect() as conn:
+                # Index for active products lookup
+                conn.execute(text('''
+                    CREATE INDEX IF NOT EXISTS idx_products_active 
+                    ON products(active) 
+                    WHERE active = 1
+                '''))
+                
+                # Index for product ID lookups
+                conn.execute(text('''
+                    CREATE INDEX IF NOT EXISTS idx_products_product_id 
+                    ON products(product_id)
+                '''))
+                
+                # Index for order status queries
+                conn.execute(text('''
+                    CREATE INDEX IF NOT EXISTS idx_orders_status 
+                    ON orders(payment_status)
+                '''))
+                
+                # Index for payment address lookups (critical for payment detection)
+                conn.execute(text('''
+                    CREATE INDEX IF NOT EXISTS idx_orders_payment_address 
+                    ON orders(payment_address)
+                '''))
+                
+                # Index for pending orders (status + created_at)
+                conn.execute(text('''
+                    CREATE INDEX IF NOT EXISTS idx_orders_pending 
+                    ON orders(payment_status, created_at)
+                    WHERE payment_status = 'pending'
+                '''))
+                
+                # Index for order status
+                conn.execute(text('''
+                    CREATE INDEX IF NOT EXISTS idx_orders_order_status 
+                    ON orders(order_status)
+                '''))
+                
+                conn.commit()
+                print("✓ Database indexes created")
+                
+        except Exception as e:
+            print(f"⚠️  Error creating indexes: {e}")
     
     def encrypt_field(self, value: str, salt: Optional[str] = None) -> tuple[str, str]:
         """

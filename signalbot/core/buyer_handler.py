@@ -4,6 +4,7 @@ Buyer Handler - Processes buyer commands and order creation
 
 import os
 import re
+import time
 from typing import Optional, Tuple
 from datetime import datetime, timedelta
 from ..models.product import ProductManager
@@ -28,6 +29,48 @@ COMMON_IMAGE_SEARCH_DIRS = [
 ]
 
 
+class ProductCache:
+    """Cache for product data to reduce database queries"""
+    
+    def __init__(self, product_manager, cache_duration: int = 300):
+        """
+        Initialize product cache
+        
+        Args:
+            product_manager: ProductManager instance
+            cache_duration: Cache lifetime in seconds (default 5 minutes)
+        """
+        self.product_manager = product_manager
+        self.cache = None
+        self.last_refresh = 0
+        self.cache_duration = cache_duration
+    
+    def get_products(self, active_only: bool = True) -> list:
+        """
+        Get products from cache or refresh if stale
+        
+        Args:
+            active_only: Return only active products
+            
+        Returns:
+            List of products
+        """
+        now = time.time()
+        
+        # Refresh cache if empty or expired
+        if self.cache is None or (now - self.last_refresh) > self.cache_duration:
+            self.cache = self.product_manager.list_products(active_only=active_only)
+            self.last_refresh = now
+            print(f"📦 Product cache refreshed ({len(self.cache)} products)")
+        
+        return self.cache
+    
+    def invalidate(self):
+        """Force cache refresh on next get"""
+        self.cache = None
+        self.last_refresh = 0
+
+
 class BuyerHandler:
     """Handles buyer commands and order creation"""
     
@@ -45,6 +88,9 @@ class BuyerHandler:
         self.order_manager = order_manager
         self.signal_handler = signal_handler
         self.seller_signal_id = seller_signal_id
+        
+        # Add product cache
+        self.product_cache = ProductCache(product_manager, cache_duration=300)
     
     @staticmethod
     def _format_product_id(product_id: Optional[str]) -> str:
@@ -104,6 +150,80 @@ class BuyerHandler:
         print(f"  ✗ Image not found in any common directory: {image_path}")
         print(f"    Searched: {', '.join(COMMON_IMAGE_SEARCH_DIRS)}")
         return None
+    
+    def _optimize_image_for_signal(self, image_path: str, max_size_kb: int = 800) -> str:
+        """
+        Optimize image for Signal sending - compress and resize if needed.
+        
+        Args:
+            image_path: Path to original image
+            max_size_kb: Maximum file size in KB (default 800KB)
+            
+        Returns:
+            Path to optimized image (or original if already optimal)
+        """
+        try:
+            from PIL import Image
+            import tempfile
+            
+            # Check current size
+            file_size_kb = os.path.getsize(image_path) / 1024
+            file_ext = os.path.splitext(image_path)[1].lower()
+            
+            print(f"  📊 Original: {file_size_kb:.1f}KB, Format: {file_ext}")
+            
+            # If already small and JPG, use as-is
+            if file_size_kb <= max_size_kb and file_ext in ['.jpg', '.jpeg']:
+                print(f"  ✓ Image already optimized")
+                return image_path
+            
+            # Open and optimize
+            img = Image.open(image_path)
+            
+            # Convert RGBA to RGB if needed (for PNG with transparency)
+            if img.mode in ('RGBA', 'LA', 'P'):
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                if img.mode == 'P':
+                    img = img.convert('RGBA')
+                background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+                img = background
+            
+            # Resize if too large (max 1920px on longest side)
+            max_dimension = 1920
+            if img.width > max_dimension or img.height > max_dimension:
+                ratio = max_dimension / max(img.width, img.height)
+                new_size = (int(img.width * ratio), int(img.height * ratio))
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+                print(f"  📐 Resized to: {new_size[0]}x{new_size[1]}")
+            
+            # Save as optimized JPG
+            optimized_path = os.path.join(
+                tempfile.gettempdir(),
+                f"signal_opt_{os.path.basename(image_path).rsplit('.', 1)[0]}.jpg"
+            )
+            
+            # Start with quality 85, reduce if still too large
+            quality = 85
+            while quality >= 60:
+                img.save(optimized_path, 'JPEG', quality=quality, optimize=True)
+                new_size_kb = os.path.getsize(optimized_path) / 1024
+                
+                if new_size_kb <= max_size_kb or quality == 60:
+                    print(f"  📉 Optimized: {file_size_kb:.1f}KB → {new_size_kb:.1f}KB (quality={quality})")
+                    return optimized_path
+                
+                quality -= 5
+            
+            return optimized_path
+            
+        except ImportError:
+            print(f"  ⚠️  PIL/Pillow not installed - cannot optimize images")
+            print(f"     Install with: pip install Pillow")
+            return image_path
+        except Exception as e:
+            print(f"  ⚠️  Image optimization failed: {e}")
+            print(f"     Using original image")
+            return image_path
     
     def handle_buyer_message(self, buyer_signal_id: str, message_text: str):
         """
@@ -197,9 +317,8 @@ class BuyerHandler:
         Args:
             buyer_signal_id: Buyer's Signal ID
         """
-        import time
         
-        products = self.product_manager.list_products(active_only=True)
+        products = self.product_cache.get_products(active_only=True)
         
         if not products:
             self.signal_handler.send_message(
@@ -248,34 +367,20 @@ class BuyerHandler:
 To order: "order {product_id_str} qty [amount]"
 """
             
-            # Resolve image path
+            # Resolve and optimize image
             attachments = []
             if product.image_path:
                 print(f"  🔍 Resolving image path...")
                 resolved_path = self._resolve_image_path(product.image_path)
                 
                 if resolved_path:
-                    attachments.append(resolved_path)
-                    
-                    # Add file size detection and display info
-                    try:
-                        file_size = os.path.getsize(resolved_path)
-                        file_size_mb = file_size / (1024 * 1024)
-                        file_ext = os.path.splitext(resolved_path)[1].upper()
-                        
-                        print(f"  ✓ Image found: {os.path.basename(resolved_path)}")
-                        print(f"     Size: {file_size_mb:.2f} MB, Format: {file_ext}")
-                        
-                        if file_size_mb > 2.0:
-                            print(f"  ⚠️  WARNING: Large file ({file_size_mb:.2f} MB) may timeout")
-                            print(f"     Consider converting to JPG or compressing")
-                    except Exception as e:
-                        print(f"  ✓ Image found: {os.path.basename(resolved_path)}")
-                        print(f"  ⚠️  Could not determine file size: {e}")
+                    # Optimize image before sending
+                    optimized_path = self._optimize_image_for_signal(resolved_path)
+                    attachments.append(optimized_path)
                 else:
                     print(f"  ⚠ No image found (will send text only)")
             
-            # Attempt to send with retry logic
+            # Attempt to send with exponential backoff retry logic
             max_retries = 5
             success = False
             
@@ -293,19 +398,22 @@ To order: "order {product_id_str} qty [amount]"
                         sent_count += 1
                         success = True
                         print(f"  ✅ SUCCESS - Product sent!")
-                        break  # Success, exit retry loop
+                        break  # Exit retry loop
                     else:
-                        print(f"  ⚠ Attempt {attempt} failed (no exception but returned False)")
+                        print(f"  ✗ Attempt {attempt} failed")
+                        
                         if attempt < max_retries:
-                            retry_delay = 3 * attempt  # 3s, 6s, 9s, 12s...
+                            # Exponential backoff: 3s, 6s, 12s, 24s, 48s (capped at 60s)
+                            retry_delay = min(3 * (2 ** (attempt - 1)), 60)
                             print(f"  ⏳ Waiting {retry_delay}s before retry...")
                             time.sleep(retry_delay)
-                        
+                
                 except Exception as e:
-                    print(f"  ✗ Attempt {attempt} failed: {e}")
+                    print(f"  ✗ Error on attempt {attempt}: {e}")
                     
                     if attempt < max_retries:
-                        retry_delay = 3 * attempt  # 3s, 6s, 9s, 12s...
+                        # Exponential backoff: 3s, 6s, 12s, 24s, 48s (capped at 60s)
+                        retry_delay = min(3 * (2 ** (attempt - 1)), 60)
                         print(f"  ⏳ Waiting {retry_delay}s before retry...")
                         time.sleep(retry_delay)
             

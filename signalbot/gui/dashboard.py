@@ -2243,6 +2243,9 @@ class ProductsTab(QWidget):
         dialog = AddProductDialog(self.product_manager, parent=self)
         if dialog.exec_() == QDialog.Accepted:
             self.load_products()
+            # Invalidate product cache
+            if hasattr(self, 'buyer_handler') and self.buyer_handler:
+                self.buyer_handler.product_cache.invalidate()
     
     def edit_product(self):
         """Open dialog to edit selected product"""
@@ -2259,6 +2262,9 @@ class ProductsTab(QWidget):
             dialog = AddProductDialog(self.product_manager, product, parent=self)
             if dialog.exec_() == QDialog.Accepted:
                 self.load_products()
+                # Invalidate product cache
+                if hasattr(self, 'buyer_handler') and self.buyer_handler:
+                    self.buyer_handler.product_cache.invalidate()
     
     def delete_product(self):
         """Delete selected product"""
@@ -2284,6 +2290,9 @@ class ProductsTab(QWidget):
                 self.product_manager.delete_product(product_id)
                 QMessageBox.information(self, "Success", "Product deleted successfully")
                 self.load_products()
+                # Invalidate product cache
+                if hasattr(self, 'buyer_handler') and self.buyer_handler:
+                    self.buyer_handler.product_cache.invalidate()
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to delete product: {e}")
     
@@ -2738,6 +2747,80 @@ class MessagesTab(QWidget):
         
         return None
     
+    def _optimize_image_for_signal(self, image_path: str, max_size_kb: int = 800) -> str:
+        """
+        Optimize image for Signal sending - compress and resize if needed.
+        
+        Args:
+            image_path: Path to original image
+            max_size_kb: Maximum file size in KB (default 800KB)
+            
+        Returns:
+            Path to optimized image (or original if already optimal)
+        """
+        try:
+            from PIL import Image
+            import tempfile
+            
+            # Check current size
+            file_size_kb = os.path.getsize(image_path) / 1024
+            file_ext = os.path.splitext(image_path)[1].lower()
+            
+            print(f"  📊 Original: {file_size_kb:.1f}KB, Format: {file_ext}")
+            
+            # If already small and JPG, use as-is
+            if file_size_kb <= max_size_kb and file_ext in ['.jpg', '.jpeg']:
+                print(f"  ✓ Image already optimized")
+                return image_path
+            
+            # Open and optimize
+            img = Image.open(image_path)
+            
+            # Convert RGBA to RGB if needed (for PNG with transparency)
+            if img.mode in ('RGBA', 'LA', 'P'):
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                if img.mode == 'P':
+                    img = img.convert('RGBA')
+                background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+                img = background
+            
+            # Resize if too large (max 1920px on longest side)
+            max_dimension = 1920
+            if img.width > max_dimension or img.height > max_dimension:
+                ratio = max_dimension / max(img.width, img.height)
+                new_size = (int(img.width * ratio), int(img.height * ratio))
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+                print(f"  📐 Resized to: {new_size[0]}x{new_size[1]}")
+            
+            # Save as optimized JPG
+            optimized_path = os.path.join(
+                tempfile.gettempdir(),
+                f"signal_opt_{os.path.basename(image_path).rsplit('.', 1)[0]}.jpg"
+            )
+            
+            # Start with quality 85, reduce if still too large
+            quality = 85
+            while quality >= 60:
+                img.save(optimized_path, 'JPEG', quality=quality, optimize=True)
+                new_size_kb = os.path.getsize(optimized_path) / 1024
+                
+                if new_size_kb <= max_size_kb or quality == 60:
+                    print(f"  📉 Optimized: {file_size_kb:.1f}KB → {new_size_kb:.1f}KB (quality={quality})")
+                    return optimized_path
+                
+                quality -= 5
+            
+            return optimized_path
+            
+        except ImportError:
+            print(f"  ⚠️  PIL/Pillow not installed - cannot optimize images")
+            print(f"     Install with: pip install Pillow")
+            return image_path
+        except Exception as e:
+            print(f"  ⚠️  Image optimization failed: {e}")
+            print(f"     Using original image")
+            return image_path
+    
     @staticmethod
     def _format_message_display(msg, display_name: str) -> str:
         """
@@ -3079,31 +3162,19 @@ class MessagesTab(QWidget):
 🏷️ Category: {product.category or 'N/A'}
 """
             
-            # Resolve image path
+            # Resolve and optimize image
             attachments = []
             if product.image_path:
                 resolved_path = self._resolve_image_path(product.image_path)
                 
                 if resolved_path:
-                    attachments.append(resolved_path)
-                    
-                    # Add file size detection and display info
-                    try:
-                        file_size = os.path.getsize(resolved_path)
-                        file_size_mb = file_size / (1024 * 1024)
-                        file_ext = os.path.splitext(resolved_path)[1].upper()
-                        
-                        print(f"  📊 Image: {os.path.basename(resolved_path)}, Size: {file_size_mb:.2f} MB, Format: {file_ext}")
-                        
-                        if file_size_mb > 2.0:
-                            print(f"  ⚠️  WARNING: Large file ({file_size_mb:.2f} MB) may timeout")
-                            print(f"     Consider converting to JPG or compressing")
-                    except Exception as e:
-                        print(f"  ⚠️  Could not determine file size: {e}")
+                    # Optimize image before sending
+                    optimized_path = self._optimize_image_for_signal(resolved_path)
+                    attachments.append(optimized_path)
                 else:
                     missing_images.append(product.name)
             
-            # Send with retry logic
+            # Send with exponential backoff retry logic
             max_retries = 5
             success = False
             
@@ -3131,19 +3202,21 @@ class MessagesTab(QWidget):
                             except Exception as e:
                                 print(f"Failed to save message to history: {e}")
                         
-                        break  # Success, exit retry loop
+                        break  # Exit retry loop
                         
                     else:
-                        print(f"Attempt {attempt} for {product.name} returned False")
+                        print(f"Attempt {attempt} for {product.name} failed")
                         if attempt < max_retries:
-                            retry_delay = 2 * attempt  # 2s, 4s, 6s, 8s...
+                            # Exponential backoff: 3s, 6s, 12s, 24s, 48s (capped at 60s)
+                            retry_delay = min(3 * (2 ** (attempt - 1)), 60)
                             time.sleep(retry_delay)
                             
                 except Exception as e:
-                    print(f"Attempt {attempt} for {product.name} failed: {e}")
+                    print(f"Error on attempt {attempt} for {product.name}: {e}")
                     
                     if attempt < max_retries:
-                        retry_delay = 2 * attempt  # 2s, 4s, 6s, 8s...
+                        # Exponential backoff: 3s, 6s, 12s, 24s, 48s (capped at 60s)
+                        retry_delay = min(3 * (2 ** (attempt - 1)), 60)
                         time.sleep(retry_delay)
             
             if not success:
@@ -4564,6 +4637,10 @@ class DashboardWindow(QMainWindow):
                 self.signal_handler,
                 seller_signal_id
             )
+            # Store reference for cache invalidation
+            self.buyer_handler = self.signal_handler.buyer_handler
+        else:
+            self.buyer_handler = None
         
         # CRITICAL FIX: Auto-start listening for incoming messages
         if seller_signal_id:
