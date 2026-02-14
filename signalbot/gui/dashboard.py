@@ -3086,11 +3086,27 @@ class MessagesTab(QWidget):
                 
                 if resolved_path:
                     attachments.append(resolved_path)
+                    
+                    # Add file size detection
+                    try:
+                        file_size = os.path.getsize(resolved_path)
+                        file_size_mb = file_size / (1024 * 1024)
+                        file_ext = os.path.splitext(resolved_path)[1].upper()
+                        
+                        print(f"  📊 Image: {os.path.basename(resolved_path)}")
+                        print(f"     Size: {file_size_mb:.2f} MB")
+                        print(f"     Format: {file_ext}")
+                        
+                        if file_size_mb > 2.0:
+                            print(f"  ⚠️  WARNING: Large file ({file_size_mb:.2f} MB) may timeout")
+                            print(f"     Consider converting to JPG or compressing")
+                    except Exception as e:
+                        print(f"  ⚠️  Could not determine file size: {e}")
                 else:
                     missing_images.append(product.name)
             
             # Send with retry logic
-            max_retries = 2
+            max_retries = 5
             success = False
             
             for attempt in range(1, max_retries + 1):
@@ -3122,19 +3138,55 @@ class MessagesTab(QWidget):
                     else:
                         print(f"Attempt {attempt} for {product.name} returned False")
                         if attempt < max_retries:
-                            time.sleep(2)
+                            retry_delay = 2 * attempt  # 2s, 4s, 6s, 8s...
+                            time.sleep(retry_delay)
                             
                 except Exception as e:
                     print(f"Attempt {attempt} for {product.name} failed: {e}")
                     
                     if attempt < max_retries:
-                        time.sleep(2)
+                        retry_delay = 2 * attempt  # 2s, 4s, 6s, 8s...
+                        time.sleep(retry_delay)
             
             if not success:
-                failed_count += 1
-                print(f"Product {product.name} failed after {max_retries} attempts")
+                # Try one final time without image (text-only fallback)
+                if attachments:
+                    print(f"  📝 Attempting text-only fallback (no image) for {product.name}...")
+                    try:
+                        result = self.signal_handler.send_message(
+                            recipient=self.current_recipient,
+                            message=message.strip(),
+                            attachments=None  # No image
+                        )
+                        if result:
+                            print(f"  ✅ Text-only version sent successfully for {product.name}")
+                            sent_count += 1
+                            success = True
+                            
+                            # Save to message history
+                            if self.my_signal_id:
+                                try:
+                                    self.message_manager.add_message(
+                                        sender_signal_id=self.my_signal_id,
+                                        recipient_signal_id=self.current_recipient,
+                                        message_body=message.strip(),
+                                        is_outgoing=True
+                                    )
+                                except Exception as e:
+                                    print(f"Failed to save message to history: {e}")
+                        else:
+                            print(f"  ✗ Text-only fallback also failed for {product.name}")
+                            failed_count += 1
+                    except Exception as e:
+                        print(f"  ✗ Text-only fallback error for {product.name}: {e}")
+                        failed_count += 1
+                else:
+                    failed_count += 1
+                    
+                if not success:
+                    print(f"Product {product.name} failed after {max_retries} attempts")
             
-            # Delay between products
+            # Delay between products (already correct at 2.5s)
             if index < total_products:
                 time.sleep(2.5)
         
