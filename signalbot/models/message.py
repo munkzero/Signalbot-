@@ -4,6 +4,7 @@ Message model and management
 
 from typing import Optional, List, Dict
 from datetime import datetime
+import logging
 from ..database.db import Message as MessageModel, DatabaseManager
 
 
@@ -216,6 +217,29 @@ class MessageManager:
                 continue
         
         return conversations
+    
+    def delete_message(self, message_id: int) -> bool:
+        """
+        Delete a single message by ID
+        
+        Args:
+            message_id: Database ID of message to delete
+            
+        Returns:
+            True if message deleted successfully
+        """
+        try:
+            db_message = self.db.session.query(MessageModel).filter_by(id=message_id).first()
+            if db_message:
+                self.db.session.delete(db_message)
+                self.db.session.commit()
+                logging.info(f"Message {message_id} deleted successfully")
+                return True
+            logging.warning(f"Message {message_id} not found")
+            return False
+        except Exception as e:
+            logging.error(f"Error deleting message {message_id}: {e}")
+            return False
     
     def delete_conversation(self, contact_signal_id: str, my_signal_id: str) -> bool:
         """
