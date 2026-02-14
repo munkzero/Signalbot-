@@ -40,6 +40,16 @@ from ..core.monero_wallet import InHouseWallet
 from ..models.node import NodeManager, MoneroNodeConfig
 
 
+# Common image directories to search for product images
+COMMON_IMAGE_SEARCH_DIRS = [
+    'data/products/images',
+    'data/images',
+    'data/product_images',
+    'images',
+    '.',
+]
+
+
 class PINDialog(QDialog):
     """Dialog for PIN entry"""
     
@@ -2709,8 +2719,6 @@ class MessagesTab(QWidget):
         Returns:
             Absolute path if file found, None otherwise
         """
-        import os
-        
         if not image_path:
             return None
         
@@ -2723,15 +2731,7 @@ class MessagesTab(QWidget):
         # Relative path - search common directories
         base_dir = os.getcwd()
         
-        search_dirs = [
-            'data/products/images',
-            'data/images',
-            'data/product_images',
-            'images',
-            '.',
-        ]
-        
-        for search_dir in search_dirs:
+        for search_dir in COMMON_IMAGE_SEARCH_DIRS:
             full_path = os.path.join(base_dir, search_dir, image_path)
             if os.path.exists(full_path) and os.path.isfile(full_path):
                 return full_path
@@ -3092,7 +3092,9 @@ class MessagesTab(QWidget):
         result_msg = f"Sent {sent_count} of {len(products)} products"
         if missing_images:
             result_msg += f"\n\nImages not found for:\n" + "\n".join(f"  • {name}" for name in missing_images)
-            result_msg += f"\n\nSearched in: data/products/images/, data/images/, and other common directories"
+            # Create readable list of search directories
+            search_dirs_display = ", ".join(f"{d}/" for d in COMMON_IMAGE_SEARCH_DIRS if d != '.')
+            result_msg += f"\n\nSearched in: {search_dirs_display}"
         
         QMessageBox.information(self, "Catalog Sent", result_msg)
         self.load_conversations(force_refresh=True)

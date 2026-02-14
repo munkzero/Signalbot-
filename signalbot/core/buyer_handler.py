@@ -2,6 +2,7 @@
 Buyer Handler - Processes buyer commands and order creation
 """
 
+import os
 import re
 from typing import Optional, Tuple
 from datetime import datetime, timedelta
@@ -13,6 +14,18 @@ from ..utils.qr_generator import qr_generator
 
 # TODO: Replace with real-time exchange rate API
 XMR_EXCHANGE_RATE_USD = 150.0  # Placeholder: 1 XMR = $150 USD
+
+# Delay between catalog product messages to avoid rate limiting
+CATALOG_SEND_DELAY_SECONDS = 1.5
+
+# Common image directories to search for product images (in order of priority)
+COMMON_IMAGE_SEARCH_DIRS = [
+    'data/products/images',      # Expected location
+    'data/images',                # Alternative location
+    'data/product_images',        # Another common location
+    'images',                     # Simple location
+    '.',                          # Current directory
+]
 
 
 class BuyerHandler:
@@ -64,8 +77,6 @@ class BuyerHandler:
         Returns:
             Absolute path if file found, None otherwise
         """
-        import os
-        
         if not image_path:
             return None
         
@@ -80,17 +91,8 @@ class BuyerHandler:
         # Relative path - search common directories
         base_dir = os.getcwd()
         
-        # Common image directories to check (in order of priority)
-        search_dirs = [
-            'data/products/images',      # Expected location
-            'data/images',                # Alternative location
-            'data/product_images',        # Another common location
-            'images',                     # Simple location
-            '.',                          # Current directory
-        ]
-        
         # Try each directory
-        for search_dir in search_dirs:
+        for search_dir in COMMON_IMAGE_SEARCH_DIRS:
             full_path = os.path.join(base_dir, search_dir, image_path)
             
             if os.path.exists(full_path) and os.path.isfile(full_path):
@@ -100,7 +102,7 @@ class BuyerHandler:
                 print(f"  ✗ Not found: {full_path}")
         
         print(f"  ✗ Image not found in any common directory: {image_path}")
-        print(f"    Searched: {', '.join(search_dirs)}")
+        print(f"    Searched: {', '.join(COMMON_IMAGE_SEARCH_DIRS)}")
         return None
     
     def handle_buyer_message(self, buyer_signal_id: str, message_text: str):
@@ -195,7 +197,6 @@ class BuyerHandler:
         Args:
             buyer_signal_id: Buyer's Signal ID
         """
-        import os
         import time
         
         products = self.product_manager.list_products(active_only=True)
@@ -251,7 +252,7 @@ To order: "order {product_id_str} qty [amount]"
             )
             
             # Small delay between products
-            time.sleep(1.5)
+            time.sleep(CATALOG_SEND_DELAY_SECONDS)
     
     def create_order(self, buyer_signal_id: str, product_id: str, quantity: int):
         """
