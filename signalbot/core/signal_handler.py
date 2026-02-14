@@ -55,7 +55,7 @@ class SignalHandler:
         try:
             # Start daemon in background
             self.daemon_process = subprocess.Popen(
-                ['signal-cli', '-u', self.phone_number, 'daemon', '--json'],
+                ['signal-cli', '--output', 'json', '-u', self.phone_number, 'daemon'],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 stdin=subprocess.PIPE
@@ -283,11 +283,14 @@ class SignalHandler:
                 print("DEBUG: Checking for messages...")
                 # Receive messages using signal-cli
                 result = subprocess.run(
-                    ['signal-cli', '-u', self.phone_number, 'receive', '--json'],
+                    ['signal-cli', '--output', 'json', '-u', self.phone_number, 'receive'],
                     capture_output=True,
                     text=True,
                     timeout=10
                 )
+                
+                if result.returncode != 0 and result.stderr:
+                    print(f"DEBUG: signal-cli receive error: {result.stderr}")
                 
                 if result.returncode == 0 and result.stdout:
                     print(f"DEBUG: Received data from signal-cli")
