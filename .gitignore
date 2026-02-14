@@ -59,6 +59,11 @@ tmp/
 temp/
 *.tmp
 
+# Test files (temp directory tests)
+test_temp_cleanup.py
+test_cleanup_logic.py
+test_temp_management.sh
+
 # Environment
 .env
 .env.local
