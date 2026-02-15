@@ -77,7 +77,7 @@ class SignalHandler:
     def auto_trust_contact(self, contact_number: str) -> bool:
         """
         Automatically trust a contact's identity.
-        Called when receiving message from new contact.
+        Called when receiving message from any contact.
         
         Args:
             contact_number: Phone number to trust
@@ -85,7 +85,12 @@ class SignalHandler:
         Returns:
             True if successful, False otherwise
         """
+        # Don't trust self
+        if contact_number == self.phone_number:
+            return True
+        
         try:
+            # First, try to trust the contact
             result = subprocess.run(
                 ['signal-cli', '-u', self.phone_number, 'trust', contact_number, '-a'],
                 capture_output=True,
@@ -94,13 +99,25 @@ class SignalHandler:
             )
             
             if result.returncode == 0:
-                print(f"DEBUG: Auto-trusted contact {contact_number}")
+                print(f"✓ Auto-trusted contact {contact_number}")
                 return True
             else:
-                # May already be trusted or not needed
-                print(f"DEBUG: Trust command result for {contact_number}: {result.stderr}")
-                return False
+                # Check if already trusted or other non-critical error
+                stderr = result.stderr.lower()
+                if 'already' in stderr or 'trusted' in stderr:
+                    print(f"DEBUG: {contact_number} already trusted")
+                    return True
+                elif 'not registered' in stderr:
+                    # They haven't messaged us yet, will trust when they do
+                    print(f"DEBUG: {contact_number} will be trusted when they message")
+                    return False
+                else:
+                    print(f"DEBUG: Trust command for {contact_number}: {result.stderr.strip()}")
+                    return False
                 
+        except subprocess.TimeoutExpired:
+            print(f"WARNING: Trust command timed out for {contact_number}")
+            return False
         except Exception as e:
             print(f"WARNING: Could not auto-trust {contact_number}: {e}")
             return False
@@ -245,12 +262,12 @@ class SignalHandler:
         
         while self.listening:
             try:
-                print("DEBUG: Checking for messages...")
+                print("DEBUG: Polling for messages... (timeout: 20s)")
                 result = subprocess.run(
                     ['signal-cli', '--output', 'json', '-u', self.phone_number, 'receive', '--timeout', '5'],
                     capture_output=True,
                     text=True,
-                    timeout=15
+                    timeout=20  # Increased from 15 for better reliability
                 )
                 
                 if result.returncode != 0 and result.stderr:
@@ -269,6 +286,8 @@ class SignalHandler:
                                 messages_received = True
                             except json.JSONDecodeError:
                                 print(f"DEBUG: Failed to parse JSON: {line[:100]}")
+                else:
+                    print(f"DEBUG: No messages (will retry in {idle_sleep}s)")
                 
                 # Adaptive sleep: poll faster when active, slower when idle
                 if messages_received:
@@ -278,7 +297,7 @@ class SignalHandler:
                     current_sleep = idle_sleep
                 
             except subprocess.TimeoutExpired:
-                print(f"WARNING: signal-cli receive command timed out after 15 seconds")
+                print(f"WARNING: signal-cli receive command timed out after 20 seconds")
             except Exception as e:
                 print(f"ERROR: Error receiving messages: {e}")
             
@@ -324,9 +343,10 @@ class SignalHandler:
             
             print(f"DEBUG: Received dataMessage from {source}: {message_text[:50] if message_text else '(no text)'}")
         
-        # Auto-trust sender on first message (safety net)
-        # This is belt-and-suspenders with signal-cli config
-        if source and source != self.phone_number and source not in self.trusted_contacts:
+        # AUTO-TRUST EVERY SENDER (critical for message requests!)
+        # This happens for EVERY message to ensure we don't miss trusting anyone
+        if source and source != self.phone_number:
+            print(f"DEBUG: Message from {source}, auto-trusting...")
             if self.auto_trust_contact(source):
                 self.trusted_contacts.add(source)
         
@@ -342,7 +362,7 @@ class SignalHandler:
         # If buyer handler exists, process buyer commands
         if self.buyer_handler and message_text:
             try:
-                print(f"DEBUG: Passing message to buyer handler")
+                print(f"DEBUG: Processing message from {source}")
                 self.buyer_handler.handle_buyer_message(source, message_text)
             except Exception as e:
                 print(f"ERROR: Error in buyer handler: {e}")

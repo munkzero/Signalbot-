@@ -159,23 +159,32 @@ echo ""
 # Verify auto-trust is enabled
 echo "Checking auto-trust configuration..."
 
-# Try to check if auto-trust is enabled
-# Note: This may not work on all signal-cli versions, so we just inform the user
-if command -v jq &> /dev/null; then
-    CONFIG_FILE="$HOME/.local/share/signal-cli/data/$PHONE_NUMBER"
-    if [ -f "$CONFIG_FILE" ]; then
-        TRUST_MODE=$(jq -r '.trustNewIdentities // "UNKNOWN"' "$CONFIG_FILE" 2>/dev/null)
-        if [ "$TRUST_MODE" = "ALWAYS" ]; then
-            echo "✓ Auto-trust enabled (all message requests accepted automatically)"
-        else
-            echo "⚠ Auto-trust may not be enabled (current: $TRUST_MODE)"
-            echo "  Run './setup.sh' to enable auto-trust"
-            echo "  Or manually: signal-cli -u $PHONE_NUMBER updateConfiguration --trust-new-identities always"
-        fi
+# Parse PHONE_NUMBER correctly
+PHONE_NUMBER_PARSED=$(grep -v '^#' "$SCRIPT_DIR/.env" 2>/dev/null | grep -v '^$' | grep '^PHONE_NUMBER=' | cut -d '=' -f2 | tr -d ' ' || echo "")
+
+# Find config file (might be URL-encoded)
+CONFIG_FILE=""
+POSSIBLE_PATHS=(
+    "$HOME/.local/share/signal-cli/data/$PHONE_NUMBER"
+    "$HOME/.local/share/signal-cli/data/$(echo $PHONE_NUMBER | sed 's/+/%2B/g')"
+)
+
+for path in "${POSSIBLE_PATHS[@]}"; do
+    if [ -f "$path" ]; then
+        CONFIG_FILE="$path"
+        break
+    fi
+done
+
+if [ -n "$CONFIG_FILE" ] && command -v jq &> /dev/null; then
+    TRUST_MODE=$(jq -r '.trustNewIdentities // "UNKNOWN"' "$CONFIG_FILE" 2>/dev/null)
+    if [ "$TRUST_MODE" = "ALWAYS" ]; then
+        echo "✓ Auto-trust enabled (all message requests accepted automatically)"
+    else
+        echo "⚠ Auto-trust config: $TRUST_MODE (falling back to code-level auto-trust)"
     fi
 else
-    # jq not available, just assume it's configured
-    echo "✓ Auto-trust configured (cannot verify without 'jq')"
+    echo "✓ Auto-trust configured via code (cannot verify config file)"
 fi
 
 echo ""
