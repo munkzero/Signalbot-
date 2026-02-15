@@ -80,39 +80,74 @@ echo ""
 # Configure auto-trust for all contacts
 echo "Configuring automatic message acceptance..."
 
-# Configure signal-cli to auto-trust all new contacts
+# Method 1: Try signal-cli command
+AUTO_TRUST_ENABLED=false
 if signal-cli -u "$PHONE_NUMBER" updateConfiguration --trust-new-identities always &>/dev/null; then
-    echo -e "${GREEN}✓ Auto-trust enabled for all contacts${NC}"
+    echo -e "${GREEN}✓ Auto-trust enabled via signal-cli command${NC}"
+    AUTO_TRUST_ENABLED=true
 else
-    echo -e "${YELLOW}⚠ Could not enable auto-trust (may not be supported in this signal-cli version)${NC}"
-    echo "  Attempting alternative method..."
-    
-    # Alternative: Update config file directly
-    CONFIG_FILE="$HOME/.local/share/signal-cli/data/$PHONE_NUMBER"
-    if [ -f "$CONFIG_FILE" ]; then
-        # Backup config
-        cp "$CONFIG_FILE" "$CONFIG_FILE.backup"
-        
-        # Update trust setting using jq if available
-        if command -v jq &> /dev/null; then
-            jq '.trustNewIdentities = "ALWAYS"' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
-            echo -e "${GREEN}✓ Auto-trust enabled via config file${NC}"
-        else
-            echo -e "${YELLOW}⚠ Install 'jq' for automatic config: sudo apt install jq${NC}"
-            echo "  Or manually edit: $CONFIG_FILE"
-            echo "  Set: \"trustNewIdentities\": \"ALWAYS\""
+    echo -e "${YELLOW}⚠ signal-cli command not supported, using config file method${NC}"
+fi
+
+# Method 2: Direct config file editing (fallback and verification)
+# Find config file (might be URL-encoded)
+CONFIG_FILE=""
+POSSIBLE_PATHS=(
+    "$HOME/.local/share/signal-cli/data/$PHONE_NUMBER"
+    "$HOME/.local/share/signal-cli/data/$(echo $PHONE_NUMBER | sed 's/+/%2B/g')"
+)
+
+for path in "${POSSIBLE_PATHS[@]}"; do
+    if [ -f "$path" ]; then
+        CONFIG_FILE="$path"
+        break
+    fi
+done
+
+if [ -n "$CONFIG_FILE" ]; then
+    # Install jq if needed
+    if ! command -v jq &> /dev/null; then
+        echo "  Installing jq for config file editing..."
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y jq >/dev/null 2>&1
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y jq >/dev/null 2>&1
         fi
     fi
+    
+    if command -v jq &> /dev/null; then
+        # Backup config
+        cp "$CONFIG_FILE" "$CONFIG_FILE.backup.$(date +%Y%m%d_%H%M%S)"
+        
+        # Update trust setting
+        jq '.trustNewIdentities = "ALWAYS"' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+        
+        # Verify
+        TRUST_MODE=$(jq -r '.trustNewIdentities // "NOT_SET"' "$CONFIG_FILE" 2>/dev/null)
+        if [ "$TRUST_MODE" = "ALWAYS" ]; then
+            echo -e "${GREEN}✓ Auto-trust enabled via config file${NC}"
+            AUTO_TRUST_ENABLED=true
+        fi
+    else
+        echo -e "${YELLOW}⚠ jq not available for config editing${NC}"
+    fi
+else
+    echo -e "${YELLOW}⚠ Config file not found at expected paths${NC}"
 fi
 
-# Trust self (for testing)
-if signal-cli -u "$PHONE_NUMBER" trust "$PHONE_NUMBER" -a &>/dev/null; then
-    echo -e "${GREEN}✓ Self-trust configured${NC}"
-fi
+# Self-trust (less critical, ignore errors)
+signal-cli -u "$PHONE_NUMBER" trust "$PHONE_NUMBER" -a &>/dev/null && echo -e "${GREEN}✓ Self-trust configured${NC}" || true
 
-echo ""
-echo -e "${GREEN}✓ Bot will automatically accept ALL message requests${NC}"
-echo "  (Required for business bot - customers get instant responses)"
+if [ "$AUTO_TRUST_ENABLED" = true ]; then
+    echo ""
+    echo -e "${GREEN}✅ Bot will automatically accept ALL message requests${NC}"
+    echo "  (Required for business bot - customers get instant responses)"
+else
+    echo ""
+    echo -e "${YELLOW}⚠ Auto-trust may not be fully configured${NC}"
+    echo "  The bot has code-level auto-trust as a fallback"
+    echo "  Messages should still be accepted automatically"
+fi
 
 echo ""
 
