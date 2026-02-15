@@ -262,7 +262,7 @@ class SignalHandler:
         
         while self.listening:
             try:
-                print("DEBUG: Polling for messages... (timeout: 20s)")
+                print("DEBUG: Polling for messages... (signal-cli timeout: 5s, subprocess timeout: 20s)")
                 result = subprocess.run(
                     ['signal-cli', '--output', 'json', '-u', self.phone_number, 'receive', '--timeout', '5'],
                     capture_output=True,
@@ -343,8 +343,8 @@ class SignalHandler:
             
             print(f"DEBUG: Received dataMessage from {source}: {message_text[:50] if message_text else '(no text)'}")
         
-        # AUTO-TRUST EVERY SENDER (critical for message requests!)
-        # This happens for EVERY message to ensure we don't miss trusting anyone
+        # Auto-trust all message senders to handle message requests
+        # This ensures message requests are accepted automatically for every sender
         if source and source != self.phone_number:
             print(f"DEBUG: Message from {source}, auto-trusting...")
             if self.auto_trust_contact(source):
