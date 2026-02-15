@@ -73,32 +73,56 @@ def test_dashboard_auto_wallet_creation():
         return False
 
 
-def test_wallet_setup_default():
-    """Test that WalletSetupManager.setup_wallet has correct default"""
+def test_wallet_setup_defaults():
+    """Test that both setup methods have correct defaults"""
     print("\n" + "=" * 60)
-    print("Test: WalletSetupManager Default Parameter")
+    print("Test: Auto-Setup Default Parameters")
     print("=" * 60)
     
+    all_passed = True
+    
+    # Check WalletSetupManager.setup_wallet
     wallet_setup_path = Path("signalbot/core/wallet_setup.py")
     
     if not wallet_setup_path.exists():
         print("✗ wallet_setup.py NOT FOUND!")
-        return False
-    
-    with open(wallet_setup_path, 'r') as f:
-        content = f.read()
-    
-    # Check that setup_wallet has create_if_missing=True as default
-    if "def setup_wallet(self, create_if_missing: bool = True)" in content:
-        print("  ✓ setup_wallet() has create_if_missing=True as default")
-        return True
-    elif "def setup_wallet(self, create_if_missing: bool = False)" in content:
-        print("  ⚠ setup_wallet() has create_if_missing=False as default")
-        print("     This is not ideal but works if dashboard passes True explicitly")
-        return True
+        all_passed = False
     else:
-        print("  ✗ Could not find setup_wallet method signature")
-        return False
+        with open(wallet_setup_path, 'r') as f:
+            content = f.read()
+        
+        # Check that setup_wallet has create_if_missing=True as default
+        if "def setup_wallet(self, create_if_missing: bool = True)" in content:
+            print("  ✓ WalletSetupManager.setup_wallet() has create_if_missing=True as default")
+        elif "def setup_wallet(self, create_if_missing: bool = False)" in content:
+            print("  ⚠ WalletSetupManager.setup_wallet() has create_if_missing=False as default")
+            print("     This is not ideal but works if auto_setup_wallet passes True explicitly")
+        else:
+            print("  ✗ Could not find WalletSetupManager.setup_wallet method signature")
+            all_passed = False
+    
+    # Check InHouseWallet.auto_setup_wallet
+    monero_wallet_path = Path("signalbot/core/monero_wallet.py")
+    
+    if not monero_wallet_path.exists():
+        print("✗ monero_wallet.py NOT FOUND!")
+        all_passed = False
+    else:
+        with open(monero_wallet_path, 'r') as f:
+            content = f.read()
+        
+        # Check that auto_setup_wallet has create_if_missing=True as default
+        if "def auto_setup_wallet(self, create_if_missing: bool = True)" in content:
+            print("  ✓ InHouseWallet.auto_setup_wallet() has create_if_missing=True as default")
+        elif "def auto_setup_wallet(self, create_if_missing: bool = False)" in content:
+            print("  ✗ InHouseWallet.auto_setup_wallet() has create_if_missing=False as default")
+            print("     This will prevent auto-creation if dashboard doesn't explicitly pass True!")
+            all_passed = False
+        else:
+            print("  ✗ Could not find InHouseWallet.auto_setup_wallet method signature")
+            all_passed = False
+    
+    return all_passed
 
 
 def main():
@@ -111,7 +135,8 @@ def main():
     
     # Run tests
     results.append(("Dashboard Auto-Wallet Creation", test_dashboard_auto_wallet_creation()))
-    results.append(("WalletSetupManager Default", test_wallet_setup_default()))
+    results.append(("Auto-Setup Default Parameters", test_wallet_setup_defaults()))
+
     
     # Summary
     print("\n" + "=" * 70)
