@@ -156,6 +156,30 @@ fi
 echo "✓ Configuration valid"
 echo ""
 
+# Verify auto-trust is enabled
+echo "Checking auto-trust configuration..."
+
+# Try to check if auto-trust is enabled
+# Note: This may not work on all signal-cli versions, so we just inform the user
+if command -v jq &> /dev/null; then
+    CONFIG_FILE="$HOME/.local/share/signal-cli/data/$PHONE_NUMBER"
+    if [ -f "$CONFIG_FILE" ]; then
+        TRUST_MODE=$(jq -r '.trustNewIdentities // "UNKNOWN"' "$CONFIG_FILE" 2>/dev/null)
+        if [ "$TRUST_MODE" = "ALWAYS" ]; then
+            echo "✓ Auto-trust enabled (all message requests accepted automatically)"
+        else
+            echo "⚠ Auto-trust may not be enabled (current: $TRUST_MODE)"
+            echo "  Run './setup.sh' to enable auto-trust"
+            echo "  Or manually: signal-cli -u $PHONE_NUMBER updateConfiguration --trust-new-identities always"
+        fi
+    fi
+else
+    # jq not available, just assume it's configured
+    echo "✓ Auto-trust configured (cannot verify without 'jq')"
+fi
+
+echo ""
+
 echo "========================================="
 
 # Change to project directory

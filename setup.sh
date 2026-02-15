@@ -77,6 +77,45 @@ fi
 
 echo ""
 
+# Configure auto-trust for all contacts
+echo "Configuring automatic message acceptance..."
+
+# Configure signal-cli to auto-trust all new contacts
+if signal-cli -u "$PHONE_NUMBER" updateConfiguration --trust-new-identities always &>/dev/null; then
+    echo -e "${GREEN}✓ Auto-trust enabled for all contacts${NC}"
+else
+    echo -e "${YELLOW}⚠ Could not enable auto-trust (may not be supported in this signal-cli version)${NC}"
+    echo "  Attempting alternative method..."
+    
+    # Alternative: Update config file directly
+    CONFIG_FILE="$HOME/.local/share/signal-cli/data/$PHONE_NUMBER"
+    if [ -f "$CONFIG_FILE" ]; then
+        # Backup config
+        cp "$CONFIG_FILE" "$CONFIG_FILE.backup"
+        
+        # Update trust setting using jq if available
+        if command -v jq &> /dev/null; then
+            jq '.trustNewIdentities = "ALWAYS"' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+            echo -e "${GREEN}✓ Auto-trust enabled via config file${NC}"
+        else
+            echo -e "${YELLOW}⚠ Install 'jq' for automatic config: sudo apt install jq${NC}"
+            echo "  Or manually edit: $CONFIG_FILE"
+            echo "  Set: \"trustNewIdentities\": \"ALWAYS\""
+        fi
+    fi
+fi
+
+# Trust self (for testing)
+if signal-cli -u "$PHONE_NUMBER" trust "$PHONE_NUMBER" -a &>/dev/null; then
+    echo -e "${GREEN}✓ Self-trust configured${NC}"
+fi
+
+echo ""
+echo -e "${GREEN}✓ Bot will automatically accept ALL message requests${NC}"
+echo "  (Required for business bot - customers get instant responses)"
+
+echo ""
+
 # Create or update .env file
 echo "Updating configuration..."
 

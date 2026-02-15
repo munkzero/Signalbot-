@@ -209,6 +209,76 @@ In the wizard, enter:
 
 Or enter your Signal phone number directly.
 
+## Message Requests & Auto-Trust
+
+This bot is configured to **automatically accept all message requests** from new contacts.
+
+### Why Auto-Trust is Required
+
+Signal treats first-time messages as "Message Requests" that need manual approval. For a business bot, this would mean:
+- ❌ Manually approving every customer
+- ❌ Customers waiting with no response
+- ❌ Constant phone monitoring required
+- ❌ Not scalable
+
+**Auto-trust solves this** by automatically accepting all new contacts.
+
+### How It Works
+
+During `./setup.sh`, the bot configures signal-cli to trust all new identities:
+
+```bash
+signal-cli -u +64YOURNUMBER updateConfiguration --trust-new-identities always
+```
+
+This means:
+- ✅ Customers message the bot
+- ✅ Bot automatically trusts them
+- ✅ Bot responds immediately
+- ✅ No manual intervention needed
+
+### Security Considerations
+
+**Auto-trust accepts ALL contacts**, including:
+- ✅ Legitimate customers (intended)
+- ⚠️ Spam messages (possible)
+- ⚠️ Unknown contacts (possible)
+
+**For a business bot, this is acceptable** because:
+- The bot only responds to valid commands
+- Invalid messages are ignored or get error response
+- Benefits outweigh risks for customer service
+
+**If you need manual approval** (not recommended for business use):
+```bash
+signal-cli -u +64YOURNUMBER updateConfiguration --trust-new-identities on-first-use
+```
+
+### Troubleshooting
+
+**If customers aren't getting responses:**
+
+1. Check auto-trust is enabled:
+   ```bash
+   cat ~/.local/share/signal-cli/data/+64YOURNUMBER | grep trustNew
+   ```
+   Should show: `"trustNewIdentities": "ALWAYS"`
+
+2. Re-enable auto-trust:
+   ```bash
+   signal-cli -u +64YOURNUMBER updateConfiguration --trust-new-identities always
+   ```
+
+3. Or run the check script:
+   ```bash
+   ./check-trust.sh
+   ```
+
+4. Or run setup again:
+   ```bash
+   ./setup.sh
+   ```
+
 ## Usage
 
 ### Adding Products
