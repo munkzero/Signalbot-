@@ -4650,19 +4650,37 @@ class DashboardWindow(QMainWindow):
         # Initialize payment monitoring if wallet is configured
         self.payment_processor = None
         self.wallet = None  # Store wallet reference for WalletTab
+        self.node_monitor = None  # Node health monitor
+        
         if seller and seller.wallet_path:
             try:
                 from ..core.payments import PaymentProcessor
                 from ..core.commission import CommissionManager
                 from ..core.monero_wallet import InHouseWallet
                 from ..models.node import NodeManager
+                from ..core.node_monitor import NodeHealthMonitor
+                from ..core.wallet_setup import test_node_connectivity
                 
-                # Get default node configuration
+                # Get available nodes and test connectivity
                 node_manager = NodeManager(self.db_manager)
+                all_nodes = node_manager.list_nodes()
+                
+                # Test node connectivity
+                print("🔍 Testing Monero node connectivity...")
+                node_tuples = [(node.address, node.port) for node in all_nodes if node.address]
+                working_nodes = test_node_connectivity(node_tuples) if node_tuples else []
+                
+                # Get default node or first working node
                 default_node = node_manager.get_default_node()
+                if not default_node and working_nodes:
+                    # Use first working node - create simple object with required attributes
+                    from collections import namedtuple
+                    NodeConfig = namedtuple('NodeConfig', ['address', 'port', 'use_ssl'])
+                    default_node_addr, default_node_port = working_nodes[0]
+                    print(f"ℹ️  Using first working node: {default_node_addr}:{default_node_port}")
+                    default_node = NodeConfig(default_node_addr, default_node_port, False)
                 
                 if default_node:
-                    # Initialize in-house wallet
                     # Ask user if they want to unlock wallet now
                     reply = QMessageBox.question(
                         self,
@@ -4699,19 +4717,48 @@ class DashboardWindow(QMainWindow):
                                 
                                 print(f"✓ DEBUG: Wallet instance created")
                                 
-                                # Connect to node
-                                print(f"🔧 DEBUG: Attempting to connect to node...")
-                                connection_result = self.wallet.connect()
-                                print(f"🔧 DEBUG: Connection result: {connection_result}")
+                                # Auto-setup wallet (create if missing, start RPC)
+                                print(f"🔧 DEBUG: Running wallet auto-setup...")
+                                setup_success, seed_phrase = self.wallet.auto_setup_wallet(create_if_missing=False)
                                 
-                                if connection_result:
-                                    print("✓ Wallet connected successfully")
-                                else:
-                                    print("⚠ Wallet initialized but connection failed")
-                                    # Defer warning dialog until after dashboard loads
-                                    QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, lambda: self._show_connection_warning())
-                                    self.wallet = None
+                                if setup_success:
+                                    print("✓ Wallet auto-setup completed")
                                     
+                                    # If new wallet created, show seed phrase
+                                    if seed_phrase:
+                                        QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, 
+                                            lambda: self._show_seed_phrase_dialog(seed_phrase))
+                                    
+                                    # Connect to node
+                                    print(f"🔧 DEBUG: Attempting to connect to node...")
+                                    connection_result = self.wallet.connect()
+                                    print(f"🔧 DEBUG: Connection result: {connection_result}")
+                                    
+                                    if connection_result:
+                                        print("✓ Wallet connected successfully")
+                                        
+                                        # Start node health monitor
+                                        self.node_monitor = NodeHealthMonitor(self.wallet.setup_manager)
+                                        if len(working_nodes) > 1:
+                                            # Use other working nodes as backups (exclude current default)
+                                            backup_nodes = [
+                                                (addr, port) for addr, port in working_nodes 
+                                                if addr != default_node.address or port != default_node.port
+                                            ]
+                                            self.node_monitor.set_backup_nodes(backup_nodes)
+                                        self.node_monitor.start()
+                                        print("✓ Node health monitor started")
+                                    else:
+                                        print("⚠ Wallet initialized but connection failed")
+                                        # Defer warning dialog until after dashboard loads
+                                        QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, lambda: self._show_connection_warning())
+                                        self.wallet = None
+                                else:
+                                    print("⚠ Wallet auto-setup failed")
+                                    QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, 
+                                        lambda: self._show_setup_failed_dialog())
+                                    self.wallet = None
+                                        
                             except Exception as e:
                                 print(f"❌ ERROR: Failed to initialize wallet: {e}")
                                 import traceback
@@ -4758,6 +4805,54 @@ class DashboardWindow(QMainWindow):
             "1. Go to Settings → Wallet Settings → Manage Nodes\n"
             "2. Try a different public node\n"
             "3. Click 'Reconnect Now' after changing nodes",
+            QMessageBox.Ok
+        )
+    
+    def _show_seed_phrase_dialog(self, seed_phrase: str):
+        """Show seed phrase dialog for newly created wallet"""
+        from PyQt5.QtWidgets import QTextEdit, QVBoxLayout, QLabel, QPushButton, QDialog
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("⚠️ SAVE YOUR SEED PHRASE!")
+        dialog.setMinimumWidth(600)
+        
+        layout = QVBoxLayout()
+        
+        # Warning label
+        warning = QLabel(
+            "Write down these 25 words and store them safely!\n"
+            "This is the ONLY way to recover your wallet if you lose access.\n\n"
+            "DO NOT share this with anyone!"
+        )
+        warning.setStyleSheet("color: red; font-weight: bold; font-size: 12px;")
+        layout.addWidget(warning)
+        
+        # Seed phrase text
+        seed_text = QTextEdit()
+        seed_text.setPlainText(seed_phrase)
+        seed_text.setReadOnly(True)
+        seed_text.setStyleSheet("font-family: monospace; font-size: 11px;")
+        layout.addWidget(seed_text)
+        
+        # Confirm button
+        confirm_btn = QPushButton("I Have Saved My Seed Phrase")
+        confirm_btn.clicked.connect(dialog.accept)
+        layout.addWidget(confirm_btn)
+        
+        dialog.setLayout(layout)
+        dialog.exec_()
+    
+    def _show_setup_failed_dialog(self):
+        """Show wallet setup failure dialog"""
+        QMessageBox.critical(
+            self,
+            "Wallet Setup Failed",
+            "Failed to setup wallet and start RPC.\n\n"
+            "Possible issues:\n"
+            "• Wallet file is missing or corrupted\n"
+            "• monero-wallet-rpc is not installed\n"
+            "• Node is unreachable\n\n"
+            "Please check the logs for more details.",
             QMessageBox.Ok
         )
     

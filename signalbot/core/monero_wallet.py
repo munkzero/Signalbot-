@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from monero.wallet import JSONRPCWallet
 from monero.seed import Seed
+import logging
+from .wallet_setup import WalletSetupManager, test_node_connectivity
 from ..config.settings import (
     MONERO_CONFIRMATIONS_REQUIRED, 
     WALLET_DIR, 
@@ -22,6 +24,8 @@ from ..config.settings import (
     DEFAULT_DAEMON_PORT,
     NODE_CONNECTION_TIMEOUT
 )
+
+logger = logging.getLogger(__name__)
 
 
 class InHouseWallet:
@@ -56,6 +60,15 @@ class InHouseWallet:
         self.wallet = None
         self.rpc_process = None
         self.rpc_port = 18082  # Default wallet RPC port
+        
+        # Auto-setup manager for wallet creation and RPC management
+        self.setup_manager = WalletSetupManager(
+            wallet_path=wallet_path,
+            daemon_address=daemon_address,
+            daemon_port=daemon_port,
+            rpc_port=self.rpc_port,
+            password=password
+        )
         
     @classmethod
     def create_new_wallet(
@@ -182,10 +195,19 @@ class InHouseWallet:
     
     def _start_wallet_rpc(self):
         """Start monero-wallet-rpc process"""
-        # This would start the actual wallet RPC
-        # For now, we'll assume it's handled externally or use direct RPC connection
-        # In production, you'd use subprocess to start monero-wallet-rpc
-        pass
+        logger.info("Starting wallet RPC process...")
+        
+        # Use WalletSetupManager to start RPC
+        success = self.setup_manager.start_rpc()
+        
+        if success:
+            logger.info("✅ Wallet RPC started successfully")
+            # Store the actual process reference
+            self.rpc_process = self.setup_manager.rpc_process
+        else:
+            logger.error("❌ Failed to start wallet RPC")
+            
+        return success
     
     def get_seed_phrase(self) -> str:
         """
@@ -412,14 +434,82 @@ class InHouseWallet:
         
         return str(backup_path)
     
+    def ensure_connection(self) -> bool:
+        """
+        Ensure RPC connection is active, reconnect if needed
+        
+        Returns:
+            True if connection is active or successfully reconnected
+        """
+        # First check if wallet already connected
+        if self.wallet:
+            try:
+                # Try a simple operation to verify connection
+                self.wallet.height()
+                return True
+            except Exception:
+                # Connection lost, need to reconnect
+                logger.warning("Wallet connection lost, attempting reconnect...")
+        
+        # Check if RPC is running
+        if not self.setup_manager.test_rpc_connection():
+            logger.warning("RPC not running, attempting to start...")
+            if not self.setup_manager.start_rpc():
+                logger.error("Failed to start RPC")
+                return False
+        
+        # Try to establish connection
+        return self.connect()
+    
+    def auto_setup_wallet(self, create_if_missing: bool = False) -> Tuple[bool, Optional[str]]:
+        """
+        Auto-setup wallet: create if needed, start RPC
+        
+        Args:
+            create_if_missing: Auto-create wallet if it doesn't exist
+            
+        Returns:
+            Tuple of (success, seed_phrase_if_created)
+        """
+        logger.info("Running wallet auto-setup...")
+        
+        # Use WalletSetupManager to handle setup
+        success, seed = self.setup_manager.setup_wallet(create_if_missing=create_if_missing)
+        
+        if success and seed:
+            # New wallet created - store seed for later retrieval
+            self._seed_phrase = seed
+            logger.info("✅ Wallet auto-setup completed with new wallet creation")
+        elif success:
+            logger.info("✅ Wallet auto-setup completed")
+        else:
+            logger.error("❌ Wallet auto-setup failed")
+        
+        return success, seed
+    
+    def get_saved_seed_phrase(self) -> Optional[str]:
+        """
+        Get saved seed phrase if wallet was just created
+        
+        Returns:
+            Seed phrase or None
+        """
+        return getattr(self, '_seed_phrase', None)
+    
     def close(self):
         """Close wallet connection"""
+        # Stop RPC if we started it
+        if self.setup_manager:
+            self.setup_manager.stop_rpc()
+        
         if self.rpc_process:
             try:
-                self.rpc_process.terminate()
-                self.rpc_process.wait(timeout=5)
+                if hasattr(self.rpc_process, 'terminate'):
+                    self.rpc_process.terminate()
+                    self.rpc_process.wait(timeout=5)
             except Exception:
-                self.rpc_process.kill()
+                if hasattr(self.rpc_process, 'kill'):
+                    self.rpc_process.kill()
             self.rpc_process = None
         
         self.wallet = None
