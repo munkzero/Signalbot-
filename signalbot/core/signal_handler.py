@@ -45,6 +45,7 @@ class SignalHandler:
         self.buyer_handler = None  # Will be set by dashboard
         self.listening = False
         self.listen_thread = None
+        self.trusted_contacts = set()  # Track already-trusted contacts to avoid redundant calls
         
         print(f"DEBUG: SignalHandler initialized with phone_number={self.phone_number}")
     
@@ -72,6 +73,37 @@ class SignalHandler:
                 raise RuntimeError(f"Failed to generate link: {result.stderr}")
         except Exception as e:
             raise RuntimeError(f"Signal linking failed: {e}")
+    
+    def auto_trust_contact(self, contact_number: str) -> bool:
+        """
+        Automatically trust a contact's identity.
+        Called when receiving message from new contact.
+        
+        Args:
+            contact_number: Phone number to trust
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            result = subprocess.run(
+                ['signal-cli', '-u', self.phone_number, 'trust', contact_number, '-a'],
+                capture_output=True,
+                timeout=10,
+                text=True
+            )
+            
+            if result.returncode == 0:
+                print(f"DEBUG: Auto-trusted contact {contact_number}")
+                return True
+            else:
+                # May already be trusted or not needed
+                print(f"DEBUG: Trust command result for {contact_number}: {result.stderr}")
+                return False
+                
+        except Exception as e:
+            print(f"WARNING: Could not auto-trust {contact_number}: {e}")
+            return False
     
     def send_message(
         self,
@@ -291,6 +323,12 @@ class SignalHandler:
             group_info = data_message.get('groupInfo')
             
             print(f"DEBUG: Received dataMessage from {source}: {message_text[:50] if message_text else '(no text)'}")
+        
+        # Auto-trust sender on first message (safety net)
+        # This is belt-and-suspenders with signal-cli config
+        if source and source != self.phone_number and source not in self.trusted_contacts:
+            if self.auto_trust_contact(source):
+                self.trusted_contacts.add(source)
         
         # Create message object
         message = {
