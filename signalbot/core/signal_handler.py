@@ -45,6 +45,7 @@ class SignalHandler:
         self.buyer_handler = None  # Will be set by dashboard
         self.listening = False
         self.listen_thread = None
+        self.trusted_contacts = set()  # Track already-trusted contacts to avoid redundant calls
         
         print(f"DEBUG: SignalHandler initialized with phone_number={self.phone_number}")
     
@@ -325,8 +326,9 @@ class SignalHandler:
         
         # Auto-trust sender on first message (safety net)
         # This is belt-and-suspenders with signal-cli config
-        if source and source != self.phone_number:
-            self.auto_trust_contact(source)
+        if source and source != self.phone_number and source not in self.trusted_contacts:
+            if self.auto_trust_contact(source):
+                self.trusted_contacts.add(source)
         
         # Create message object
         message = {

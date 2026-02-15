@@ -1,8 +1,10 @@
 #!/bin/bash
+set -e  # Exit on error
+set -u  # Catch undefined variables
 
 # Quick script to check and fix auto-trust configuration
 
-PHONE_NUMBER=$(grep PHONE_NUMBER .env | cut -d '=' -f2)
+PHONE_NUMBER=$(grep PHONE_NUMBER .env | cut -d '=' -f2 || echo "")
 
 if [ -z "$PHONE_NUMBER" ]; then
     echo "❌ PHONE_NUMBER not found in .env"
