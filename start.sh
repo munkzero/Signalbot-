@@ -76,7 +76,6 @@ export JAVA_OPTS="-Djava.net.preferIPv4Stack=true \
                   -Djava.net.preferIPv4Addresses=true \
                   -XX:+TieredCompilation \
                   -XX:TieredStopAtLevel=1 \
-                  -Xverify:none \
                   -XX:+UseParallelGC \
                   -Xms64m \
                   -Xmx128m"

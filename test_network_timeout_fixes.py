@@ -80,7 +80,6 @@ def test_java_optimizations():
     optimizations = [
         ("TieredCompilation", "Fast compilation"),
         ("TieredStopAtLevel=1", "Level 1 compilation"),
-        ("Xverify:none", "Skip bytecode verification"),
         ("UseParallelGC", "Parallel garbage collection"),
         ("Xms64m", "Minimum heap 64MB"),
         ("Xmx128m", "Maximum heap 128MB"),
@@ -232,13 +231,13 @@ def main():
     
     if passed == total:
         print("\n🎉 All tests passed!")
-        print("\nExpected Performance Improvements:")
+        print("\nExpected Performance Improvements from this PR:")
         print("  • Single message: 9.1s → 6-7s (25% faster)")
         print("  • Catalog (3 items): 60s+ → 25-35s (reliable)")
-        print("  • Image upload: 99KB → 52KB (50% smaller)")
         print("  • No timeout errors with 60s buffer")
         print("  • IPv4 forced (no broken IPv6 attempts)")
         print("  • Faster JVM startup with optimizations")
+        print("\nNote: Image compression already implemented in previous updates")
         return 0
     else:
         print(f"\n⚠️  {total - passed} test(s) failed")
