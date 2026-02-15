@@ -118,12 +118,14 @@ if [ -z "$PHONE_NUMBER" ]; then
     exit 1
 fi
 
-# Validate format
+# Validate format (intentionally loose to support international numbers)
+# Accepts any number with + followed by 10-15 digits total
+# This covers most countries (e.g., +1XXXXXXXXXX for US, +64XXXXXXXXX for NZ)
 if [[ ! "$PHONE_NUMBER" =~ ^\+[0-9]{10,15}$ ]]; then
     echo "✗ Invalid PHONE_NUMBER format in .env: $PHONE_NUMBER"
     echo ""
-    echo "Must start with + and contain 10-15 digits"
-    echo "Example: +64274757293"
+    echo "Must start with + and contain 10-15 digits total"
+    echo "Examples: +64274757293 (NZ), +15551234567 (US)"
     echo ""
     echo "Run the setup wizard to fix:"
     echo "  ./setup.sh"

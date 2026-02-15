@@ -29,14 +29,16 @@ echo -e "${GREEN}✓ signal-cli found${NC}"
 echo ""
 
 # Get phone number
-echo "Enter your Signal phone number (format: +64XXXXXXXXX):"
+echo "Enter your Signal phone number (format: +[country_code][number]):"
 read -p "> " PHONE_NUMBER
 
-# Validate format
+# Validate format (intentionally loose to support international numbers)
+# Accepts any number with + followed by 10-15 digits total
+# This covers most countries (e.g., +1XXXXXXXXXX for US, +64XXXXXXXXX for NZ)
 if [[ ! "$PHONE_NUMBER" =~ ^\+[0-9]{10,15}$ ]]; then
     echo -e "${RED}✗ Invalid phone number format!${NC}"
-    echo "  Must start with + and contain 10-15 digits"
-    echo "  Example: +64274757293"
+    echo "  Must start with + and contain 10-15 digits total"
+    echo "  Examples: +64274757293 (NZ), +15551234567 (US)"
     exit 1
 fi
 
@@ -79,15 +81,23 @@ echo ""
 echo "Updating configuration..."
 
 if [ -f "$ENV_FILE" ]; then
-    # Backup existing .env
-    cp "$ENV_FILE" "$ENV_FILE.backup.$(date +%Y%m%d_%H%M%S)"
-    echo -e "${GREEN}✓ Backed up existing .env${NC}"
+    # Backup existing .env with timestamp
+    BACKUP_FILE="$ENV_FILE.backup.$(date +%Y%m%d_%H%M%S 2>/dev/null || echo "old")"
+    if cp "$ENV_FILE" "$BACKUP_FILE" 2>/dev/null; then
+        echo -e "${GREEN}✓ Backed up existing .env to: $BACKUP_FILE${NC}"
+    else
+        echo -e "${YELLOW}⚠ Could not create backup${NC}"
+    fi
 fi
 
 # Create/update .env
+# Note: PHONE_NUMBER, SIGNAL_USERNAME, and SELLER_SIGNAL_ID are kept for backward compatibility
+# with different parts of the codebase. They all reference the same phone number.
 cat > "$ENV_FILE" << EOF
 # Signal Configuration
 # Updated: $(date)
+# Note: PHONE_NUMBER is the primary configuration variable.
+# SIGNAL_USERNAME and SELLER_SIGNAL_ID are aliases kept for backward compatibility.
 PHONE_NUMBER=$PHONE_NUMBER
 SIGNAL_USERNAME=$PHONE_NUMBER
 SELLER_SIGNAL_ID=$PHONE_NUMBER
