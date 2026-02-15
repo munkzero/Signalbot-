@@ -90,6 +90,71 @@ echo "  - Memory: 64-128MB"
 echo ""
 
 echo "========================================="
+echo "Validating Configuration"
+echo "========================================="
+
+# Check if .env exists
+if [ ! -f "$SCRIPT_DIR/.env" ]; then
+    echo "✗ .env file not found!"
+    echo ""
+    echo "Run the setup wizard:"
+    echo "  ./setup.sh"
+    echo ""
+    exit 1
+fi
+
+# Load .env
+set -a
+source "$SCRIPT_DIR/.env" 2>/dev/null
+set +a
+
+# Check PHONE_NUMBER is set
+if [ -z "$PHONE_NUMBER" ]; then
+    echo "✗ PHONE_NUMBER not set in .env!"
+    echo ""
+    echo "Run the setup wizard:"
+    echo "  ./setup.sh"
+    echo ""
+    exit 1
+fi
+
+# Validate format
+if [[ ! "$PHONE_NUMBER" =~ ^\+[0-9]{10,15}$ ]]; then
+    echo "✗ Invalid PHONE_NUMBER format in .env: $PHONE_NUMBER"
+    echo ""
+    echo "Must start with + and contain 10-15 digits"
+    echo "Example: +64274757293"
+    echo ""
+    echo "Run the setup wizard to fix:"
+    echo "  ./setup.sh"
+    echo ""
+    exit 1
+fi
+
+# Check if registered with signal-cli
+echo "Verifying Signal account: $PHONE_NUMBER"
+
+if signal-cli -u "$PHONE_NUMBER" listIdentities &>/dev/null; then
+    echo "✓ $PHONE_NUMBER is registered"
+else
+    echo "✗ $PHONE_NUMBER not registered with signal-cli!"
+    echo ""
+    echo "Available accounts:"
+    signal-cli listAccounts 2>/dev/null || echo "  (none)"
+    echo ""
+    echo "You need to either:"
+    echo "  1. Link device: signal-cli link -n 'SignalBot-Desktop'"
+    echo "  2. Register: signal-cli -u $PHONE_NUMBER register"
+    echo ""
+    echo "Or update .env with correct number: ./setup.sh"
+    echo ""
+    exit 1
+fi
+
+echo "✓ Configuration valid"
+echo ""
+
+echo "========================================="
 
 # Change to project directory
 cd "$SCRIPT_DIR" || exit 1

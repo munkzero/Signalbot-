@@ -8,6 +8,7 @@ import subprocess
 import json
 import threading
 import time
+import os
 
 
 class SignalHandler:
@@ -21,15 +22,31 @@ class SignalHandler:
         Initialize Signal handler
         
         Args:
-            phone_number: Seller's Signal phone number
+            phone_number: Seller's Signal phone number (if not provided, reads from environment)
         """
-        self.phone_number = phone_number
+        # Get phone number from parameter or environment
+        self.phone_number = phone_number or os.getenv('PHONE_NUMBER') or os.getenv('SIGNAL_USERNAME')
+        
+        if not self.phone_number:
+            raise ValueError(
+                "Phone number not configured! "
+                "Run './setup.sh' to configure your Signal number, "
+                "or set PHONE_NUMBER in .env file."
+            )
+        
+        # Validate format
+        if not self.phone_number.startswith('+'):
+            raise ValueError(
+                f"Invalid phone number format: {self.phone_number}\n"
+                "Must start with '+' (e.g., +64274757293)"
+            )
+        
         self.message_callbacks = []
         self.buyer_handler = None  # Will be set by dashboard
         self.listening = False
         self.listen_thread = None
         
-        print(f"DEBUG: SignalHandler initialized with phone_number={phone_number}")
+        print(f"DEBUG: SignalHandler initialized with phone_number={self.phone_number}")
     
     def link_device(self) -> str:
         """
