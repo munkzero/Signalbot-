@@ -169,16 +169,17 @@ class WalletSetupManager:
                 '--wallet-file', str(self.wallet_path),
                 '--password', self.password,
                 '--disable-rpc-login',
-                '--log-level', '1',
-                '--detach'
+                '--log-level', '1'
             ]
             
-            result = subprocess.run(
+            # Use Popen to capture process handle (don't use --detach)
+            self.rpc_process = subprocess.Popen(
                 cmd,
-                capture_output=True,
-                text=True,
-                timeout=10
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
             )
+            
+            logger.info(f"Started RPC process with PID: {self.rpc_process.pid}")
             
             # Wait for RPC to start
             for i in range(10):
@@ -191,8 +192,8 @@ class WalletSetupManager:
             logger.error("❌ RPC started but not responding")
             return False
             
-        except subprocess.TimeoutExpired:
-            logger.error("❌ RPC startup timed out")
+        except FileNotFoundError:
+            logger.error("❌ monero-wallet-rpc not found. Is it installed?")
             return False
         except Exception as e:
             logger.error(f"❌ Failed to start RPC: {e}")
@@ -201,25 +202,26 @@ class WalletSetupManager:
     def stop_rpc(self):
         """Stop monero-wallet-rpc process"""
         try:
-            # Find and kill the process by PID if we have it
+            # Use the process handle if we have it
             if self.rpc_process and hasattr(self.rpc_process, 'pid'):
                 import signal
-                os.kill(self.rpc_process.pid, signal.SIGTERM)
-                logger.info(f"Stopped wallet RPC (PID: {self.rpc_process.pid})")
+                try:
+                    os.kill(self.rpc_process.pid, signal.SIGTERM)
+                    self.rpc_process.wait(timeout=5)
+                    logger.info(f"Stopped wallet RPC (PID: {self.rpc_process.pid})")
+                except subprocess.TimeoutExpired:
+                    # Force kill if it doesn't terminate gracefully
+                    os.kill(self.rpc_process.pid, signal.SIGKILL)
+                    logger.warning(f"Force killed wallet RPC (PID: {self.rpc_process.pid})")
+                except ProcessLookupError:
+                    # Process already dead
+                    logger.debug("RPC process already terminated")
+                self.rpc_process = None
             else:
-                # Otherwise find by port
-                result = subprocess.run(
-                    ['lsof', '-t', '-i', f':{self.rpc_port}'],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
-                if result.stdout.strip():
-                    pid = int(result.stdout.strip())
-                    os.kill(pid, signal.SIGTERM)
-                    logger.info(f"Stopped wallet RPC (PID: {pid})")
+                logger.debug("No RPC process to stop")
         except Exception as e:
             logger.error(f"Error stopping RPC: {e}")
+            self.rpc_process = None
     
     def setup_wallet(self, create_if_missing: bool = True) -> Tuple[bool, Optional[str]]:
         """

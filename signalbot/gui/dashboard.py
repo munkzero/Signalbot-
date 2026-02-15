@@ -4673,16 +4673,12 @@ class DashboardWindow(QMainWindow):
                 # Get default node or first working node
                 default_node = node_manager.get_default_node()
                 if not default_node and working_nodes:
-                    # Use first working node as default
+                    # Use first working node - create simple object with required attributes
+                    from collections import namedtuple
+                    NodeConfig = namedtuple('NodeConfig', ['address', 'port', 'use_ssl'])
                     default_node_addr, default_node_port = working_nodes[0]
                     print(f"ℹ️  Using first working node: {default_node_addr}:{default_node_port}")
-                    # Create a temporary node object
-                    class TempNode:
-                        def __init__(self, addr, port):
-                            self.address = addr
-                            self.port = port
-                            self.use_ssl = False
-                    default_node = TempNode(default_node_addr, default_node_port)
+                    default_node = NodeConfig(default_node_addr, default_node_port, False)
                 
                 if default_node:
                     # Ask user if they want to unlock wallet now
@@ -4744,8 +4740,11 @@ class DashboardWindow(QMainWindow):
                                         # Start node health monitor
                                         self.node_monitor = NodeHealthMonitor(self.wallet.setup_manager)
                                         if len(working_nodes) > 1:
-                                            # Use other working nodes as backups
-                                            backup_nodes = [n for n in working_nodes if n != (default_node.address, default_node.port)]
+                                            # Use other working nodes as backups (exclude current default)
+                                            backup_nodes = [
+                                                (addr, port) for addr, port in working_nodes 
+                                                if addr != default_node.address or port != default_node.port
+                                            ]
                                             self.node_monitor.set_backup_nodes(backup_nodes)
                                         self.node_monitor.start()
                                         print("✓ Node health monitor started")

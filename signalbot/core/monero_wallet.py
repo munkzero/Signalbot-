@@ -202,7 +202,8 @@ class InHouseWallet:
         
         if success:
             logger.info("✅ Wallet RPC started successfully")
-            self.rpc_process = True  # Mark as running
+            # Store the actual process reference
+            self.rpc_process = self.setup_manager.rpc_process
         else:
             logger.error("❌ Failed to start wallet RPC")
             
