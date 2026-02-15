@@ -60,10 +60,16 @@ class WalletSetupManager:
                 '--command', 'exit'
             ]
             
+            # Log password handling for debugging
+            logger.debug(f"Creating wallet with password: {'<empty>' if self.password == '' else '<set>'}")
+            
+            # Provide two empty responses via stdin to handle any password prompts
+            # Even with --password "", some versions may prompt - these newlines ensure empty input
             result = subprocess.run(
                 cmd,
+                input="\n\n",  # Two newlines = empty responses for password and confirmation
                 capture_output=True,
-                text=True,
+                text=True,  # Required for text mode when using string input
                 timeout=30
             )
             
@@ -160,6 +166,9 @@ class WalletSetupManager:
         logger.info(f"  Daemon: {daemon_addr}:{daemon_prt}")
         logger.info(f"  RPC Port: {self.rpc_port}")
         logger.info(f"  Wallet: {self.wallet_path}")
+        
+        # Log password handling for debugging
+        logger.debug(f"Starting RPC with password: {'<empty>' if self.password == '' else '<set>'}")
         
         try:
             cmd = [
