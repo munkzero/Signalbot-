@@ -4719,7 +4719,7 @@ class DashboardWindow(QMainWindow):
                                 
                                 # Auto-setup wallet (create if missing, start RPC)
                                 print(f"🔧 DEBUG: Running wallet auto-setup...")
-                                setup_success, seed_phrase = self.wallet.auto_setup_wallet(create_if_missing=False)
+                                setup_success, seed_phrase = self.wallet.auto_setup_wallet(create_if_missing=True)
                                 
                                 if setup_success:
                                     print("✓ Wallet auto-setup completed")

@@ -461,7 +461,7 @@ class InHouseWallet:
         # Try to establish connection
         return self.connect()
     
-    def auto_setup_wallet(self, create_if_missing: bool = False) -> Tuple[bool, Optional[str]]:
+    def auto_setup_wallet(self, create_if_missing: bool = True) -> Tuple[bool, Optional[str]]:
         """
         Auto-setup wallet: create if needed, start RPC
         
