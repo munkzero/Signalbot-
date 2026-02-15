@@ -119,7 +119,7 @@ class SignalHandler:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=45  # Longer timeout for images with attachments
+                timeout=60  # Increased for slow network (600-700ms latency to Signal servers)
             )
             
             if result.returncode == 0:
@@ -130,7 +130,7 @@ class SignalHandler:
                 return False
         except subprocess.TimeoutExpired:
             print(f"ERROR: Timeout sending message to {recipient}")
-            print(f"  Timeout was set to 45 seconds - connection may be unstable")
+            print(f"  Timeout was set to 60 seconds - connection may be unstable")
             print(f"  Consider checking network or using smaller images")
             return False
         except Exception as e:
