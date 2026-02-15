@@ -58,6 +58,58 @@ cd Signalbot-
 pip install -r requirements.txt
 ```
 
+### Quick Setup
+
+**Option 1: Setup Wizard (Recommended)**
+
+Run the interactive setup wizard to configure your Signal phone number:
+
+```bash
+./setup.sh
+```
+
+This will:
+- ✅ Prompt for your Signal phone number
+- ✅ Validate the format
+- ✅ Check if registered with signal-cli
+- ✅ Create/update `.env` configuration
+- ✅ Test the connection
+
+**Option 2: Manual Configuration**
+
+If you prefer to configure manually:
+
+1. **Copy the template:**
+   ```bash
+   cp .env.example .env
+   ```
+
+2. **Edit the .env file:**
+   ```bash
+   nano .env
+   ```
+   
+   Update these values:
+   ```
+   PHONE_NUMBER=+64YOURNUMBER
+   SIGNAL_USERNAME=+64YOURNUMBER
+   SELLER_SIGNAL_ID=+64YOURNUMBER
+   ```
+
+3. **Link or register with signal-cli:**
+   
+   **Linking to phone (recommended):**
+   ```bash
+   signal-cli link -n "SignalBot-Desktop"
+   # Scan QR code with Signal app on your phone
+   ```
+   
+   **Direct registration:**
+   ```bash
+   signal-cli -u +64YOURNUMBER register
+   signal-cli -u +64YOURNUMBER verify CODE
+   ```
+
 ### First Run
 
 **Recommended:** Use the startup script for automatic temp directory management:
@@ -81,6 +133,55 @@ The setup wizard will guide you through:
 > **Note on Disk Space:** Signal-cli extracts ~127MB of native libraries to temp directories on each startup. If the application crashes, these files may not be cleaned up automatically. The `start.sh` script manages this by using a project-local temp directory and cleaning up orphaned files. See [TEMP_DIRECTORY_MANAGEMENT.md](TEMP_DIRECTORY_MANAGEMENT.md) for details.
 
 ## Configuration
+
+### Changing Your Phone Number
+
+If you need to change your Signal number (new SIM, porting, linking to phone):
+
+**Option 1: Setup Wizard (Easiest)**
+
+```bash
+./setup.sh
+```
+
+Follow the prompts to enter your new number. The wizard will:
+- Backup your existing .env
+- Validate the new number format
+- Check if it's registered with signal-cli
+- Update configuration automatically
+
+**Option 2: Manual Update**
+
+1. **Link or register new number with signal-cli**
+   
+   **Linking to phone (recommended):**
+   ```bash
+   signal-cli link -n "SignalBot-Desktop"
+   # Scan QR code with Signal app
+   ```
+   
+   **Direct registration:**
+   ```bash
+   signal-cli -u +64YOURNUMBER register
+   signal-cli -u +64YOURNUMBER verify CODE
+   ```
+
+2. **Update .env file**
+   ```bash
+   nano .env
+   ```
+   
+   Change these lines:
+   ```
+   PHONE_NUMBER=+64YOURNEWNUMBER
+   SIGNAL_USERNAME=+64YOURNEWNUMBER
+   SELLER_SIGNAL_ID=+64YOURNEWNUMBER
+   ```
+
+3. **Restart bot**
+   ```bash
+   ./start.sh
+   ```
 
 ### Monero Wallet Setup
 
@@ -281,6 +382,38 @@ This will show:
 See [TEMP_DIRECTORY_MANAGEMENT.md](TEMP_DIRECTORY_MANAGEMENT.md) for detailed information about temp directory management.
 
 ## Troubleshooting
+
+### "User +64XXXXXXXX is not registered" Error
+
+**Cause:** Phone number in `.env` doesn't match signal-cli registration
+
+**Fix:**
+```bash
+# Check registered accounts
+signal-cli listAccounts
+
+# Run setup wizard to fix
+./setup.sh
+```
+
+### "PHONE_NUMBER not set in .env" Error
+
+**Cause:** Missing or invalid `.env` file
+
+**Fix:**
+```bash
+./setup.sh
+```
+
+### Configuration Validation
+
+The bot validates your configuration on startup:
+- ✅ `.env` file exists
+- ✅ `PHONE_NUMBER` is set
+- ✅ Format is valid (+XXXXXXXXXXXX)
+- ✅ Number is registered with signal-cli
+
+If validation fails, the bot will show a helpful error message telling you how to fix it.
 
 ### Signal Connection Issues
 - Ensure signal-cli is installed and in PATH

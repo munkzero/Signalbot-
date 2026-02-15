@@ -22,7 +22,7 @@ def demonstrate_fix():
     print()
     
     # Initialize handler
-    handler = SignalHandler(phone_number="+64274268090")
+    handler = SignalHandler(phone_number="+64274757293")
     
     print("Scenario 1: Message from Signal Desktop to self (should be skipped)")
     print("-" * 70)
@@ -32,16 +32,16 @@ def demonstrate_fix():
     self_message_json = """
 {
   "envelope": {
-    "source": "+64274268090",
-    "sourceNumber": "+64274268090",
+    "source": "+64274757293",
+    "sourceNumber": "+64274757293",
     "sourceUuid": "6b236748-ad51-4421-a0cf-88b108231fb3",
     "sourceName": "Satoshi",
     "sourceDevice": 1,
     "timestamp": 1771049391838,
     "syncMessage": {
       "sentMessage": {
-        "destination": "+64274268090",
-        "destinationNumber": "+64274268090",
+        "destination": "+64274757293",
+        "destinationNumber": "+64274757293",
         "destinationUuid": "6b236748-ad51-4421-a0cf-88b108231fb3",
         "timestamp": 1771049391838,
         "message": "Hello",
@@ -51,7 +51,7 @@ def demonstrate_fix():
       }
     }
   },
-  "account": "+64274268090"
+  "account": "+64274757293"
 }
 """
     
@@ -101,7 +101,7 @@ def demonstrate_fix():
       "viewOnce": false
     }
   },
-  "account": "+64274268090"
+  "account": "+64274757293"
 }
 """
     
@@ -135,8 +135,8 @@ def demonstrate_fix():
     sync_to_other_json = """
 {
   "envelope": {
-    "source": "+64274268090",
-    "sourceNumber": "+64274268090",
+    "source": "+64274757293",
+    "sourceNumber": "+64274757293",
     "sourceUuid": "6b236748-ad51-4421-a0cf-88b108231fb3",
     "sourceName": "Satoshi",
     "sourceDevice": 1,
@@ -154,7 +154,7 @@ def demonstrate_fix():
       }
     }
   },
-  "account": "+64274268090"
+  "account": "+64274757293"
 }
 """
     
@@ -188,8 +188,8 @@ def demonstrate_fix():
     print("  ✓ Processes syncMessages sent to others (for tracking)")
     print("  ✓ Shows 'syncMessage' or 'dataMessage' in debug output")
     print()
-    print("Before fix: 'DEBUG: Received message from +64274268090: (no text)'")
-    print("After fix:  'DEBUG: Received syncMessage from +64274268090: Hello'")
+    print("Before fix: 'DEBUG: Received message from +64274757293: (no text)'")
+    print("After fix:  'DEBUG: Received syncMessage from +64274757293: Hello'")
     print()
 
 

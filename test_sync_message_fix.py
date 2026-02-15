@@ -19,7 +19,7 @@ def test_regular_data_message():
     """Test handling of regular incoming messages from other users"""
     print("\n=== Testing Regular dataMessage ===")
     
-    handler = SignalHandler(phone_number="+64274268090")
+    handler = SignalHandler(phone_number="+64274757293")
     received_messages = []
     
     def callback(message):
@@ -42,7 +42,7 @@ def test_regular_data_message():
                 "viewOnce": False
             }
         },
-        "account": "+64274268090"
+        "account": "+64274757293"
     }
     
     handler._handle_message(message_data)
@@ -67,7 +67,7 @@ def test_sync_message_to_self():
     """Test handling of syncMessage when user messages themselves"""
     print("\n=== Testing syncMessage to Self (Should Skip) ===")
     
-    handler = SignalHandler(phone_number="+64274268090")
+    handler = SignalHandler(phone_number="+64274757293")
     received_messages = []
     
     def callback(message):
@@ -78,16 +78,16 @@ def test_sync_message_to_self():
     # Simulate sync message to self (should be skipped)
     message_data = {
         "envelope": {
-            "source": "+64274268090",
-            "sourceNumber": "+64274268090",
+            "source": "+64274757293",
+            "sourceNumber": "+64274757293",
             "sourceUuid": "6b236748-ad51-4421-a0cf-88b108231fb3",
             "sourceName": "Satoshi",
             "sourceDevice": 1,
             "timestamp": 1771049391838,
             "syncMessage": {
                 "sentMessage": {
-                    "destination": "+64274268090",
-                    "destinationNumber": "+64274268090",
+                    "destination": "+64274757293",
+                    "destinationNumber": "+64274757293",
                     "destinationUuid": "6b236748-ad51-4421-a0cf-88b108231fb3",
                     "timestamp": 1771049391838,
                     "message": "Hello to myself",
@@ -97,7 +97,7 @@ def test_sync_message_to_self():
                 }
             }
         },
-        "account": "+64274268090"
+        "account": "+64274757293"
     }
     
     handler._handle_message(message_data)
@@ -115,7 +115,7 @@ def test_sync_message_to_other():
     """Test handling of syncMessage when user messages someone else"""
     print("\n=== Testing syncMessage to Other User ===")
     
-    handler = SignalHandler(phone_number="+64274268090")
+    handler = SignalHandler(phone_number="+64274757293")
     received_messages = []
     
     def callback(message):
@@ -126,8 +126,8 @@ def test_sync_message_to_other():
     # Simulate sync message to another user
     message_data = {
         "envelope": {
-            "source": "+64274268090",
-            "sourceNumber": "+64274268090",
+            "source": "+64274757293",
+            "sourceNumber": "+64274757293",
             "sourceUuid": "6b236748-ad51-4421-a0cf-88b108231fb3",
             "sourceName": "Satoshi",
             "sourceDevice": 1,
@@ -145,7 +145,7 @@ def test_sync_message_to_other():
                 }
             }
         },
-        "account": "+64274268090"
+        "account": "+64274757293"
     }
     
     handler._handle_message(message_data)
@@ -153,7 +153,7 @@ def test_sync_message_to_other():
     # Verify message was processed
     if len(received_messages) == 1:
         msg = received_messages[0]
-        if msg['sender'] == '+64274268090' and msg['text'] == 'Hello from Signal Desktop':
+        if msg['sender'] == '+64274757293' and msg['text'] == 'Hello from Signal Desktop':
             print("  ✓ syncMessage to other user parsed correctly")
             print(f"    Sender: {msg['sender']}")
             print(f"    Text: {msg['text']}")
@@ -170,7 +170,7 @@ def test_message_without_text():
     """Test handling of messages without text (reactions, typing indicators, etc.)"""
     print("\n=== Testing Message Without Text ===")
     
-    handler = SignalHandler(phone_number="+64274268090")
+    handler = SignalHandler(phone_number="+64274757293")
     received_messages = []
     
     def callback(message):
@@ -188,11 +188,11 @@ def test_message_without_text():
                 "timestamp": 1771049391838,
                 "reaction": {
                     "emoji": "👍",
-                    "targetAuthor": "+64274268090"
+                    "targetAuthor": "+64274757293"
                 }
             }
         },
-        "account": "+64274268090"
+        "account": "+64274757293"
     }
     
     handler._handle_message(message_data)
@@ -217,7 +217,7 @@ def test_group_message():
     """Test handling of group messages"""
     print("\n=== Testing Group dataMessage ===")
     
-    handler = SignalHandler(phone_number="+64274268090")
+    handler = SignalHandler(phone_number="+64274757293")
     received_messages = []
     
     def callback(message):
@@ -240,7 +240,7 @@ def test_group_message():
                 }
             }
         },
-        "account": "+64274268090"
+        "account": "+64274757293"
     }
     
     handler._handle_message(message_data)

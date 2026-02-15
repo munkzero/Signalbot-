@@ -64,9 +64,10 @@ test_temp_cleanup.py
 test_cleanup_logic.py
 test_temp_management.sh
 
-# Environment
+# Environment (contains phone numbers - keep private!)
 .env
 .env.local
+.env.backup.*
 
 # Images (except sample)
 data/images/*
