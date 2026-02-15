@@ -63,13 +63,13 @@ class WalletSetupManager:
             # Log password handling for debugging
             logger.debug(f"Creating wallet with password: {'<empty>' if self.password == '' else '<set>'}")
             
-            # Provide empty password twice (initial + confirmation) via stdin
-            # This prevents interactive prompts that could timeout with unexpected input
+            # Provide two empty responses via stdin to handle any password prompts
+            # Even with --password "", some versions may prompt - these newlines ensure empty input
             result = subprocess.run(
                 cmd,
-                input="\n\n",  # Two newlines for password + confirmation
+                input="\n\n",  # Two newlines = empty responses for password and confirmation
                 capture_output=True,
-                text=True,
+                text=True,  # Required for text mode when using string input
                 timeout=30
             )
             
