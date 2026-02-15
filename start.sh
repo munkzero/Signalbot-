@@ -66,6 +66,30 @@ fi
 
 echo ""
 echo "========================================="
+echo "Java Optimizations for signal-cli"
+echo "========================================="
+
+# Force IPv4 (IPv6 is broken on this network - 100% packet loss)
+# Optimize JVM for faster startup
+# Reduce memory footprint
+export JAVA_OPTS="-Djava.net.preferIPv4Stack=true \
+                  -Djava.net.preferIPv4Addresses=true \
+                  -XX:+TieredCompilation \
+                  -XX:TieredStopAtLevel=1 \
+                  -XX:+UseParallelGC \
+                  -Xms64m \
+                  -Xmx128m"
+
+# Update JAVA_TOOL_OPTIONS to include both temp dir and optimizations
+export JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$TMPDIR $JAVA_OPTS"
+
+echo "✓ Java optimized for signal-cli:"
+echo "  - IPv4 forced (IPv6 broken)"
+echo "  - Fast JVM startup enabled"
+echo "  - Memory: 64-128MB"
+echo ""
+
+echo "========================================="
 
 # Change to project directory
 cd "$SCRIPT_DIR" || exit 1
