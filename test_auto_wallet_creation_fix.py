@@ -136,7 +136,6 @@ def main():
     # Run tests
     results.append(("Dashboard Auto-Wallet Creation", test_dashboard_auto_wallet_creation()))
     results.append(("Auto-Setup Default Parameters", test_wallet_setup_defaults()))
-
     
     # Summary
     print("\n" + "=" * 70)
