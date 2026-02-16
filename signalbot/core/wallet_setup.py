@@ -117,8 +117,8 @@ class WalletSetupManager:
     
     def create_wallet_with_seed(self) -> Tuple[bool, Optional[str], Optional[str]]:
         """
-        Create wallet and return seed phrase + address using RPC
-        This method ensures we capture the seed phrase reliably
+        Create wallet and return seed phrase + address
+        This method wraps create_wallet() to ensure reliable seed phrase capture
         
         Returns:
             Tuple of (success, seed_phrase, primary_address)
