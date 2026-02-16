@@ -115,6 +115,93 @@ class WalletSetupManager:
             logger.error(f"Error creating wallet: {e}")
             return False, None, None
     
+    def create_wallet_with_seed(self) -> Tuple[bool, Optional[str], Optional[str]]:
+        """
+        Create wallet and return seed phrase + address using RPC
+        This method ensures we capture the seed phrase reliably
+        
+        Returns:
+            Tuple of (success, seed_phrase, primary_address)
+        """
+        logger.info(f"Creating new wallet with RPC at {self.wallet_path}")
+        
+        if self.wallet_exists():
+            logger.warning(f"Wallet already exists at {self.wallet_path}")
+            return False, None, None
+        
+        # Ensure directory exists
+        self.wallet_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            # First create the wallet using monero-wallet-cli to get seed immediately
+            success, address, seed = self.create_wallet()
+            
+            if not success or not seed:
+                logger.error("Failed to create wallet or retrieve seed")
+                return False, None, None
+            
+            logger.info(f"✅ Wallet created with seed successfully!")
+            logger.info(f"   Address: {address[:20]}...{address[-10:] if address else ''}")
+            logger.info(f"   Seed: {seed[:30]}... (SAVE THIS!)")
+            
+            return True, seed, address
+            
+        except Exception as e:
+            logger.error(f"Error in create_wallet_with_seed: {e}")
+            return False, None, None
+    
+    def uses_empty_password(self) -> bool:
+        """
+        Check if wallet uses empty password
+        
+        Returns:
+            True if wallet password is empty string
+        """
+        return self.password == ""
+    
+    def unlock_wallet_silent(self) -> bool:
+        """
+        Unlock wallet without user interaction (for empty passwords)
+        Assumes RPC is already running
+        
+        Returns:
+            True if successfully unlocked
+        """
+        try:
+            if not self.uses_empty_password():
+                logger.warning("Cannot silent unlock: wallet has a password")
+                return False
+            
+            if not self.test_rpc_connection():
+                logger.error("Cannot unlock: RPC is not running")
+                return False
+            
+            # For wallets with empty password, they're already unlocked when RPC starts
+            # Just verify we can access the wallet
+            response = requests.post(
+                f'http://127.0.0.1:{self.rpc_port}/json_rpc',
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "0",
+                    "method": "get_address",
+                    "params": {"account_index": 0}
+                },
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if 'result' in result:
+                    logger.info("✅ Wallet is unlocked (empty password)")
+                    return True
+            
+            logger.error("Failed to verify wallet unlock")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Silent unlock failed: {e}")
+            return False
+    
     def is_rpc_running(self) -> bool:
         """Check if monero-wallet-rpc is running on the specified port"""
         try:
@@ -182,10 +269,12 @@ class WalletSetupManager:
             ]
             
             # Use Popen to capture process handle (don't use --detach)
+            # CRITICAL: Use stdin=subprocess.DEVNULL to prevent password prompts
             self.rpc_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL  # Prevents interactive prompts
             )
             
             logger.info(f"Started RPC process with PID: {self.rpc_process.pid}")
