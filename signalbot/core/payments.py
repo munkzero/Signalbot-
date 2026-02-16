@@ -15,6 +15,9 @@ import threading
 if TYPE_CHECKING:
     from .signal_handler import SignalHandler
 
+# Display constants
+TXID_DISPLAY_LENGTH = 16  # Number of characters to show in transaction ID display
+
 
 class PaymentProcessor:
     """Processes payments and monitors orders"""
@@ -226,8 +229,8 @@ class PaymentProcessor:
             if payment_status.get('txid'):
                 txid = payment_status['txid']
                 # Safely handle short or None transaction IDs
-                if len(txid) >= 16:
-                    txid_display = f"{txid[:16]}..."
+                if len(txid) >= TXID_DISPLAY_LENGTH:
+                    txid_display = f"{txid[:TXID_DISPLAY_LENGTH]}..."
                 else:
                     txid_display = txid
             

@@ -2344,6 +2344,9 @@ class ProductsTab(QWidget):
 class OrdersTab(QWidget):
     """Orders management tab"""
     
+    # Display constants
+    TXID_TRUNCATE_LENGTH = 20  # Minimum length before truncating transaction IDs
+    
     def __init__(self, order_manager: OrderManager):
         super().__init__()
         self.order_manager = order_manager
@@ -2450,8 +2453,8 @@ class OrdersTab(QWidget):
             
             # Transaction ID (shortened)
             if order.payment_txid:
-                # Only shorten if longer than 20 characters to avoid overlap
-                if len(order.payment_txid) > 20:
+                # Only shorten if longer than threshold to avoid overlap
+                if len(order.payment_txid) > self.TXID_TRUNCATE_LENGTH:
                     txid_short = f"{order.payment_txid[:8]}...{order.payment_txid[-8:]}"
                 else:
                     txid_short = order.payment_txid
