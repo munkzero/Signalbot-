@@ -14,6 +14,11 @@ FALLBACK_API = "https://api.kraken.com/0/public/Ticker?pair=XMRUSD"
 logger = logging.getLogger(__name__)
 
 
+class ExchangeRateUnavailableError(Exception):
+    """Raised when exchange rate cannot be obtained from any source"""
+    pass
+
+
 class CurrencyConverter:
     """Secure currency conversion with fallback protection"""
     
@@ -23,19 +28,19 @@ class CurrencyConverter:
         self.last_update = 0
         self.request_timeout = 10  # 10 second timeout
         self.max_retries = 3
-        
-        # Initialize with conservative fallback rate (updated on first API call)
-        self.fallback_rate = 150.0  # USD per XMR (conservative estimate)
     
     def get_xmr_price(self, currency: str = "USD") -> float:
         """
-        Get current XMR price with security and reliability
+        Get current XMR price with fallback chain
         
         Args:
             currency: Currency code (USD, EUR, GBP, etc.)
             
         Returns:
             Price of 1 XMR in specified currency
+            
+        Raises:
+            ExchangeRateUnavailableError: If rate unavailable from all sources
         """
         currency = currency.upper()
         
@@ -43,12 +48,12 @@ class CurrencyConverter:
             logger.warning(f"Unsupported currency {currency}, defaulting to USD")
             currency = "USD"
         
-        # Check cache first
+        # Check cache first (within 5 minutes)
         now = time.time()
         cache_key = f"XMR_{currency}"
         
         if cache_key in self.cache and (now - self.last_update) < self.cache_duration:
-            logger.debug(f"Using cached rate for {currency}: {self.cache[cache_key]}")
+            logger.debug(f"Using fresh cached rate for {currency}: {self.cache[cache_key]}")
             return self.cache[cache_key]
         
         # Try to fetch from API with retries
@@ -56,11 +61,9 @@ class CurrencyConverter:
             try:
                 price = self._fetch_from_api(currency)
                 
-                # Update cache and fallback
+                # Update cache
                 self.cache[cache_key] = price
                 self.last_update = now
-                if currency == "USD":
-                    self.fallback_rate = price
                 
                 logger.info(f"Exchange rate updated: 1 XMR = {price} {currency}")
                 return price
@@ -72,14 +75,17 @@ class CurrencyConverter:
                     time.sleep(1)  # Wait 1 second before retry
                     continue
         
-        # All attempts failed - use cache or fallback
+        # All API attempts failed - use stale cache if available
         if cache_key in self.cache:
-            logger.warning(f"Using stale cached rate for {currency}")
+            cache_age = (now - self.last_update) / 60  # Age in minutes
+            logger.warning(f"All APIs failed. Using cached rate from {cache_age:.1f} minutes ago")
             return self.cache[cache_key]
         
-        # No cache available - use conservative fallback
-        logger.error(f"No rate available for {currency}, using fallback: {self.fallback_rate}")
-        return self.fallback_rate
+        # No cache available - raise exception
+        logger.error(f"Exchange rate unavailable for {currency}: All APIs down and no cached rate")
+        raise ExchangeRateUnavailableError(
+            f"Exchange rate for {currency} unavailable. All APIs are down and no cached rate exists."
+        )
     
     def _fetch_from_api(self, currency: str) -> float:
         """
@@ -162,11 +168,15 @@ class CurrencyConverter:
             
         Returns:
             Amount in XMR
+            
+        Raises:
+            ValueError: If amount is negative
+            ExchangeRateUnavailableError: If exchange rate unavailable
         """
         if amount < 0:
             raise ValueError("Amount cannot be negative")
         
-        price = self.get_xmr_price(currency)
+        price = self.get_xmr_price(currency)  # May raise ExchangeRateUnavailableError
         return amount / price
     
     def xmr_to_fiat(self, amount: float, currency: str = "USD") -> float:

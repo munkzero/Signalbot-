@@ -12,7 +12,7 @@ from ..models.product import ProductManager
 from ..models.order import OrderManager, Order
 from ..config.settings import ORDER_EXPIRATION_MINUTES
 from ..utils.qr_generator import qr_generator
-from ..utils.currency import currency_converter
+from ..utils.currency import currency_converter, ExchangeRateUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -537,15 +537,51 @@ Reply "order {product_id} qty {product.stock}" to proceed.
             # Get XMR conversion using SECURE LIVE API
             try:
                 total_xmr = currency_converter.fiat_to_xmr(total, product.currency)
-                logger.debug(f"Exchange rate: 1 XMR = {currency_converter.get_xmr_price(product.currency):.2f} {product.currency}")
-            except Exception as e:
-                # Fallback to cached rate or manual rate if API fails
-                logger.warning(f"Live exchange rate API failed: {e}")
-                logger.warning(f"Using cached/fallback rate")
-                # This will use cached value from currency_converter if available
-                total_xmr = currency_converter.fiat_to_xmr(total, product.currency)
-            
-            logger.debug(f"Order total: {total} {product.currency} = {total_xmr:.6f} XMR")
+                current_rate = currency_converter.get_xmr_price(product.currency)
+                print(f"DEBUG: Exchange rate: 1 XMR = {current_rate:.2f} {product.currency}")
+                print(f"DEBUG: Order total: {total} {product.currency} = {total_xmr:.6f} XMR")
+                
+            except ExchangeRateUnavailableError as e:
+                # Exchange rate APIs are down - reject order
+                print(f"ERROR: Exchange rate unavailable: {e}")
+                
+                # Alert seller immediately
+                self.signal_handler.send_message(
+                    recipient=self.seller_signal_id,
+                    message=f"""🚨 CRITICAL ALERT 🚨
+
+Exchange Rate APIs are DOWN!
+
+A customer attempted to order but was rejected.
+
+Customer: {buyer_signal_id}
+Product: {product.name} ({product_id})
+Quantity: {quantity}
+
+Action Required:
+1. Check CoinGecko API status
+2. Check Kraken API status  
+3. Verify internet connectivity
+4. Check logs for details
+
+The bot will NOT process orders until APIs are working.
+"""
+                )
+                
+                # Inform customer
+                self.signal_handler.send_message(
+                    recipient=buyer_signal_id,
+                    message="""❌ Service Temporarily Unavailable
+
+We're unable to process orders right now due to a technical issue with our exchange rate provider.
+
+Please try again in 10-15 minutes.
+
+We apologize for the inconvenience and appreciate your patience.
+"""
+                )
+                
+                return  # Do not create order
             
             # Generate payment address (placeholder)
             payment_address = self._generate_payment_address(product.id, buyer_signal_id)
@@ -576,8 +612,11 @@ Reply "order {product_id} qty {product.stock}" to proceed.
             
             # Send order confirmation with payment info
             self.send_order_confirmation(buyer_signal_id, created_order, product, payment_address)
+            
         except Exception as e:
             print(f"ERROR: Failed to create order: {e}")
+            import traceback
+            traceback.print_exc()
             self.signal_handler.send_message(
                 recipient=buyer_signal_id,
                 message="❌ Failed to create order. Please try again or contact support."
