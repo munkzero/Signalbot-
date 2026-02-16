@@ -4,13 +4,16 @@ Handles payment detection and commission forwarding
 """
 
 import time
-from typing import Optional, Dict, Callable
+from typing import Optional, Dict, Callable, TYPE_CHECKING
 from datetime import datetime
 from .monero_wallet import MoneroWallet
 from .commission import CommissionManager
 from ..models.order import Order, OrderManager
 from ..config.settings import PAYMENT_CHECK_INTERVAL, MONERO_CONFIRMATIONS_REQUIRED
 import threading
+
+if TYPE_CHECKING:
+    from .signal_handler import SignalHandler
 
 
 class PaymentProcessor:
@@ -20,7 +23,8 @@ class PaymentProcessor:
         self,
         wallet: MoneroWallet,
         commission_manager: CommissionManager,
-        order_manager: OrderManager
+        order_manager: OrderManager,
+        signal_handler: Optional['SignalHandler'] = None
     ):
         """
         Initialize payment processor
@@ -29,10 +33,12 @@ class PaymentProcessor:
             wallet: Monero wallet instance
             commission_manager: Commission manager
             order_manager: Order manager
+            signal_handler: Optional Signal handler for notifications
         """
         self.wallet = wallet
         self.commission = commission_manager
         self.orders = order_manager
+        self.signal_handler = signal_handler
         self.monitoring = False
         self.monitor_thread = None
         self.payment_callbacks = {}
@@ -187,6 +193,9 @@ class PaymentProcessor:
             order.paid_at = datetime.utcnow()
             self.orders.update_order(order)
             
+            # Send confirmation message to customer
+            self._send_payment_confirmation(order, status)
+            
             # Trigger callback if registered
             if order.order_id in self.payment_callbacks:
                 self.payment_callbacks[order.order_id](order)
@@ -194,6 +203,49 @@ class PaymentProcessor:
             return True
         except Exception as e:
             print(f"Error processing payment for order {order.order_id}: {e}")
+            return False
+    
+    def _send_payment_confirmation(self, order: Order, payment_status: Dict) -> bool:
+        """
+        Send payment confirmation message to customer
+        
+        Args:
+            order: Order that was paid
+            payment_status: Payment status dict with transaction details
+            
+        Returns:
+            True if message sent successfully
+        """
+        if not self.signal_handler:
+            print("DEBUG: No Signal handler configured, skipping notification")
+            return False
+        
+        try:
+            # Format confirmation message
+            message = (
+                f"✅ Payment Received!\n\n"
+                f"Your order #{order.order_id} is confirmed.\n\n"
+                f"Amount: {payment_status['amount']:.6f} XMR\n"
+                f"Transaction: {payment_status['txid'][:16]}...\n"
+                f"Confirmations: {payment_status['confirmations']}\n\n"
+                f"Thank you for your order!"
+            )
+            
+            # Send message to customer
+            success = self.signal_handler.send_message(
+                order.customer_signal_id,
+                message
+            )
+            
+            if success:
+                print(f"✓ Confirmation message sent to customer for order #{order.order_id}")
+            else:
+                print(f"⚠ Failed to send confirmation message for order #{order.order_id}")
+            
+            return success
+            
+        except Exception as e:
+            print(f"Error sending payment confirmation: {e}")
             return False
     
     def _forward_commission(self, amount: float, order_id: str) -> bool:
