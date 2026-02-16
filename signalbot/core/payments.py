@@ -9,7 +9,7 @@ from datetime import datetime
 from .monero_wallet import MoneroWallet
 from .commission import CommissionManager
 from ..models.order import Order, OrderManager
-from ..config.settings import PAYMENT_CHECK_INTERVAL, MONERO_CONFIRMATIONS_REQUIRED
+from ..config.settings import PAYMENT_CHECK_INTERVAL, MONERO_CONFIRMATIONS_REQUIRED, COMMISSION_AUTO_SEND
 import threading
 
 if TYPE_CHECKING:
@@ -186,13 +186,17 @@ class PaymentProcessor:
             order.paid_at = datetime.utcnow()
             self.orders.update_order(order)
             
-            # Forward commission IMMEDIATELY after payment confirmation
-            commission_sent = self._forward_commission(order)
-            
-            if not commission_sent:
-                # Log but don't fail the order
-                print(f"⚠ Warning: Failed to forward commission for order {order.order_id}")
-                print(f"  Commission can be retried manually or via retry logic")
+            # Forward commission IMMEDIATELY after payment confirmation (if enabled)
+            if COMMISSION_AUTO_SEND:
+                commission_sent = self._forward_commission(order)
+                
+                if not commission_sent:
+                    # Log but don't fail the order
+                    print(f"⚠ Warning: Failed to forward commission for order {order.order_id}")
+                    print(f"  Commission can be retried manually or via retry logic")
+            else:
+                print(f"INFO: Commission auto-send disabled for order {order.order_id}")
+                print(f"  Commission must be sent manually")
             
             # Send confirmation message to customer
             self._send_payment_confirmation(order, status)
@@ -400,6 +404,49 @@ class PaymentProcessor:
             
             # Sleep between checks
             time.sleep(PAYMENT_CHECK_INTERVAL)
+    
+    def retry_failed_commissions(self) -> int:
+        """
+        Retry sending commissions for confirmed orders that haven't been paid yet.
+        This can be called periodically or manually to catch any failures.
+        
+        Returns:
+            Number of commissions successfully sent
+        """
+        try:
+            # Get confirmed orders without commission paid
+            paid_orders = self.orders.list_orders(payment_status='paid')
+            
+            unpaid_commissions = [
+                order for order in paid_orders 
+                if not order.commission_paid and order.commission_amount > 0
+            ]
+            
+            if not unpaid_commissions:
+                print("DEBUG: No failed commissions to retry")
+                return 0
+            
+            print(f"INFO: Retrying {len(unpaid_commissions)} failed commission(s)")
+            
+            success_count = 0
+            for order in unpaid_commissions:
+                # Check if payment is at least 1 hour old to avoid retrying too quickly
+                if order.paid_at:
+                    time_since_payment = (datetime.utcnow() - order.paid_at).total_seconds()
+                    if time_since_payment < 3600:  # Less than 1 hour
+                        print(f"DEBUG: Order {order.order_id}: Payment too recent, skipping retry")
+                        continue
+                
+                print(f"INFO: Retrying commission for order {order.order_id}")
+                if self._forward_commission(order):
+                    success_count += 1
+            
+            print(f"INFO: Successfully retried {success_count}/{len(unpaid_commissions)} commissions")
+            return success_count
+            
+        except Exception as e:
+            print(f"ERROR: Error retrying failed commissions: {e}")
+            return 0
     
     def register_payment_callback(self, order_id: str, callback: Callable):
         """
