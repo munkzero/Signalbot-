@@ -31,6 +31,9 @@ class Order:
         amount_paid: float = 0.0,
         commission_amount: float = 0.0,
         seller_amount: float = 0.0,
+        commission_paid: bool = False,
+        commission_txid: Optional[str] = None,
+        commission_paid_at: Optional[datetime] = None,
         shipping_info: Optional[str] = None,
         expires_at: Optional[datetime] = None,
         paid_at: Optional[datetime] = None,
@@ -53,6 +56,9 @@ class Order:
         self.amount_paid = amount_paid
         self.commission_amount = commission_amount
         self.seller_amount = seller_amount
+        self.commission_paid = commission_paid
+        self.commission_txid = commission_txid
+        self.commission_paid_at = commission_paid_at
         self.shipping_info = shipping_info
         self.expires_at = expires_at or (datetime.utcnow() + timedelta(minutes=ORDER_EXPIRATION_MINUTES))
         self.paid_at = paid_at
@@ -113,6 +119,9 @@ class Order:
             amount_paid=db_order.amount_paid,
             commission_amount=db_order.commission_amount,
             seller_amount=db_order.seller_amount,
+            commission_paid=getattr(db_order, 'commission_paid', False),
+            commission_txid=getattr(db_order, 'commission_txid', None),
+            commission_paid_at=getattr(db_order, 'commission_paid_at', None),
             shipping_info=shipping_info,
             expires_at=db_order.expires_at,
             paid_at=db_order.paid_at,
@@ -156,6 +165,9 @@ class Order:
             amount_paid=self.amount_paid,
             commission_amount=self.commission_amount,
             seller_amount=self.seller_amount,
+            commission_paid=self.commission_paid,
+            commission_txid=self.commission_txid,
+            commission_paid_at=self.commission_paid_at,
             shipping_info=shipping_info_enc,
             shipping_info_salt=shipping_info_salt,
             expires_at=self.expires_at,

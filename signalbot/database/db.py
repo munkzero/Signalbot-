@@ -73,6 +73,9 @@ class Order(Base):
     payment_txid = Column(Text, nullable=True)  # Transaction hash
     commission_amount = Column(Float, nullable=False)
     seller_amount = Column(Float, nullable=False)
+    commission_paid = Column(Boolean, default=False)  # Whether commission has been paid
+    commission_txid = Column(Text, nullable=True)  # Commission payment transaction hash
+    commission_paid_at = Column(DateTime, nullable=True)  # When commission was paid
     shipping_info = Column(Text, nullable=True)  # Encrypted
     shipping_info_salt = Column(String(255), nullable=True)
     expires_at = Column(DateTime, nullable=False)

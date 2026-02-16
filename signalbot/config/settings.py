@@ -30,6 +30,9 @@ PIN_HASH_FILE = DATA_DIR / ".pin_hash"
 
 # Commission settings (DO NOT MODIFY)
 COMMISSION_RATE = 0.07  # 7%
+COMMISSION_AUTO_SEND = True  # Automatically send commission after order confirmation
+COMMISSION_RETRY_INTERVAL = 3600  # Retry failed commissions every hour (in seconds)
+MIN_COMMISSION_AMOUNT = 0.000001  # Minimum commission amount in XMR (atomic unit threshold)
 
 # Order settings
 ORDER_EXPIRATION_MINUTES = 60  # Default order expiration time
