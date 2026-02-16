@@ -77,7 +77,7 @@ def test_multiple_currencies():
     print("TEST 3: Multiple Currency Support")
     print("="*60)
     
-    currencies = ["USD", "EUR", "GBP", "JPY"]
+    currencies = ["USD", "EUR", "GBP", "JPY", "NZD"]
     success_count = 0
     
     for currency in currencies:

@@ -3828,8 +3828,9 @@ class SettingsTab(QWidget):
     
     def show_status(self, message: str):
         """Show status message (helper method for wallet creation)"""
-        # This could be connected to a status bar if desired
-        print(f"STATUS: {message}")
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(message)
     
     def create_new_wallet(self):
         """Create new wallet with confirmation dialogs"""
