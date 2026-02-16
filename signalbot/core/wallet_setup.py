@@ -247,10 +247,10 @@ class WalletSetupManager:
             return False
         
         daemon_addr = daemon_address or self.daemon_address
-        daemon_prt = daemon_port or self.daemon_port
+        daemon_port_to_use = daemon_port or self.daemon_port
         
         logger.info(f"Starting wallet RPC...")
-        logger.info(f"  Daemon: {daemon_addr}:{daemon_prt}")
+        logger.info(f"  Daemon: {daemon_addr}:{daemon_port_to_use}")
         logger.info(f"  RPC Port: {self.rpc_port}")
         logger.info(f"  Wallet: {self.wallet_path}")
         
@@ -260,7 +260,7 @@ class WalletSetupManager:
         try:
             cmd = [
                 'monero-wallet-rpc',
-                '--daemon-address', f'{daemon_addr}:{daemon_prt}',
+                '--daemon-address', f'{daemon_addr}:{daemon_port_to_use}',
                 '--rpc-bind-port', str(self.rpc_port),
                 '--rpc-bind-ip', '127.0.0.1',
                 '--wallet-file', str(self.wallet_path),
@@ -345,10 +345,10 @@ class WalletSetupManager:
         import time
         
         daemon_addr = daemon_address or self.daemon_address
-        daemon_prt = daemon_port or self.daemon_port
+        daemon_port_to_use = daemon_port or self.daemon_port
         
         try:
-            url = f"http://{daemon_addr}:{daemon_prt}/json_rpc"
+            url = f"http://{daemon_addr}:{daemon_port_to_use}/json_rpc"
             start_time = time.time()
             
             response = requests.post(url, json={

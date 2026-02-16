@@ -4294,6 +4294,36 @@ class WalletSettingsDialog(QDialog):
         
         return password
     
+    def _get_wallet_password(self):
+        """
+        Get wallet password, using stored password or empty string for existing wallets
+        
+        Returns:
+            Password string, or None if user cancelled when prompted
+        """
+        # Check if dashboard has an active wallet with stored password
+        password = ""  # Default to empty password (standard for this bot)
+        
+        if self.dashboard and hasattr(self.dashboard, 'wallet') and self.dashboard.wallet:
+            # Use password from dashboard's wallet
+            password = self.dashboard.wallet.password
+        else:
+            # Check if wallet exists
+            from pathlib import Path
+            wallet_path = Path(self.seller.wallet_path)
+            wallet_exists = (wallet_path.parent / f"{wallet_path.name}.keys").exists()
+            
+            if wallet_exists:
+                # Wallet exists - use empty password (standard for this bot)
+                password = ""
+            else:
+                # Wallet doesn't exist yet - prompt for password
+                password = self._request_wallet_password()
+                if password is None:
+                    return None
+        
+        return password
+    
     def _create_connect_tab(self):
         """Create Connect & Sync tab"""
         widget = QWidget()
@@ -4480,27 +4510,10 @@ class WalletSettingsDialog(QDialog):
         )
         
         if reply == QMessageBox.Yes:
-            # Check if dashboard has an active wallet with stored password
-            password = ""  # Default to empty password (standard for this bot)
-            
-            if self.dashboard and hasattr(self.dashboard, 'wallet') and self.dashboard.wallet:
-                # Use password from dashboard's wallet
-                password = self.dashboard.wallet.password
-            else:
-                # Try to use wallet from WalletSetupManager to check password
-                from pathlib import Path
-                wallet_path = Path(self.seller.wallet_path)
-                wallet_exists = (wallet_path.parent / f"{wallet_path.name}.keys").exists()
-                
-                if wallet_exists:
-                    # Wallet exists - check if it uses empty password (standard for this bot)
-                    # For this bot, wallets are always created with empty password
-                    password = ""
-                else:
-                    # Wallet doesn't exist yet - prompt for password
-                    password = self._request_wallet_password()
-                    if password is None:
-                        return
+            # Get wallet password (uses empty string for existing wallets)
+            password = self._get_wallet_password()
+            if password is None:
+                return
             
             self.progress_bar.setVisible(True)
             self.progress_label.setVisible(True)
@@ -4568,27 +4581,10 @@ class WalletSettingsDialog(QDialog):
         )
         
         if reply == QMessageBox.Yes:
-            # Check if dashboard has an active wallet with stored password
-            password = ""  # Default to empty password (standard for this bot)
-            
-            if self.dashboard and hasattr(self.dashboard, 'wallet') and self.dashboard.wallet:
-                # Use password from dashboard's wallet
-                password = self.dashboard.wallet.password
-            else:
-                # Try to use wallet from WalletSetupManager to check password
-                from pathlib import Path
-                wallet_path = Path(self.seller.wallet_path)
-                wallet_exists = (wallet_path.parent / f"{wallet_path.name}.keys").exists()
-                
-                if wallet_exists:
-                    # Wallet exists - check if it uses empty password (standard for this bot)
-                    # For this bot, wallets are always created with empty password
-                    password = ""
-                else:
-                    # Wallet doesn't exist yet - prompt for password
-                    password = self._request_wallet_password()
-                    if password is None:
-                        return
+            # Get wallet password (uses empty string for existing wallets)
+            password = self._get_wallet_password()
+            if password is None:
+                return
             
             self.progress_bar.setVisible(True)
             self.progress_label.setVisible(True)

@@ -47,11 +47,10 @@ def test_reconnect_wallet_password_handling():
         next_method = content.find('\n    def ', reconnect_method_start + 1)
         reconnect_method = content[reconnect_method_start:next_method] if next_method != -1 else content[reconnect_method_start:]
         
-        # Count password prompt calls
-        prompt_count = reconnect_method.count('self._request_wallet_password()')
-        
-        # Check for conditional password prompt
-        has_conditional_prompt = 'if password is None:' in reconnect_method or 'wallet_exists' in reconnect_method
+        # Check for conditional password prompt or helper method usage
+        has_conditional_prompt = ('if password is None:' in reconnect_method or 
+                                 'wallet_exists' in reconnect_method or
+                                 '_get_wallet_password()' in reconnect_method)
         
         if has_conditional_prompt:
             print(f"  ✓ Password prompt is conditional (only for non-existent wallets)")
