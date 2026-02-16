@@ -2363,38 +2363,106 @@ class OrdersTab(QWidget):
         button_layout.addWidget(refresh_btn)
         button_layout.addWidget(delete_old_btn)
         button_layout.addStretch()
+        
+        # Auto-refresh status label
+        self.auto_refresh_label = QLabel("⟳ Auto-refresh: 30s")
+        self.auto_refresh_label.setStyleSheet("color: gray; font-size: 10px;")
+        button_layout.addWidget(self.auto_refresh_label)
+        
         layout.addLayout(button_layout)
         
         # Orders table
         self.table = QTableWidget()
-        self.table.setColumnCount(7)
+        self.table.setColumnCount(9)
         self.table.setHorizontalHeaderLabels([
-            "Order ID", "Product", "Amount (XMR)", "Payment Status",
-            "Order Status", "Date", "Actions"
+            "Order ID", "Product", "Amount (XMR)", "Paid (XMR)", 
+            "Payment Status", "TX ID", "Order Status", "Date", "Actions"
         ])
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setColumnWidth(0, 150)  # Order ID
+        self.table.setColumnWidth(1, 180)  # Product
+        self.table.setColumnWidth(2, 100)  # Amount
+        self.table.setColumnWidth(3, 100)  # Paid
+        self.table.setColumnWidth(4, 120)  # Payment Status
+        self.table.setColumnWidth(5, 120)  # TX ID
+        self.table.setColumnWidth(6, 100)  # Order Status
+        self.table.setColumnWidth(7, 140)  # Date
         layout.addWidget(self.table)
         
         # Connect signals
         refresh_btn.clicked.connect(self.load_orders)
         
+        # Setup auto-refresh timer (every 30 seconds)
+        self.refresh_timer = QTimer()
+        self.refresh_timer.timeout.connect(self.load_orders)
+        self.refresh_timer.start(30000)  # 30 seconds
+        
         self.setLayout(layout)
         self.load_orders()
     
     def load_orders(self):
-        """Load orders into table"""
+        """Load orders into table with enhanced payment status display"""
         orders = self.order_manager.list_orders(limit=100)
         
         self.table.setRowCount(len(orders))
         
         for row, order in enumerate(orders):
+            # Order ID
             self.table.setItem(row, 0, QTableWidgetItem(order.order_id))
+            
+            # Product
             self.table.setItem(row, 1, QTableWidgetItem(order.product_name))
+            
+            # Amount (XMR)
             self.table.setItem(row, 2, QTableWidgetItem(f"{order.price_xmr:.6f}"))
-            self.table.setItem(row, 3, QTableWidgetItem(order.payment_status))
-            self.table.setItem(row, 4, QTableWidgetItem(order.order_status))
-            self.table.setItem(row, 5, QTableWidgetItem(
-                order.created_at.strftime("%Y-%m-%d %H:%M") if order.created_at else "N/A"
-            ))
+            
+            # Paid Amount (XMR)
+            paid_item = QTableWidgetItem(f"{order.amount_paid:.6f}" if order.amount_paid > 0 else "-")
+            if order.amount_paid > 0 and order.amount_paid < order.price_xmr:
+                paid_item.setForeground(QColor(255, 165, 0))  # Orange for partial
+            elif order.amount_paid >= order.price_xmr:
+                paid_item.setForeground(QColor(0, 200, 0))  # Green for complete
+            self.table.setItem(row, 3, paid_item)
+            
+            # Payment Status with visual indicators
+            status_map = {
+                'pending': '⏳ Pending',
+                'unconfirmed': '💰 Unconfirmed',
+                'partial': '⚠️ Partial',
+                'paid': '✅ Confirmed',
+                'expired': '❌ Expired'
+            }
+            status_text = status_map.get(order.payment_status, order.payment_status)
+            status_item = QTableWidgetItem(status_text)
+            
+            # Color code by status
+            if order.payment_status == 'paid':
+                status_item.setForeground(QColor(0, 200, 0))  # Green
+            elif order.payment_status == 'unconfirmed':
+                status_item.setForeground(QColor(0, 150, 255))  # Blue
+            elif order.payment_status == 'partial':
+                status_item.setForeground(QColor(255, 165, 0))  # Orange
+            elif order.payment_status == 'expired':
+                status_item.setForeground(QColor(200, 0, 0))  # Red
+            
+            self.table.setItem(row, 4, status_item)
+            
+            # Transaction ID (shortened)
+            if order.payment_txid:
+                txid_short = f"{order.payment_txid[:8]}...{order.payment_txid[-8:]}" if len(order.payment_txid) > 20 else order.payment_txid
+                txid_item = QTableWidgetItem(txid_short)
+                txid_item.setToolTip(order.payment_txid)  # Full TX ID on hover
+                self.table.setItem(row, 5, txid_item)
+            else:
+                self.table.setItem(row, 5, QTableWidgetItem("-"))
+            
+            # Order Status
+            self.table.setItem(row, 6, QTableWidgetItem(order.order_status))
+            
+            # Date
+            date_str = order.created_at.strftime("%Y-%m-%d %H:%M") if order.created_at else "N/A"
+            self.table.setItem(row, 7, QTableWidgetItem(date_str))
     
     def delete_old_orders(self):
         """Open dialog to delete old orders"""
