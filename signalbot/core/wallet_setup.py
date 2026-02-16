@@ -262,9 +262,11 @@ class WalletSetupManager:
                 'monero-wallet-rpc',
                 '--daemon-address', f'{daemon_addr}:{daemon_prt}',
                 '--rpc-bind-port', str(self.rpc_port),
+                '--rpc-bind-ip', '127.0.0.1',
                 '--wallet-file', str(self.wallet_path),
                 '--password', self.password,
                 '--disable-rpc-login',
+                '--trusted-daemon',
                 '--log-level', '1'
             ]
             
