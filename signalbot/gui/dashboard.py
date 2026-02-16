@@ -4631,11 +4631,18 @@ class DashboardWindow(QMainWindow):
         seller = self.seller_manager.get_seller(1)
         seller_signal_id = seller.signal_id if seller else None
         if seller_signal_id:
+            # Get wallet setup manager if wallet is available
+            wallet_setup_manager = None
+            if hasattr(self, 'wallet') and self.wallet:
+                wallet_setup_manager = self.wallet.setup_manager
+            
             self.signal_handler.buyer_handler = BuyerHandler(
                 self.product_manager,
                 self.order_manager,
                 self.signal_handler,
-                seller_signal_id
+                seller_signal_id,
+                wallet_manager=wallet_setup_manager,
+                seller_manager=self.seller_manager
             )
             # Store reference for cache invalidation
             self.buyer_handler = self.signal_handler.buyer_handler
