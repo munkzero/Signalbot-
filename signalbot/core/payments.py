@@ -4,13 +4,19 @@ Handles payment detection and commission forwarding
 """
 
 import time
-from typing import Optional, Dict, Callable
+from typing import Optional, Dict, Callable, TYPE_CHECKING
 from datetime import datetime
 from .monero_wallet import MoneroWallet
 from .commission import CommissionManager
 from ..models.order import Order, OrderManager
-from ..config.settings import PAYMENT_CHECK_INTERVAL
+from ..config.settings import PAYMENT_CHECK_INTERVAL, MONERO_CONFIRMATIONS_REQUIRED
 import threading
+
+if TYPE_CHECKING:
+    from .signal_handler import SignalHandler
+
+# Display constants
+TXID_DISPLAY_LENGTH = 16  # Number of characters to show in transaction ID display
 
 
 class PaymentProcessor:
@@ -20,7 +26,8 @@ class PaymentProcessor:
         self,
         wallet: MoneroWallet,
         commission_manager: CommissionManager,
-        order_manager: OrderManager
+        order_manager: OrderManager,
+        signal_handler: Optional['SignalHandler'] = None
     ):
         """
         Initialize payment processor
@@ -29,10 +36,12 @@ class PaymentProcessor:
             wallet: Monero wallet instance
             commission_manager: Commission manager
             order_manager: Order manager
+            signal_handler: Optional Signal handler for notifications
         """
         self.wallet = wallet
         self.commission = commission_manager
         self.orders = order_manager
+        self.signal_handler = signal_handler
         self.monitoring = False
         self.monitor_thread = None
         self.payment_callbacks = {}
@@ -58,17 +67,19 @@ class PaymentProcessor:
         # Create subaddress for this payment
         subaddress_info = self.wallet.create_subaddress(
             account_index=0,
-            label=f"Order {order.order_id}"
+            label=f"Order-{order.order_id}"
         )
         
-        # Update order
+        # Update order with payment details
         order.payment_address = subaddress_info['address']
+        order.address_index = subaddress_info.get('address_index', None)
         order.price_xmr = xmr_amount
         order.commission_amount = commission_amount
         order.seller_amount = seller_amount
         
         return {
             'address': subaddress_info['address'],
+            'address_index': subaddress_info.get('address_index', None),
             'amount': xmr_amount,
             'seller_amount': seller_amount,
             'commission_amount': commission_amount,
@@ -77,26 +88,78 @@ class PaymentProcessor:
     
     def check_order_payment(self, order: Order) -> Dict[str, any]:
         """
-        Check payment status for order
+        Check payment status for order using subaddress monitoring
         
         Args:
             order: Order to check
             
         Returns:
-            Payment status info
+            Payment status info with detailed transaction data
         """
-        payment_received, amount_received, confirmations = self.wallet.check_payment(
-            order.payment_address,
-            order.price_xmr
-        )
-        
-        return {
-            'received': payment_received,
-            'amount': amount_received,
-            'expected': order.price_xmr,
-            'confirmations': confirmations,
-            'complete': payment_received and confirmations >= 10
-        }
+        try:
+            # Use subaddress index for efficient monitoring if available
+            if order.address_index is not None:
+                transfers = self.wallet.get_transfers(
+                    subaddr_indices=[order.address_index],
+                    account_index=0
+                )
+            else:
+                # Fallback to address-based lookup
+                transfers = self.wallet.get_transfers(address=order.payment_address)
+            
+            total_received = 0.0
+            max_confirmations = 0
+            latest_txid = None
+            
+            # Process all transfers to this address
+            for transfer in transfers:
+                # Convert from atomic units to XMR
+                amount = transfer.get('amount', 0) / 1e12
+                confirmations = transfer.get('confirmations', 0)
+                
+                total_received += amount
+                if confirmations > max_confirmations:
+                    max_confirmations = confirmations
+                    latest_txid = transfer.get('txid', None)
+            
+            # Determine payment status
+            is_complete = (
+                total_received >= order.price_xmr and
+                max_confirmations >= MONERO_CONFIRMATIONS_REQUIRED
+            )
+            
+            is_unconfirmed = (
+                total_received >= order.price_xmr and
+                max_confirmations < MONERO_CONFIRMATIONS_REQUIRED
+            )
+            
+            is_partial = (
+                total_received > 0 and
+                total_received < order.price_xmr
+            )
+            
+            return {
+                'received': is_complete,
+                'amount': total_received,
+                'expected': order.price_xmr,
+                'confirmations': max_confirmations,
+                'txid': latest_txid,
+                'complete': is_complete,
+                'unconfirmed': is_unconfirmed,
+                'partial': is_partial
+            }
+        except Exception as e:
+            print(f"Error checking payment for order {order.order_id}: {e}")
+            return {
+                'received': False,
+                'amount': 0.0,
+                'expected': order.price_xmr,
+                'confirmations': 0,
+                'txid': None,
+                'complete': False,
+                'unconfirmed': False,
+                'partial': False
+            }
     
     def process_payment(self, order: Order) -> bool:
         """
@@ -126,11 +189,15 @@ class PaymentProcessor:
                 # Log but don't fail the order
                 print(f"Warning: Failed to forward commission for order {order.order_id}")
             
-            # Update order
+            # Update order with payment details
             order.payment_status = 'paid'
             order.amount_paid = status['amount']
+            order.payment_txid = status['txid']
             order.paid_at = datetime.utcnow()
             self.orders.update_order(order)
+            
+            # Send confirmation message to customer
+            self._send_payment_confirmation(order, status)
             
             # Trigger callback if registered
             if order.order_id in self.payment_callbacks:
@@ -139,6 +206,58 @@ class PaymentProcessor:
             return True
         except Exception as e:
             print(f"Error processing payment for order {order.order_id}: {e}")
+            return False
+    
+    def _send_payment_confirmation(self, order: Order, payment_status: Dict) -> bool:
+        """
+        Send payment confirmation message to customer
+        
+        Args:
+            order: Order that was paid
+            payment_status: Payment status dict with transaction details
+            
+        Returns:
+            True if message sent successfully
+        """
+        if not self.signal_handler:
+            print("DEBUG: No Signal handler configured, skipping notification")
+            return False
+        
+        try:
+            # Format confirmation message
+            txid_display = "N/A"
+            if payment_status.get('txid'):
+                txid = payment_status['txid']
+                # Safely handle short or None transaction IDs
+                if len(txid) >= TXID_DISPLAY_LENGTH:
+                    txid_display = f"{txid[:TXID_DISPLAY_LENGTH]}..."
+                else:
+                    txid_display = txid
+            
+            message = (
+                f"✅ Payment Received!\n\n"
+                f"Your order #{order.order_id} is confirmed.\n\n"
+                f"Amount: {payment_status['amount']:.6f} XMR\n"
+                f"Transaction: {txid_display}\n"
+                f"Confirmations: {payment_status['confirmations']}\n\n"
+                f"Thank you for your order!"
+            )
+            
+            # Send message to customer
+            success = self.signal_handler.send_message(
+                order.customer_signal_id,
+                message
+            )
+            
+            if success:
+                print(f"✓ Confirmation message sent to customer for order #{order.order_id}")
+            else:
+                print(f"⚠ Failed to send confirmation message for order #{order.order_id}")
+            
+            return success
+            
+        except Exception as e:
+            print(f"Error sending payment confirmation: {e}")
             return False
     
     def _forward_commission(self, amount: float, order_id: str) -> bool:
@@ -225,15 +344,36 @@ class PaymentProcessor:
                     status = self.check_order_payment(order)
                     
                     if status['complete']:
-                        print(f"DEBUG: Payment detected! {status['amount']:.6f} XMR for order #{order.order_id}")
-                        # Process payment
+                        print(f"✓ Payment confirmed! {status['amount']:.6f} XMR for order #{order.order_id}")
+                        print(f"  TX: {status['txid']}")
+                        print(f"  Confirmations: {status['confirmations']}")
+                        # Process payment (confirm and forward commission)
                         self.process_payment(order)
-                    elif status['amount'] > 0:
-                        print(f"DEBUG: Partial payment detected: {status['amount']:.6f} XMR for order #{order.order_id}")
+                    elif status['unconfirmed']:
+                        print(f"⏳ Payment detected (unconfirmed): {status['amount']:.6f} XMR for order #{order.order_id}")
+                        print(f"  TX: {status['txid']}")
+                        print(f"  Confirmations: {status['confirmations']}/{MONERO_CONFIRMATIONS_REQUIRED}")
+                        # Update status to unconfirmed
+                        order.payment_status = 'unconfirmed'
+                        order.amount_paid = status['amount']
+                        order.payment_txid = status['txid']
+                        self.orders.update_order(order)
+                    elif status['partial']:
+                        print(f"⚠ Partial payment: {status['amount']:.6f}/{status['expected']:.6f} XMR for order #{order.order_id}")
                         # Partial payment
                         order.payment_status = 'partial'
                         order.amount_paid = status['amount']
+                        if status['txid']:
+                            order.payment_txid = status['txid']
                         self.orders.update_order(order)
+                
+                # Also check unconfirmed orders for confirmation
+                unconfirmed_orders = self.orders.list_orders(payment_status='unconfirmed')
+                for order in unconfirmed_orders:
+                    status = self.check_order_payment(order)
+                    if status['complete']:
+                        print(f"✓ Payment now confirmed for order #{order.order_id}")
+                        self.process_payment(order)
                 
                 # Expire old orders
                 self.orders.expire_old_orders()

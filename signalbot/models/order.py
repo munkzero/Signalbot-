@@ -24,7 +24,9 @@ class Order:
         currency: str = "USD",
         price_xmr: float = 0.0,
         payment_address: str = "",
+        address_index: Optional[int] = None,
         payment_status: str = "pending",
+        payment_txid: Optional[str] = None,
         order_status: str = "processing",
         amount_paid: float = 0.0,
         commission_amount: float = 0.0,
@@ -44,7 +46,9 @@ class Order:
         self.currency = currency
         self.price_xmr = price_xmr
         self.payment_address = payment_address
+        self.address_index = address_index
         self.payment_status = payment_status
+        self.payment_txid = payment_txid
         self.order_status = order_status
         self.amount_paid = amount_paid
         self.commission_amount = commission_amount
@@ -102,7 +106,9 @@ class Order:
             currency=db_order.currency,
             price_xmr=db_order.price_xmr,
             payment_address=payment_address,
+            address_index=db_order.address_index,
             payment_status=db_order.payment_status,
+            payment_txid=db_order.payment_txid,
             order_status=db_order.order_status,
             amount_paid=db_order.amount_paid,
             commission_amount=db_order.commission_amount,
@@ -143,7 +149,9 @@ class Order:
             price_xmr=self.price_xmr,
             payment_address=payment_addr_enc,
             payment_address_salt=payment_addr_salt,
+            address_index=self.address_index,
             payment_status=self.payment_status,
+            payment_txid=self.payment_txid,
             order_status=self.order_status,
             amount_paid=self.amount_paid,
             commission_amount=self.commission_amount,
@@ -202,6 +210,8 @@ class OrderManager:
         db_order.order_status = order.order_status
         db_order.amount_paid = order.amount_paid
         db_order.paid_at = order.paid_at
+        db_order.address_index = order.address_index
+        db_order.payment_txid = order.payment_txid
         
         if order.shipping_info:
             shipping_enc, shipping_salt = self.db.encrypt_field(order.shipping_info)

@@ -66,9 +66,11 @@ class Order(Base):
     price_xmr = Column(Float, nullable=False)
     payment_address = Column(Text, nullable=False)  # Encrypted Monero sub-address
     payment_address_salt = Column(String(255), nullable=False)
-    payment_status = Column(String(20), default='pending')  # pending, paid, partial, expired
+    address_index = Column(Integer, nullable=True)  # Subaddress index for payment monitoring
+    payment_status = Column(String(20), default='pending')  # pending, paid, partial, expired, unconfirmed
     order_status = Column(String(20), default='processing')  # processing, shipped, delivered
     amount_paid = Column(Float, default=0.0)
+    payment_txid = Column(Text, nullable=True)  # Transaction hash
     commission_amount = Column(Float, nullable=False)
     seller_amount = Column(Float, nullable=False)
     shipping_info = Column(Text, nullable=True)  # Encrypted
@@ -77,6 +79,19 @@ class Order(Base):
     paid_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PaymentHistory(Base):
+    """Payment event tracking"""
+    __tablename__ = 'payment_history'
+    
+    id = Column(Integer, primary_key=True)
+    order_id = Column(Integer, nullable=False)
+    event_type = Column(String(50), nullable=False)  # created, payment_detected, confirmed
+    amount = Column(Float, nullable=True)
+    txid = Column(Text, nullable=True)
+    confirmations = Column(Integer, default=0)
+    timestamp = Column(DateTime, default=datetime.utcnow)
 
 
 class Contact(Base):
@@ -143,6 +158,9 @@ class DatabaseManager:
         
         # Create performance indexes
         self._create_indexes()
+        
+        # Run database migrations for new columns
+        self._run_migrations()
     
     def _create_indexes(self):
         """Create database indexes for performance optimization"""
@@ -191,6 +209,42 @@ class DatabaseManager:
                 
         except Exception as e:
             print(f"⚠️  Error creating indexes: {e}")
+    
+    def _run_migrations(self):
+        """Run database migrations for schema updates"""
+        try:
+            with self.engine.connect() as conn:
+                # Begin explicit transaction
+                trans = conn.begin()
+                try:
+                    # Check if address_index column exists
+                    result = conn.execute(text(
+                        "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name='address_index'"
+                    ))
+                    if result.scalar() == 0:
+                        print("🔄 Adding address_index column to orders table...")
+                        conn.execute(text('ALTER TABLE orders ADD COLUMN address_index INTEGER'))
+                        print("✓ Added address_index column")
+                    
+                    # Check if payment_txid column exists
+                    result = conn.execute(text(
+                        "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name='payment_txid'"
+                    ))
+                    if result.scalar() == 0:
+                        print("🔄 Adding payment_txid column to orders table...")
+                        conn.execute(text('ALTER TABLE orders ADD COLUMN payment_txid TEXT'))
+                        print("✓ Added payment_txid column")
+                    
+                    # Commit transaction
+                    trans.commit()
+                    
+                except Exception as e:
+                    trans.rollback()
+                    raise e
+                
+        except Exception as e:
+            print(f"⚠️  Error running migrations: {e}")
+
     
     def encrypt_field(self, value: str, salt: Optional[str] = None) -> tuple[str, str]:
         """

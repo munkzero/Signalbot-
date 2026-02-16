@@ -686,7 +686,9 @@ class MoneroWallet:
     def get_transfers(
         self,
         address: Optional[str] = None,
-        min_height: Optional[int] = None
+        min_height: Optional[int] = None,
+        subaddr_indices: Optional[List[int]] = None,
+        account_index: int = 0
     ) -> List[Dict]:
         """
         Get incoming transfers
@@ -694,6 +696,8 @@ class MoneroWallet:
         Args:
             address: Filter by address
             min_height: Minimum block height
+            subaddr_indices: Filter by subaddress indices
+            account_index: Account index (default 0)
             
         Returns:
             List of transfers
@@ -703,11 +707,15 @@ class MoneroWallet:
             'out': False,
             'pending': True,
             'failed': False,
-            'pool': True
+            'pool': True,
+            'account_index': account_index
         }
         
         if min_height:
             params['min_height'] = min_height
+        
+        if subaddr_indices:
+            params['subaddr_indices'] = subaddr_indices
         
         result = self._rpc_call('get_transfers', params)
         
