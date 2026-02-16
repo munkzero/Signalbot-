@@ -238,11 +238,11 @@ def test_transaction_execution():
         print("  ✗ RPC transfer method call NOT FOUND")
         return False
     
-    # Check for amount conversion to atomic units
-    if "1e12" in content:
-        print("  ✓ XMR to atomic units conversion found")
+    # Check for amount conversion to atomic units using constant
+    if "XMR_TO_ATOMIC_UNITS" in content:
+        print("  ✓ XMR_TO_ATOMIC_UNITS constant used")
     else:
-        print("  ✗ XMR to atomic units conversion NOT FOUND")
+        print("  ✗ XMR_TO_ATOMIC_UNITS constant NOT FOUND")
         return False
     
     # Check for execute_new_wallet method

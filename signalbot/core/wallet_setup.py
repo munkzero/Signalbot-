@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional, Tuple, List
 from datetime import datetime
 import logging
+from ..config.settings import BACKUP_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,6 @@ class WalletSetupManager:
         
         try:
             # Create backup directory if it doesn't exist
-            from ..config.settings import BACKUP_DIR
             backup_dir = Path(BACKUP_DIR)
             backup_dir.mkdir(parents=True, exist_ok=True)
             

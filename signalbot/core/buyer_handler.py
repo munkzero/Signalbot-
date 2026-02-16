@@ -5,13 +5,19 @@ Buyer Handler - Processes buyer commands and order creation
 import os
 import re
 import time
+import requests
 from typing import Optional, Tuple
 from datetime import datetime, timedelta
 from ..models.product import ProductManager
 from ..models.order import OrderManager, Order
 from ..config.settings import ORDER_EXPIRATION_MINUTES
 from ..utils.qr_generator import qr_generator
+from .pin_manager import pin_manager
 
+
+# Constants
+RPC_SHUTDOWN_WAIT_SECONDS = 2  # Time to wait after stopping RPC before operations
+XMR_TO_ATOMIC_UNITS = 1e12  # Conversion factor: 1 XMR = 1e12 atomic units
 
 # TODO: Replace with real-time exchange rate API
 XMR_EXCHANGE_RATE_USD = 150.0  # Placeholder: 1 XMR = $150 USD
@@ -98,9 +104,6 @@ class BuyerHandler:
         
         # Track pending confirmations and PIN sessions
         self.pending_confirmations = {}  # {signal_id: {'action': str, 'data': dict}}
-        
-        # Import PIN manager
-        from .pin_manager import pin_manager
         self.pin_manager = pin_manager
     
     @staticmethod
@@ -366,8 +369,6 @@ class BuyerHandler:
         Returns:
             Tuple of (amount, address) or None
         """
-        import re
-        
         # Pattern: "send/transfer [amount] (xmr) to [address]"
         pattern = r'(send|transfer)\s+([\d.]+)\s*(?:xmr)?\s+to\s+([a-zA-Z0-9]+)'
         match = re.search(pattern, message.lower())
@@ -937,7 +938,7 @@ Reply 'yes' to continue or 'no' to cancel."""
                 message="🛑 Stopping wallet RPC..."
             )
             self.wallet_manager.stop_rpc()
-            time.sleep(2)
+            time.sleep(RPC_SHUTDOWN_WAIT_SECONDS)
         
         # Create new wallet with backup
         self.signal_handler.send_message(
@@ -1054,12 +1055,10 @@ Enter your PIN to authorize this transaction.
         
         try:
             # Send transaction via RPC
-            import requests
-            
             rpc_url = f'http://127.0.0.1:{self.wallet_manager.rpc_port}/json_rpc'
             
-            # Convert XMR to atomic units (1 XMR = 1e12 atomic units)
-            amount_atomic = int(amount * 1e12)
+            # Convert XMR to atomic units (use round to prevent precision loss)
+            amount_atomic = round(amount * XMR_TO_ATOMIC_UNITS)
             
             payload = {
                 "jsonrpc": "2.0",
