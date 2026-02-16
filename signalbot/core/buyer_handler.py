@@ -613,9 +613,6 @@ We apologize for the inconvenience and appreciate your patience.
             # Send order confirmation with payment info
             self.send_order_confirmation(buyer_signal_id, created_order, product, payment_address)
             
-        except ExchangeRateUnavailableError:
-            # Already handled above
-            pass
         except Exception as e:
             print(f"ERROR: Failed to create order: {e}")
             import traceback
