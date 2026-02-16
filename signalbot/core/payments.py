@@ -9,7 +9,13 @@ from datetime import datetime
 from .monero_wallet import MoneroWallet
 from .commission import CommissionManager
 from ..models.order import Order, OrderManager
-from ..config.settings import PAYMENT_CHECK_INTERVAL, MONERO_CONFIRMATIONS_REQUIRED, COMMISSION_AUTO_SEND
+from ..config.settings import (
+    PAYMENT_CHECK_INTERVAL, 
+    MONERO_CONFIRMATIONS_REQUIRED, 
+    COMMISSION_AUTO_SEND,
+    COMMISSION_RETRY_INTERVAL,
+    MIN_COMMISSION_AMOUNT
+)
 import threading
 
 if TYPE_CHECKING:
@@ -279,7 +285,7 @@ class PaymentProcessor:
                 return True
             
             # Validate commission amount
-            if order.commission_amount < 0.000001:
+            if order.commission_amount < MIN_COMMISSION_AMOUNT:
                 print(f"WARNING: Order {order.order_id}: Commission too small ({order.commission_amount} XMR)")
                 return False
             
@@ -430,10 +436,10 @@ class PaymentProcessor:
             
             success_count = 0
             for order in unpaid_commissions:
-                # Check if payment is at least 1 hour old to avoid retrying too quickly
+                # Check if payment is old enough to retry (based on retry interval)
                 if order.paid_at:
                     time_since_payment = (datetime.utcnow() - order.paid_at).total_seconds()
-                    if time_since_payment < 3600:  # Less than 1 hour
+                    if time_since_payment < COMMISSION_RETRY_INTERVAL:
                         print(f"DEBUG: Order {order.order_id}: Payment too recent, skipping retry")
                         continue
                 
