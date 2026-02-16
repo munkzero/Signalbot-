@@ -4211,6 +4211,37 @@ class RescanBlockchainWorker(QThread):
             self.finished.emit(False, f"Rescan failed: {str(e)}")
 
 
+class TestNodeConnectionWorker(QThread):
+    """Worker thread for testing node connection"""
+    finished = pyqtSignal(dict)  # result dictionary
+    progress = pyqtSignal(str)  # progress message
+    
+    def __init__(self, daemon_address: str, daemon_port: int):
+        super().__init__()
+        self.daemon_address = daemon_address
+        self.daemon_port = daemon_port
+    
+    def run(self):
+        """Test node connection"""
+        try:
+            self.progress.emit(f"Testing connection to {self.daemon_address}:{self.daemon_port}...")
+            
+            # Use WalletSetupManager's test method
+            from ..core.wallet_setup import WalletSetupManager
+            manager = WalletSetupManager("", self.daemon_address, self.daemon_port)
+            result = manager.test_node_connection()
+            
+            self.finished.emit(result)
+        except Exception as e:
+            self.finished.emit({
+                'success': False,
+                'block_height': 0,
+                'network': 'unknown',
+                'latency_ms': 0,
+                'message': f"Test failed: {str(e)}"
+            })
+
+
 class WalletSettingsDialog(QDialog):
     """Comprehensive wallet settings dialog with tabs"""
     
@@ -4263,6 +4294,36 @@ class WalletSettingsDialog(QDialog):
         
         return password
     
+    def _get_wallet_password(self):
+        """
+        Get wallet password, using stored password or empty string for existing wallets
+        
+        Returns:
+            Password string, or None if user cancelled when prompted
+        """
+        # Check if dashboard has an active wallet with stored password
+        password = ""  # Default to empty password (standard for this bot)
+        
+        if self.dashboard and hasattr(self.dashboard, 'wallet') and self.dashboard.wallet:
+            # Use password from dashboard's wallet
+            password = self.dashboard.wallet.password
+        else:
+            # Check if wallet exists
+            from pathlib import Path
+            wallet_path = Path(self.seller.wallet_path)
+            wallet_exists = (wallet_path.parent / f"{wallet_path.name}.keys").exists()
+            
+            if wallet_exists:
+                # Wallet exists - use empty password (standard for this bot)
+                password = ""
+            else:
+                # Wallet doesn't exist yet - prompt for password
+                password = self._request_wallet_password()
+                if password is None:
+                    return None
+        
+        return password
+    
     def _create_connect_tab(self):
         """Create Connect & Sync tab"""
         widget = QWidget()
@@ -4282,6 +4343,27 @@ class WalletSettingsDialog(QDialog):
         
         reconnect_group.setLayout(reconnect_layout)
         layout.addWidget(reconnect_group)
+        
+        # Test Node Connection section
+        test_node_group = QGroupBox("Test Node Connection")
+        test_node_layout = QVBoxLayout()
+        
+        test_node_info = QLabel("Test connection to the default node without opening wallet")
+        test_node_info.setWordWrap(True)
+        test_node_layout.addWidget(test_node_info)
+        
+        test_node_btn = QPushButton("🔗 Test Connection")
+        test_node_btn.clicked.connect(self.test_node_connection)
+        test_node_layout.addWidget(test_node_btn)
+        
+        # Test progress/result label
+        self.test_result_label = QLabel("")
+        self.test_result_label.setVisible(False)
+        self.test_result_label.setWordWrap(True)
+        test_node_layout.addWidget(self.test_result_label)
+        
+        test_node_group.setLayout(test_node_layout)
+        layout.addWidget(test_node_group)
         
         # Rescan section
         rescan_group = QGroupBox("Rescan Blockchain")
@@ -4428,9 +4510,9 @@ class WalletSettingsDialog(QDialog):
         )
         
         if reply == QMessageBox.Yes:
-            # Request wallet password
-            password = self._request_wallet_password()
-            if not password:
+            # Get wallet password (uses empty string for existing wallets)
+            password = self._get_wallet_password()
+            if password is None:
                 return
             
             self.progress_bar.setVisible(True)
@@ -4499,9 +4581,9 @@ class WalletSettingsDialog(QDialog):
         )
         
         if reply == QMessageBox.Yes:
-            # Request wallet password
-            password = self._request_wallet_password()
-            if not password:
+            # Get wallet password (uses empty string for existing wallets)
+            password = self._get_wallet_password()
+            if password is None:
                 return
             
             self.progress_bar.setVisible(True)
@@ -4550,6 +4632,58 @@ class WalletSettingsDialog(QDialog):
             QMessageBox.information(self, "Success", message + "\n\nWallet rescanned successfully!")
         else:
             QMessageBox.warning(self, "Error", message)
+    
+    def test_node_connection(self):
+        """Test connection to default node"""
+        default_node = self.node_manager.get_default_node()
+        if not default_node:
+            QMessageBox.warning(self, "Error", "No default node configured")
+            return
+        
+        # Show progress
+        self.test_result_label.setVisible(True)
+        self.test_result_label.setText(f"Testing connection to {default_node.address}:{default_node.port}...")
+        
+        # Start test worker
+        self.test_worker = TestNodeConnectionWorker(default_node.address, default_node.port)
+        self.test_worker.finished.connect(self.on_test_finished)
+        self.test_worker.start()
+    
+    def on_test_finished(self, result):
+        """Handle node test completion"""
+        if result['success']:
+            # Format successful result
+            message = (
+                f"✅ Connected to node successfully\n\n"
+                f"Block Height: {result['block_height']:,}\n"
+                f"Network: {result['network']}\n"
+                f"Latency: {result['latency_ms']}ms"
+            )
+            self.test_result_label.setStyleSheet("color: green;")
+            self.test_result_label.setText(message)
+            
+            # Also show in message box for better visibility
+            QMessageBox.information(
+                self,
+                "Connection Test - Success",
+                message
+            )
+        else:
+            # Format error result
+            message = (
+                f"❌ Failed to connect to node\n\n"
+                f"Error: {result['message']}\n\n"
+                f"Suggestion: Check node address/port or try a different node"
+            )
+            self.test_result_label.setStyleSheet("color: red;")
+            self.test_result_label.setText(message)
+            
+            # Also show in message box for better visibility
+            QMessageBox.warning(
+                self,
+                "Connection Test - Failed",
+                message
+            )
     
     def add_node(self):
         """Open add node dialog"""

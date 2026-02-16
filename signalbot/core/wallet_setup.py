@@ -247,10 +247,10 @@ class WalletSetupManager:
             return False
         
         daemon_addr = daemon_address or self.daemon_address
-        daemon_prt = daemon_port or self.daemon_port
+        daemon_port_to_use = daemon_port or self.daemon_port
         
         logger.info(f"Starting wallet RPC...")
-        logger.info(f"  Daemon: {daemon_addr}:{daemon_prt}")
+        logger.info(f"  Daemon: {daemon_addr}:{daemon_port_to_use}")
         logger.info(f"  RPC Port: {self.rpc_port}")
         logger.info(f"  Wallet: {self.wallet_path}")
         
@@ -260,7 +260,7 @@ class WalletSetupManager:
         try:
             cmd = [
                 'monero-wallet-rpc',
-                '--daemon-address', f'{daemon_addr}:{daemon_prt}',
+                '--daemon-address', f'{daemon_addr}:{daemon_port_to_use}',
                 '--rpc-bind-port', str(self.rpc_port),
                 '--rpc-bind-ip', '127.0.0.1',
                 '--wallet-file', str(self.wallet_path),
@@ -322,6 +322,96 @@ class WalletSetupManager:
         except Exception as e:
             logger.error(f"Error stopping RPC: {e}")
             self.rpc_process = None
+    
+    def test_node_connection(self, daemon_address: Optional[str] = None, 
+                            daemon_port: Optional[int] = None) -> dict:
+        """
+        Test connection to Monero node without opening wallet
+        
+        Args:
+            daemon_address: Override default daemon address
+            daemon_port: Override default daemon port
+            
+        Returns:
+            Dictionary with connection test results:
+            {
+                'success': bool,
+                'block_height': int,
+                'network': str,
+                'latency_ms': int,
+                'message': str
+            }
+        """
+        import time
+        
+        daemon_addr = daemon_address or self.daemon_address
+        daemon_port_to_use = daemon_port or self.daemon_port
+        
+        try:
+            url = f"http://{daemon_addr}:{daemon_port_to_use}/json_rpc"
+            start_time = time.time()
+            
+            response = requests.post(url, json={
+                "jsonrpc": "2.0",
+                "id": "0",
+                "method": "get_info"
+            }, timeout=10)
+            
+            latency_ms = int((time.time() - start_time) * 1000)
+            
+            if response.status_code == 200:
+                data = response.json()
+                result = data.get('result', {})
+                
+                # Map network type to readable name
+                nettype = result.get('nettype', 'unknown')
+                network_names = {
+                    'mainnet': 'Mainnet',
+                    'testnet': 'Testnet', 
+                    'stagenet': 'Stagenet'
+                }
+                network = network_names.get(nettype, nettype)
+                
+                return {
+                    'success': True,
+                    'block_height': result.get('height', 0),
+                    'network': network,
+                    'latency_ms': latency_ms,
+                    'message': f"Connected successfully ({latency_ms}ms)"
+                }
+            else:
+                return {
+                    'success': False,
+                    'block_height': 0,
+                    'network': 'unknown',
+                    'latency_ms': 0,
+                    'message': f"HTTP {response.status_code}: {response.text[:100]}"
+                }
+                
+        except requests.exceptions.Timeout:
+            return {
+                'success': False,
+                'block_height': 0,
+                'network': 'unknown',
+                'latency_ms': 0,
+                'message': "Connection timeout (>10s)"
+            }
+        except requests.exceptions.ConnectionError:
+            return {
+                'success': False,
+                'block_height': 0,
+                'network': 'unknown',
+                'latency_ms': 0,
+                'message': "Cannot reach node - check address/port"
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'block_height': 0,
+                'network': 'unknown',
+                'latency_ms': 0,
+                'message': f"Error: {str(e)}"
+            }
     
     def setup_wallet(self, create_if_missing: bool = True) -> Tuple[bool, Optional[str]]:
         """
