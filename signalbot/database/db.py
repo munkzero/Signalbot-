@@ -214,25 +214,33 @@ class DatabaseManager:
         """Run database migrations for schema updates"""
         try:
             with self.engine.connect() as conn:
-                # Check if address_index column exists
-                result = conn.execute(text(
-                    "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name='address_index'"
-                ))
-                if result.scalar() == 0:
-                    print("🔄 Adding address_index column to orders table...")
-                    conn.execute(text('ALTER TABLE orders ADD COLUMN address_index INTEGER'))
-                    conn.commit()
-                    print("✓ Added address_index column")
-                
-                # Check if payment_txid column exists
-                result = conn.execute(text(
-                    "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name='payment_txid'"
-                ))
-                if result.scalar() == 0:
-                    print("🔄 Adding payment_txid column to orders table...")
-                    conn.execute(text('ALTER TABLE orders ADD COLUMN payment_txid TEXT'))
-                    conn.commit()
-                    print("✓ Added payment_txid column")
+                # Begin explicit transaction
+                trans = conn.begin()
+                try:
+                    # Check if address_index column exists
+                    result = conn.execute(text(
+                        "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name='address_index'"
+                    ))
+                    if result.scalar() == 0:
+                        print("🔄 Adding address_index column to orders table...")
+                        conn.execute(text('ALTER TABLE orders ADD COLUMN address_index INTEGER'))
+                        print("✓ Added address_index column")
+                    
+                    # Check if payment_txid column exists
+                    result = conn.execute(text(
+                        "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name='payment_txid'"
+                    ))
+                    if result.scalar() == 0:
+                        print("🔄 Adding payment_txid column to orders table...")
+                        conn.execute(text('ALTER TABLE orders ADD COLUMN payment_txid TEXT'))
+                        print("✓ Added payment_txid column")
+                    
+                    # Commit transaction
+                    trans.commit()
+                    
+                except Exception as e:
+                    trans.rollback()
+                    raise e
                 
         except Exception as e:
             print(f"⚠️  Error running migrations: {e}")

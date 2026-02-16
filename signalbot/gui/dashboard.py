@@ -2450,7 +2450,11 @@ class OrdersTab(QWidget):
             
             # Transaction ID (shortened)
             if order.payment_txid:
-                txid_short = f"{order.payment_txid[:8]}...{order.payment_txid[-8:]}" if len(order.payment_txid) > 20 else order.payment_txid
+                # Only shorten if longer than 20 characters to avoid overlap
+                if len(order.payment_txid) > 20:
+                    txid_short = f"{order.payment_txid[:8]}...{order.payment_txid[-8:]}"
+                else:
+                    txid_short = order.payment_txid
                 txid_item = QTableWidgetItem(txid_short)
                 txid_item.setToolTip(order.payment_txid)  # Full TX ID on hover
                 self.table.setItem(row, 5, txid_item)

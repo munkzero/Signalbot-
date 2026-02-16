@@ -222,11 +222,20 @@ class PaymentProcessor:
         
         try:
             # Format confirmation message
+            txid_display = "N/A"
+            if payment_status.get('txid'):
+                txid = payment_status['txid']
+                # Safely handle short or None transaction IDs
+                if len(txid) >= 16:
+                    txid_display = f"{txid[:16]}..."
+                else:
+                    txid_display = txid
+            
             message = (
                 f"✅ Payment Received!\n\n"
                 f"Your order #{order.order_id} is confirmed.\n\n"
                 f"Amount: {payment_status['amount']:.6f} XMR\n"
-                f"Transaction: {payment_status['txid'][:16]}...\n"
+                f"Transaction: {txid_display}\n"
                 f"Confirmations: {payment_status['confirmations']}\n\n"
                 f"Thank you for your order!"
             )
