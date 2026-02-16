@@ -3894,10 +3894,20 @@ class SettingsTab(QWidget):
                 password=""  # Empty password (matches existing setup)
             )
             
-            success, address, seed = setup.create_wallet()
+            # Create wallet and get seed phrase using RPC method
+            success, seed, address = setup.create_wallet_with_seed()
             
             if not success:
                 QMessageBox.critical(self, "Error", "Failed to create wallet")
+                return
+            
+            if not seed:
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    "Wallet created but failed to retrieve seed phrase.\n"
+                    "This is a critical error. Please check logs."
+                )
                 return
             
             # Step 5: Show seed phrase with save options
@@ -3950,10 +3960,10 @@ class SettingsTab(QWidget):
         # Save buttons
         button_layout = QHBoxLayout()
         
-        copy_btn = QPushButton("Copy Seed to Clipboard")
-        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(seed))
+        copy_btn = QPushButton("📋 Copy Seed to Clipboard")
+        copy_btn.clicked.connect(lambda: self.copy_seed_to_clipboard(seed))
         
-        save_btn = QPushButton("Save to File")
+        save_btn = QPushButton("💾 Save to File")
         save_btn.clicked.connect(lambda: self.save_seed_to_file(seed, address))
         
         button_layout.addWidget(copy_btn)
@@ -3998,6 +4008,22 @@ class SettingsTab(QWidget):
                 f.write(f"\n⚠️ KEEP THIS FILE SECURE! Anyone with this seed can access your funds.\n")
             
             QMessageBox.information(self, "Saved", f"Seed phrase saved to:\n{filename}")
+    
+    def copy_seed_to_clipboard(self, seed_phrase: str):
+        """Copy seed phrase to clipboard with auto-clear for security"""
+        clipboard = QApplication.clipboard()
+        clipboard.setText(seed_phrase)
+        
+        QMessageBox.information(
+            self,
+            "Copied",
+            "Seed phrase copied to clipboard!\n\n"
+            "⚠️ Paste it somewhere safe immediately.\n"
+            "The clipboard will be cleared in 60 seconds for security."
+        )
+        
+        # Clear clipboard after 60 seconds for security
+        QTimer.singleShot(60000, lambda: clipboard.clear())
 
 
 
@@ -4888,93 +4914,93 @@ class DashboardWindow(QMainWindow):
                     default_node = NodeConfig(default_node_addr, default_node_port, False)
                 
                 if default_node:
-                    # Ask user if they want to unlock wallet now
-                    reply = QMessageBox.question(
-                        self,
-                        "Unlock Wallet",
-                        "Would you like to unlock your wallet now?\n\n"
-                        "You can unlock it later from Wallet Settings.",
-                        QMessageBox.Yes | QMessageBox.No
-                    )
+                    # Check if wallet exists and determine if it uses empty password
+                    # For this bot, wallets are created with empty password by default
+                    from pathlib import Path
+                    wallet_path = Path(seller.wallet_path)
+                    wallet_exists = (wallet_path.parent / f"{wallet_path.name}.keys").exists()
                     
-                    if reply == QMessageBox.Yes:
-                        # Request wallet password
-                        password, ok = QInputDialog.getText(
-                            self,
-                            "Wallet Password",
-                            "Enter your wallet password to unlock:",
-                            QLineEdit.Password
+                    # Default password for this bot is empty string
+                    password = ""
+                    needs_password_prompt = False
+                    
+                    if wallet_exists:
+                        # Wallet exists - auto-unlock with empty password (standard for this bot)
+                        print("ℹ️  Wallet found - attempting auto-unlock with empty password...")
+                    else:
+                        # Wallet doesn't exist yet - will be created with empty password
+                        print("ℹ️  No wallet found - will create with empty password...")
+                    
+                    # Always try with empty password first (standard for this bot)
+                    try:
+                        print(f"🔧 DEBUG: Attempting to initialize wallet...")
+                        print(f"   Wallet path: {seller.wallet_path}")
+                        print(f"   Node: {default_node.address}:{default_node.port}")
+                        print(f"   SSL: {default_node.use_ssl}")
+                        print(f"   Password: <empty string>")
+                        
+                        # Initialize in-house wallet with empty password
+                        self.wallet = InHouseWallet(
+                            seller.wallet_path,
+                            password,  # Empty string
+                            default_node.address,
+                            default_node.port,
+                            default_node.use_ssl
                         )
                         
-                        if ok and password:
-                            try:
-                                print(f"🔧 DEBUG: Attempting to initialize wallet...")
-                                print(f"   Wallet path: {seller.wallet_path}")
-                                print(f"   Node: {default_node.address}:{default_node.port}")
-                                print(f"   SSL: {default_node.use_ssl}")
+                        print(f"✓ DEBUG: Wallet instance created")
+                        
+                        # Auto-setup wallet (create if missing, start RPC)
+                        print(f"🔧 DEBUG: Running wallet auto-setup...")
+                        setup_success, seed_phrase = self.wallet.auto_setup_wallet(create_if_missing=True)
+                        
+                        if setup_success:
+                            print("✓ Wallet auto-setup completed")
+                            
+                            # If new wallet created, show seed phrase
+                            if seed_phrase:
+                                QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, 
+                                    lambda: self._show_seed_phrase_dialog(seed_phrase))
+                            
+                            # Connect to node
+                            print(f"🔧 DEBUG: Attempting to connect to node...")
+                            connection_result = self.wallet.connect()
+                            print(f"🔧 DEBUG: Connection result: {connection_result}")
+                            
+                            if connection_result:
+                                print("✓ Wallet connected successfully")
                                 
-                                # Initialize in-house wallet
-                                self.wallet = InHouseWallet(
-                                    seller.wallet_path,
-                                    password,
-                                    default_node.address,
-                                    default_node.port,
-                                    default_node.use_ssl
-                                )
-                                
-                                print(f"✓ DEBUG: Wallet instance created")
-                                
-                                # Auto-setup wallet (create if missing, start RPC)
-                                print(f"🔧 DEBUG: Running wallet auto-setup...")
-                                setup_success, seed_phrase = self.wallet.auto_setup_wallet(create_if_missing=True)
-                                
-                                if setup_success:
-                                    print("✓ Wallet auto-setup completed")
-                                    
-                                    # If new wallet created, show seed phrase
-                                    if seed_phrase:
-                                        QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, 
-                                            lambda: self._show_seed_phrase_dialog(seed_phrase))
-                                    
-                                    # Connect to node
-                                    print(f"🔧 DEBUG: Attempting to connect to node...")
-                                    connection_result = self.wallet.connect()
-                                    print(f"🔧 DEBUG: Connection result: {connection_result}")
-                                    
-                                    if connection_result:
-                                        print("✓ Wallet connected successfully")
-                                        
-                                        # Start node health monitor
-                                        self.node_monitor = NodeHealthMonitor(self.wallet.setup_manager)
-                                        if len(working_nodes) > 1:
-                                            # Use other working nodes as backups (exclude current default)
-                                            backup_nodes = [
-                                                (addr, port) for addr, port in working_nodes 
-                                                if addr != default_node.address or port != default_node.port
-                                            ]
-                                            self.node_monitor.set_backup_nodes(backup_nodes)
-                                        self.node_monitor.start()
-                                        print("✓ Node health monitor started")
-                                    else:
-                                        print("⚠ Wallet initialized but connection failed")
-                                        # Defer warning dialog until after dashboard loads
-                                        QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, lambda: self._show_connection_warning())
-                                        self.wallet = None
-                                else:
-                                    print("⚠ Wallet auto-setup failed")
-                                    QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, 
-                                        lambda: self._show_setup_failed_dialog())
-                                    self.wallet = None
-                                        
-                            except Exception as e:
-                                print(f"❌ ERROR: Failed to initialize wallet: {e}")
-                                import traceback
-                                traceback.print_exc()  # Print full stack trace
-                                
-                                # Defer error dialog until after dashboard loads
-                                error_msg = str(e)
-                                QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, lambda: self._show_initialization_error(error_msg))
+                                # Start node health monitor
+                                self.node_monitor = NodeHealthMonitor(self.wallet.setup_manager)
+                                if len(working_nodes) > 1:
+                                    # Use other working nodes as backups (exclude current default)
+                                    backup_nodes = [
+                                        (addr, port) for addr, port in working_nodes 
+                                        if addr != default_node.address or port != default_node.port
+                                    ]
+                                    self.node_monitor.set_backup_nodes(backup_nodes)
+                                self.node_monitor.start()
+                                print("✓ Node health monitor started")
+                            else:
+                                print("⚠ Wallet initialized but connection failed")
+                                # Defer warning dialog until after dashboard loads
+                                QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, lambda: self._show_connection_warning())
                                 self.wallet = None
+                        else:
+                            print("⚠ Wallet auto-setup failed")
+                            QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, 
+                                lambda: self._show_setup_failed_dialog())
+                            self.wallet = None
+                                
+                    except Exception as e:
+                        print(f"❌ ERROR: Failed to initialize wallet: {e}")
+                        import traceback
+                        traceback.print_exc()  # Print full stack trace
+                        
+                        # Defer error dialog until after dashboard loads
+                        error_msg = str(e)
+                        QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, lambda: self._show_initialization_error(error_msg))
+                        self.wallet = None
                     
             except Exception as e:
                 print(f"WARNING: Failed to initialize wallet: {e}")
