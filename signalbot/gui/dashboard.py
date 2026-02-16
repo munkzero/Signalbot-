@@ -1612,9 +1612,11 @@ class BackupDialog(QDialog):
 class WalletTab(QWidget):
     """Monero wallet management tab"""
     
-    def __init__(self, wallet: Optional[InHouseWallet] = None):
+    def __init__(self, wallet: Optional[InHouseWallet] = None, db_manager=None, seller_manager=None):
         super().__init__()
         self.wallet = wallet
+        self.db_manager = db_manager
+        self.seller_manager = seller_manager
         self.subaddresses = []
         self.transfers = []
         self.last_refresh = None
@@ -2013,30 +2015,54 @@ class WalletTab(QWidget):
             dialog.exec_()
     
     def send_funds(self):
-        """Open send funds dialog"""
+        """Open send funds dialog with PIN verification"""
         if not self.wallet:
             self.show_not_connected()
             return
         
         dialog = SendFundsDialog(self.wallet, self)
-        if dialog.exec_() == QDialog.Accepted:
-            data = dialog.get_data()
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        
+        data = dialog.get_data()
+        
+        # Step 1: Request PIN for authorization
+        if self.seller_manager and self.db_manager:
+            pin_dialog = PINDialog(self)
+            pin_dialog.setWindowTitle("Enter PIN to Authorize Transaction")
             
-            # Show progress
-            progress = QProgressDialog("Sending transaction...", None, 0, 0, self)
-            progress.setWindowModality(Qt.WindowModal)
-            progress.show()
+            if pin_dialog.exec_() != QDialog.Accepted:
+                return
             
-            # Use worker thread
-            self.send_worker = SendFundsWorker(
-                self.wallet,
-                data['address'],
-                data['amount'],
-                data['priority']
-            )
-            self.send_worker.finished.connect(lambda result: self.on_send_complete(result, progress))
-            self.send_worker.error.connect(lambda error: self.on_send_error(error, progress))
-            self.send_worker.start()
+            entered_pin = pin_dialog.get_pin()
+            
+            # Step 2: Verify PIN
+            from ..database.db import Seller
+            seller = self.db_manager.session.query(Seller).first()
+            if not seller:
+                QMessageBox.critical(self, "Error", "Seller data not found")
+                return
+            
+            from ..core.security import security_manager
+            if not security_manager.verify_pin(entered_pin, seller.pin_hash, seller.pin_salt):
+                QMessageBox.critical(self, "Access Denied", "Incorrect PIN")
+                return
+        
+        # Step 3: Show progress and execute transaction
+        progress = QProgressDialog("Sending transaction...", None, 0, 0, self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.show()
+        
+        # Use worker thread
+        self.send_worker = SendFundsWorker(
+            self.wallet,
+            data['address'],
+            data['amount'],
+            data['priority']
+        )
+        self.send_worker.finished.connect(lambda result: self.on_send_complete(result, progress))
+        self.send_worker.error.connect(lambda error: self.on_send_error(error, progress))
+        self.send_worker.start()
     
     def on_send_complete(self, result, progress):
         """Handle send completion"""
@@ -3593,6 +3619,13 @@ class SettingsTab(QWidget):
         wallet_settings_btn = QPushButton("Wallet Settings")
         wallet_settings_btn.clicked.connect(self.open_wallet_settings)
         wallet_btn_layout.addWidget(wallet_settings_btn)
+        
+        # New Wallet Button (with warning styling)
+        new_wallet_btn = QPushButton("Create New Wallet")
+        new_wallet_btn.setStyleSheet("background-color: #ff6b6b; color: white; font-weight: bold;")
+        new_wallet_btn.clicked.connect(self.create_new_wallet)
+        wallet_btn_layout.addWidget(new_wallet_btn)
+        
         wallet_btn_layout.addStretch()
         wallet_layout.addLayout(wallet_btn_layout)
         
@@ -3792,6 +3825,180 @@ class SettingsTab(QWidget):
                 "Settings Updated",
                 "Wallet settings updated successfully."
             )
+    
+    def show_status(self, message: str):
+        """Show status message (helper method for wallet creation)"""
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(message)
+    
+    def create_new_wallet(self):
+        """Create new wallet with confirmation dialogs"""
+        # Step 1: Warning confirmation
+        warning = QMessageBox()
+        warning.setIcon(QMessageBox.Warning)
+        warning.setWindowTitle("Create New Wallet - WARNING")
+        warning.setText("Creating a new wallet will:")
+        warning.setInformativeText(
+            "• Generate a NEW seed phrase\n"
+            "• Create NEW wallet files\n"
+            "• Your CURRENT wallet will be backed up\n"
+            "• You will LOSE ACCESS to current wallet unless you have the seed\n\n"
+            "Have you backed up your current wallet seed phrase?"
+        )
+        warning.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
+        warning.setDefaultButton(QMessageBox.Cancel)
+        
+        if warning.exec_() != QMessageBox.Yes:
+            return
+        
+        # Step 2: Final confirmation
+        confirm = QMessageBox()
+        confirm.setIcon(QMessageBox.Question)
+        confirm.setWindowTitle("Final Confirmation")
+        confirm.setText("Are you absolutely sure?")
+        confirm.setInformativeText("This action will backup and replace your wallet.")
+        confirm.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        confirm.setDefaultButton(QMessageBox.No)
+        
+        if confirm.exec_() != QMessageBox.Yes:
+            return
+        
+        # Step 3: Show backup creation
+        try:
+            from pathlib import Path
+            from datetime import datetime
+            import shutil
+            
+            self.show_status("Creating wallet backup...")
+            # Backup existing wallet
+            backup_name = f"wallet_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            wallet_dir = Path("data/wallet")
+            backup_dir = wallet_dir / "backups" / backup_name
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Copy all wallet files
+            for file in wallet_dir.glob("shop_wallet*"):
+                shutil.copy2(file, backup_dir / file.name)
+            
+            self.show_status(f"Backup created: {backup_name}")
+            
+            # Step 4: Create new wallet
+            self.show_status("Creating new wallet...")
+            from ..core.wallet_setup import WalletSetupManager
+            
+            setup = WalletSetupManager(
+                wallet_path=str(wallet_dir / "shop_wallet"),
+                daemon_address="",
+                daemon_port=0,
+                password=""  # Empty password (matches existing setup)
+            )
+            
+            success, address, seed = setup.create_wallet()
+            
+            if not success:
+                QMessageBox.critical(self, "Error", "Failed to create wallet")
+                return
+            
+            # Step 5: Show seed phrase with save options
+            self.show_new_wallet_seed(seed, address, backup_name)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create wallet: {e}")
+            self.show_status("Wallet creation failed")
+    
+    def show_new_wallet_seed(self, seed: str, address: str, backup_name: str):
+        """Show seed phrase with save options"""
+        from datetime import datetime
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("New Wallet Created - SAVE YOUR SEED!")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(700)
+        
+        layout = QVBoxLayout()
+        
+        # Warning header
+        warning = QLabel("⚠️ CRITICAL: Save this seed phrase immediately!")
+        warning.setStyleSheet("background-color: #ff6b6b; color: white; padding: 10px; font-weight: bold; font-size: 14px;")
+        layout.addWidget(warning)
+        
+        # Seed phrase display
+        seed_label = QLabel("Your 25-word seed phrase:")
+        layout.addWidget(seed_label)
+        
+        seed_text = QTextEdit()
+        seed_text.setPlainText(seed)
+        seed_text.setReadOnly(True)
+        seed_text.setStyleSheet("background-color: #f0f0f0; font-family: monospace; font-size: 12px;")
+        seed_text.setMinimumHeight(100)
+        layout.addWidget(seed_text)
+        
+        # Address display
+        addr_label = QLabel("Wallet Address:")
+        layout.addWidget(addr_label)
+        
+        addr_text = QLineEdit(address)
+        addr_text.setReadOnly(True)
+        layout.addWidget(addr_text)
+        
+        # Backup info
+        backup_info = QLabel(f"Previous wallet backed up to: {backup_name}")
+        backup_info.setStyleSheet("color: green;")
+        layout.addWidget(backup_info)
+        
+        # Save buttons
+        button_layout = QHBoxLayout()
+        
+        copy_btn = QPushButton("Copy Seed to Clipboard")
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(seed))
+        
+        save_btn = QPushButton("Save to File")
+        save_btn.clicked.connect(lambda: self.save_seed_to_file(seed, address))
+        
+        button_layout.addWidget(copy_btn)
+        button_layout.addWidget(save_btn)
+        layout.addLayout(button_layout)
+        
+        # Confirmation checkbox
+        confirm_check = QCheckBox("I have saved my seed phrase in a safe place")
+        layout.addWidget(confirm_check)
+        
+        # Close button (disabled until confirmed)
+        close_btn = QPushButton("Close")
+        close_btn.setEnabled(False)
+        confirm_check.stateChanged.connect(lambda: close_btn.setEnabled(confirm_check.isChecked()))
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+        
+        dialog.setLayout(layout)
+        dialog.exec_()
+        
+        # Restart wallet RPC with new wallet
+        QMessageBox.information(self, "Restart Required", "Please restart the bot to use the new wallet.")
+    
+    def save_seed_to_file(self, seed: str, address: str):
+        """Save seed phrase to file"""
+        from datetime import datetime
+        
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Seed Phrase",
+            f"wallet_seed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            "Text Files (*.txt)"
+        )
+        
+        if filename:
+            with open(filename, 'w') as f:
+                f.write(f"Wallet Seed Phrase\n")
+                f.write(f"Created: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"\nAddress: {address}\n")
+                f.write(f"\nSeed Phrase (25 words):\n")
+                f.write(f"{seed}\n")
+                f.write(f"\n⚠️ KEEP THIS FILE SECURE! Anyone with this seed can access your funds.\n")
+            
+            QMessageBox.information(self, "Saved", f"Seed phrase saved to:\n{filename}")
+
 
 
 # Worker threads for async operations
@@ -4779,7 +4986,7 @@ class DashboardWindow(QMainWindow):
         tabs = QTabWidget()
         
         # Add tabs
-        tabs.addTab(WalletTab(self.wallet), "💰 Wallet")
+        tabs.addTab(WalletTab(self.wallet, self.db_manager, self.seller_manager), "💰 Wallet")
         tabs.addTab(ProductsTab(self.product_manager), "Products")
         tabs.addTab(OrdersTab(self.order_manager), "Orders")
         tabs.addTab(MessagesTab(self.signal_handler, self.contact_manager, self.message_manager, self.seller_manager, self.product_manager), "Messages")

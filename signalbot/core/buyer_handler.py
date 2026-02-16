@@ -5,16 +5,16 @@ Buyer Handler - Processes buyer commands and order creation
 import os
 import re
 import time
+import logging
 from typing import Optional, Tuple
 from datetime import datetime, timedelta
 from ..models.product import ProductManager
 from ..models.order import OrderManager, Order
 from ..config.settings import ORDER_EXPIRATION_MINUTES
 from ..utils.qr_generator import qr_generator
+from ..utils.currency import currency_converter
 
-
-# TODO: Replace with real-time exchange rate API
-XMR_EXCHANGE_RATE_USD = 150.0  # Placeholder: 1 XMR = $150 USD
+logger = logging.getLogger(__name__)
 
 # Delay between catalog product messages to avoid rate limiting
 CATALOG_SEND_DELAY_SECONDS = 1.5
@@ -534,10 +534,18 @@ Reply "order {product_id} qty {product.stock}" to proceed.
             commission = subtotal * 0.07  # 7% commission
             total = subtotal + commission
             
-            # Get XMR conversion using configured exchange rate
-            total_xmr = total / XMR_EXCHANGE_RATE_USD
+            # Get XMR conversion using SECURE LIVE API
+            try:
+                total_xmr = currency_converter.fiat_to_xmr(total, product.currency)
+                logger.debug(f"Exchange rate: 1 XMR = {currency_converter.get_xmr_price(product.currency):.2f} {product.currency}")
+            except Exception as e:
+                # Fallback to cached rate or manual rate if API fails
+                logger.warning(f"Live exchange rate API failed: {e}")
+                logger.warning(f"Using cached/fallback rate")
+                # This will use cached value from currency_converter if available
+                total_xmr = currency_converter.fiat_to_xmr(total, product.currency)
             
-            print(f"DEBUG: Order total: {total} {product.currency} = {total_xmr:.6f} XMR")
+            logger.debug(f"Order total: {total} {product.currency} = {total_xmr:.6f} XMR")
             
             # Generate payment address (placeholder)
             payment_address = self._generate_payment_address(product.id, buyer_signal_id)
