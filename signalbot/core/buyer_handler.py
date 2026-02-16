@@ -74,7 +74,7 @@ class ProductCache:
 class BuyerHandler:
     """Handles buyer commands and order creation"""
     
-    def __init__(self, product_manager, order_manager, signal_handler, seller_signal_id):
+    def __init__(self, product_manager, order_manager, signal_handler, seller_signal_id, wallet_manager=None, seller_manager=None):
         """
         Initialize buyer handler
         
@@ -83,14 +83,25 @@ class BuyerHandler:
             order_manager: OrderManager instance
             signal_handler: SignalHandler instance
             seller_signal_id: Seller's Signal ID
+            wallet_manager: Optional WalletSetupManager for wallet operations
+            seller_manager: Optional SellerManager for PIN verification
         """
         self.product_manager = product_manager
         self.order_manager = order_manager
         self.signal_handler = signal_handler
         self.seller_signal_id = seller_signal_id
+        self.wallet_manager = wallet_manager
+        self.seller_manager = seller_manager
         
         # Add product cache
         self.product_cache = ProductCache(product_manager, cache_duration=300)
+        
+        # Track pending confirmations and PIN sessions
+        self.pending_confirmations = {}  # {signal_id: {'action': str, 'data': dict}}
+        
+        # Import PIN manager
+        from .pin_manager import pin_manager
+        self.pin_manager = pin_manager
     
     @staticmethod
     def _format_product_id(product_id: Optional[str]) -> str:
@@ -240,6 +251,38 @@ class BuyerHandler:
         
         print(f"DEBUG: Processing buyer command: {message_text[:50]}")
         
+        # Check if this is the seller sending commands (admin mode)
+        is_seller = (buyer_signal_id == self.seller_signal_id)
+        
+        # Handle pending confirmations (e.g., for new wallet creation)
+        if buyer_signal_id in self.pending_confirmations:
+            self._handle_confirmation(buyer_signal_id, message_text)
+            return
+        
+        # Handle PIN entry for active sessions
+        if self.pin_manager.has_active_session(buyer_signal_id):
+            self._handle_pin_entry(buyer_signal_id, message_text)
+            return
+        
+        # Seller-only commands
+        if is_seller:
+            # Command: "settings" or "menu"
+            if message_lower in ['settings', 'menu', 'admin']:
+                self.send_settings_menu(buyer_signal_id)
+                return
+            
+            # Command: "new wallet"
+            if 'new wallet' in message_lower or message_lower == 'create wallet':
+                self.request_new_wallet(buyer_signal_id)
+                return
+            
+            # Command: "send [amount] to [address]" or "send [amount] xmr to [address]"
+            send_match = self._parse_send_command(message_text)
+            if send_match:
+                amount, address = send_match
+                self.request_send_transaction(buyer_signal_id, amount, address)
+                return
+        
         # Command: "catalog" or "show products" - improved matching to avoid false positives
         # Match specific keywords or common phrases
         catalog_keywords = ['catalog', 'catalogue', 'menu']
@@ -309,6 +352,122 @@ class BuyerHandler:
             return (product_id, 1)
         
         return None
+    
+    def _parse_send_command(self, message: str) -> Optional[Tuple[float, str]]:
+        """
+        Parse send transaction commands:
+        - "send 1.5 to 4..."
+        - "send 0.5 xmr to 4..."
+        - "transfer 2 to 4..."
+        
+        Args:
+            message: Message text to parse
+            
+        Returns:
+            Tuple of (amount, address) or None
+        """
+        import re
+        
+        # Pattern: "send/transfer [amount] (xmr) to [address]"
+        pattern = r'(send|transfer)\s+([\d.]+)\s*(?:xmr)?\s+to\s+([a-zA-Z0-9]+)'
+        match = re.search(pattern, message.lower())
+        
+        if match:
+            try:
+                amount = float(match.group(2))
+                address = match.group(3)
+                return (amount, address)
+            except ValueError:
+                return None
+        
+        return None
+    
+    def _handle_confirmation(self, signal_id: str, message: str):
+        """
+        Handle confirmation responses (yes/no)
+        
+        Args:
+            signal_id: User's Signal ID
+            message: User's response
+        """
+        message_lower = message.lower().strip()
+        confirmation = self.pending_confirmations[signal_id]
+        action = confirmation['action']
+        
+        # Clear confirmation
+        del self.pending_confirmations[signal_id]
+        
+        if message_lower in ['yes', 'y', 'confirm']:
+            # User confirmed
+            if action == 'new_wallet':
+                self._execute_new_wallet(signal_id)
+            else:
+                self.signal_handler.send_message(
+                    recipient=signal_id,
+                    message="Unknown action. Operation cancelled."
+                )
+        else:
+            # User declined or invalid response
+            self.signal_handler.send_message(
+                recipient=signal_id,
+                message="Operation cancelled."
+            )
+    
+    def _handle_pin_entry(self, signal_id: str, pin: str):
+        """
+        Handle PIN entry for transaction authorization
+        
+        Args:
+            signal_id: User's Signal ID
+            pin: Entered PIN
+        """
+        session = self.pin_manager.get_session(signal_id)
+        
+        if session is None:
+            self.signal_handler.send_message(
+                recipient=signal_id,
+                message="⏱️ PIN entry timed out. Please try again."
+            )
+            return
+        
+        # Verify PIN
+        if self.seller_manager is None:
+            self.signal_handler.send_message(
+                recipient=signal_id,
+                message="❌ PIN verification not available."
+            )
+            self.pin_manager.clear_session(signal_id)
+            return
+        
+        # Get seller ID (default to 1)
+        is_valid = self.seller_manager.verify_pin(1, pin.strip())
+        
+        if is_valid:
+            # PIN correct - execute the action
+            action = session.action
+            data = session.data
+            
+            # Clear session
+            self.pin_manager.clear_session(signal_id)
+            
+            if action == 'send_transaction':
+                self._execute_send_transaction(
+                    signal_id,
+                    data.get('amount'),
+                    data.get('address')
+                )
+            else:
+                self.signal_handler.send_message(
+                    recipient=signal_id,
+                    message="✅ PIN verified, but action not implemented."
+                )
+        else:
+            # PIN incorrect
+            self.pin_manager.clear_session(signal_id)
+            self.signal_handler.send_message(
+                recipient=signal_id,
+                message="❌ Incorrect PIN. Transaction cancelled."
+            )
     
     def send_catalog(self, buyer_signal_id: str):
         """
@@ -690,3 +849,258 @@ After placing an order, you'll receive:
             recipient=buyer_signal_id,
             message=help_message.strip()
         )
+    
+    def send_settings_menu(self, signal_id: str):
+        """
+        Send settings/admin menu to seller
+        
+        Args:
+            signal_id: Seller's Signal ID
+        """
+        settings_message = """⚙️ SETTINGS MENU
+        
+🔧 Wallet Management:
+  • "new wallet" - Create a new wallet (backs up current wallet)
+
+💸 Send Transactions:
+  • "send [amount] to [address]" - Send XMR (requires PIN)
+  • Example: "send 1.5 to 4ABC..."
+
+📋 Catalog Management:
+  • "catalog" - View your products
+
+❓ Help:
+  • "help" - Show buyer help
+"""
+        
+        self.signal_handler.send_message(
+            recipient=signal_id,
+            message=settings_message.strip()
+        )
+    
+    def request_new_wallet(self, signal_id: str):
+        """
+        Request confirmation for creating a new wallet
+        
+        Args:
+            signal_id: Seller's Signal ID
+        """
+        if self.wallet_manager is None:
+            self.signal_handler.send_message(
+                recipient=signal_id,
+                message="❌ Wallet management not available."
+            )
+            return
+        
+        # Store pending confirmation
+        self.pending_confirmations[signal_id] = {
+            'action': 'new_wallet',
+            'data': {}
+        }
+        
+        confirmation_message = """⚠️ CREATE NEW WALLET
+
+Are you sure you want to create a new wallet?
+
+This will:
+✓ Backup your current wallet with timestamp
+✓ Create a new empty wallet
+✓ Generate a new seed phrase (SAVE IT!)
+
+Your current wallet will be safely backed up.
+
+Reply 'yes' to continue or 'no' to cancel."""
+        
+        self.signal_handler.send_message(
+            recipient=signal_id,
+            message=confirmation_message
+        )
+    
+    def _execute_new_wallet(self, signal_id: str):
+        """
+        Execute new wallet creation with backup
+        
+        Args:
+            signal_id: Seller's Signal ID
+        """
+        if self.wallet_manager is None:
+            self.signal_handler.send_message(
+                recipient=signal_id,
+                message="❌ Wallet management not available."
+            )
+            return
+        
+        # Stop RPC if running
+        if self.wallet_manager.is_rpc_running():
+            self.signal_handler.send_message(
+                recipient=signal_id,
+                message="🛑 Stopping wallet RPC..."
+            )
+            self.wallet_manager.stop_rpc()
+            time.sleep(2)
+        
+        # Create new wallet with backup
+        self.signal_handler.send_message(
+            recipient=signal_id,
+            message="🔄 Creating new wallet..."
+        )
+        
+        success, address, seed, backup_path = self.wallet_manager.create_new_wallet_with_backup()
+        
+        if success:
+            message = "✅ NEW WALLET CREATED\n\n"
+            
+            if backup_path:
+                message += f"💾 Old wallet backed up to:\n{backup_path}\n\n"
+            
+            if address:
+                message += f"📍 Address:\n{address}\n\n"
+            
+            if seed:
+                message += f"🔑 SEED PHRASE (SAVE THIS!):\n{seed}\n\n"
+                message += "⚠️ Write down your seed phrase and store it safely!\n"
+                message += "This is the ONLY way to recover your wallet!\n\n"
+            
+            # Restart RPC
+            message += "🔌 Starting wallet RPC..."
+            self.signal_handler.send_message(
+                recipient=signal_id,
+                message=message
+            )
+            
+            if self.wallet_manager.start_rpc():
+                self.signal_handler.send_message(
+                    recipient=signal_id,
+                    message="✅ Wallet RPC started successfully!"
+                )
+            else:
+                self.signal_handler.send_message(
+                    recipient=signal_id,
+                    message="⚠️ Failed to start wallet RPC. Please restart manually."
+                )
+        else:
+            self.signal_handler.send_message(
+                recipient=signal_id,
+                message="❌ Failed to create new wallet. Check logs for details."
+            )
+    
+    def request_send_transaction(self, signal_id: str, amount: float, address: str):
+        """
+        Request PIN for sending transaction
+        
+        Args:
+            signal_id: Seller's Signal ID
+            amount: Amount to send in XMR
+            address: Destination address
+        """
+        if self.seller_manager is None:
+            self.signal_handler.send_message(
+                recipient=signal_id,
+                message="❌ Transaction authorization not available."
+            )
+            return
+        
+        # Create PIN verification session
+        session = self.pin_manager.create_session(
+            user_id=signal_id,
+            action='send_transaction',
+            timeout_seconds=60,
+            amount=amount,
+            address=address
+        )
+        
+        message = f"""🔐 TRANSACTION AUTHORIZATION
+
+Amount: {amount} XMR
+To: {address}
+
+Enter your PIN to authorize this transaction.
+
+⏱️ You have {session.timeout_seconds} seconds to enter your PIN."""
+        
+        self.signal_handler.send_message(
+            recipient=signal_id,
+            message=message
+        )
+    
+    def _execute_send_transaction(self, signal_id: str, amount: float, address: str):
+        """
+        Execute send transaction after PIN verification
+        
+        Args:
+            signal_id: Seller's Signal ID
+            amount: Amount to send in XMR
+            address: Destination address
+        """
+        if self.wallet_manager is None:
+            self.signal_handler.send_message(
+                recipient=signal_id,
+                message="❌ Wallet not available."
+            )
+            return
+        
+        # Check if RPC is running
+        if not self.wallet_manager.is_rpc_running():
+            self.signal_handler.send_message(
+                recipient=signal_id,
+                message="❌ Wallet RPC is not running. Please start it first."
+            )
+            return
+        
+        self.signal_handler.send_message(
+            recipient=signal_id,
+            message=f"📤 Sending {amount} XMR to {address}..."
+        )
+        
+        try:
+            # Send transaction via RPC
+            import requests
+            
+            rpc_url = f'http://127.0.0.1:{self.wallet_manager.rpc_port}/json_rpc'
+            
+            # Convert XMR to atomic units (1 XMR = 1e12 atomic units)
+            amount_atomic = int(amount * 1e12)
+            
+            payload = {
+                "jsonrpc": "2.0",
+                "id": "0",
+                "method": "transfer",
+                "params": {
+                    "destinations": [{"amount": amount_atomic, "address": address}],
+                    "priority": 2,  # Normal priority
+                    "get_tx_key": True
+                }
+            }
+            
+            response = requests.post(rpc_url, json=payload, timeout=30)
+            result = response.json()
+            
+            if 'result' in result:
+                tx_hash = result['result'].get('tx_hash', 'unknown')
+                tx_key = result['result'].get('tx_key', 'unknown')
+                
+                success_message = f"""✅ TRANSACTION SENT
+
+Amount: {amount} XMR
+To: {address}
+TX Hash: {tx_hash}
+TX Key: {tx_key}
+
+Transaction submitted successfully!"""
+                
+                self.signal_handler.send_message(
+                    recipient=signal_id,
+                    message=success_message
+                )
+            else:
+                error = result.get('error', {}).get('message', 'Unknown error')
+                self.signal_handler.send_message(
+                    recipient=signal_id,
+                    message=f"❌ Transaction failed: {error}"
+                )
+                
+        except Exception as e:
+            self.signal_handler.send_message(
+                recipient=signal_id,
+                message=f"❌ Error sending transaction: {str(e)}"
+            )

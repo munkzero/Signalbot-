@@ -8,8 +8,10 @@ import subprocess
 import time
 import requests
 import socket
+import shutil
 from pathlib import Path
 from typing import Optional, Tuple, List
+from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,48 @@ class WalletSetupManager:
         """Check if wallet files exist"""
         keys_file = Path(str(self.wallet_path) + ".keys")
         return keys_file.exists()
+    
+    def backup_wallet(self) -> Tuple[bool, Optional[str]]:
+        """
+        Backup existing wallet with timestamp
+        
+        Returns:
+            Tuple of (success, backup_path)
+        """
+        if not self.wallet_exists():
+            logger.warning("No wallet to backup")
+            return False, None
+        
+        try:
+            # Create backup directory if it doesn't exist
+            from ..config.settings import BACKUP_DIR
+            backup_dir = Path(BACKUP_DIR)
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate timestamp for backup name
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            wallet_name = self.wallet_path.stem
+            backup_name = f"{wallet_name}_backup_{timestamp}"
+            backup_path = backup_dir / backup_name
+            
+            # Copy wallet files (.keys and base file)
+            wallet_files = [
+                str(self.wallet_path),
+                str(self.wallet_path) + ".keys"
+            ]
+            
+            for wallet_file in wallet_files:
+                if os.path.exists(wallet_file):
+                    backup_file = str(backup_path) + wallet_file[len(str(self.wallet_path)):]
+                    shutil.copy2(wallet_file, backup_file)
+                    logger.info(f"Backed up: {wallet_file} → {backup_file}")
+            
+            logger.info(f"✅ Wallet backed up to: {backup_path}")
+            return True, str(backup_path)
+            
+        except Exception as e:
+            logger.error(f"Failed to backup wallet: {e}")
+            return False, None
     
     def create_wallet(self) -> Tuple[bool, Optional[str], Optional[str]]:
         """
@@ -114,6 +158,50 @@ class WalletSetupManager:
         except Exception as e:
             logger.error(f"Error creating wallet: {e}")
             return False, None, None
+    
+    def create_new_wallet_with_backup(self) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
+        """
+        Create a new wallet, backing up the existing one if present
+        
+        Returns:
+            Tuple of (success, wallet_address, seed_phrase, backup_path)
+        """
+        backup_path = None
+        
+        # Backup existing wallet if it exists
+        if self.wallet_exists():
+            logger.info("Existing wallet found, creating backup...")
+            success, backup_path = self.backup_wallet()
+            if not success:
+                logger.error("Failed to backup existing wallet, aborting")
+                return False, None, None, None
+            
+            # Remove old wallet files to create new one
+            try:
+                wallet_files = [
+                    str(self.wallet_path),
+                    str(self.wallet_path) + ".keys"
+                ]
+                for wallet_file in wallet_files:
+                    if os.path.exists(wallet_file):
+                        os.remove(wallet_file)
+                        logger.info(f"Removed old wallet file: {wallet_file}")
+            except Exception as e:
+                logger.error(f"Failed to remove old wallet files: {e}")
+                return False, None, None, backup_path
+        
+        # Create new wallet
+        logger.info("Creating new wallet...")
+        success, address, seed = self.create_wallet()
+        
+        if success:
+            logger.info(f"✅ New wallet created successfully")
+            if backup_path:
+                logger.info(f"   Old wallet backed up to: {backup_path}")
+            return True, address, seed, backup_path
+        else:
+            logger.error("Failed to create new wallet")
+            return False, None, None, backup_path
     
     def is_rpc_running(self) -> bool:
         """Check if monero-wallet-rpc is running on the specified port"""
