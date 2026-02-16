@@ -4282,47 +4282,24 @@ class WalletSettingsDialog(QDialog):
         self.setLayout(layout)
     
     def _request_wallet_password(self):
-        """Request wallet password from user"""
-        password_dialog = WalletPasswordDialog(self)
-        if password_dialog.exec_() != QDialog.Accepted:
-            return None
-        
-        password = password_dialog.get_password()
-        if not password:
-            QMessageBox.warning(self, "Error", "Password is required")
-            return None
-        
-        return password
+        """
+        DEPRECATED: This bot uses empty password for full automation.
+        This method should never be called, but returns empty string as fallback.
+        """
+        # Return empty string instead of showing dialog for full automation
+        return ""
     
     def _get_wallet_password(self):
         """
-        Get wallet password, using stored password or empty string for existing wallets
+        Get wallet password for operations.
+        This bot uses empty password for full 24/7 automation.
         
         Returns:
-            Password string, or None if user cancelled when prompted
+            Empty string (always, no exceptions)
         """
-        # Check if dashboard has an active wallet with stored password
-        password = ""  # Default to empty password (standard for this bot)
-        
-        if self.dashboard and hasattr(self.dashboard, 'wallet') and self.dashboard.wallet:
-            # Use password from dashboard's wallet
-            password = self.dashboard.wallet.password
-        else:
-            # Check if wallet exists
-            from pathlib import Path
-            wallet_path = Path(self.seller.wallet_path)
-            wallet_exists = (wallet_path.parent / f"{wallet_path.name}.keys").exists()
-            
-            if wallet_exists:
-                # Wallet exists - use empty password (standard for this bot)
-                password = ""
-            else:
-                # Wallet doesn't exist yet - prompt for password
-                password = self._request_wallet_password()
-                if password is None:
-                    return None
-        
-        return password
+        # Always return empty password for full automation
+        # No prompts, no dialogs, no user interaction
+        return ""
     
     def _create_connect_tab(self):
         """Create Connect & Sync tab"""
@@ -4510,10 +4487,8 @@ class WalletSettingsDialog(QDialog):
         )
         
         if reply == QMessageBox.Yes:
-            # Get wallet password (uses empty string for existing wallets)
-            password = self._get_wallet_password()
-            if password is None:
-                return
+            # Use empty password for full automation (no prompts)
+            password = ""
             
             self.progress_bar.setVisible(True)
             self.progress_label.setVisible(True)
@@ -4581,10 +4556,8 @@ class WalletSettingsDialog(QDialog):
         )
         
         if reply == QMessageBox.Yes:
-            # Get wallet password (uses empty string for existing wallets)
-            password = self._get_wallet_password()
-            if password is None:
-                return
+            # Use empty password for full automation (no prompts)
+            password = ""
             
             self.progress_bar.setVisible(True)
             self.progress_label.setVisible(True)
