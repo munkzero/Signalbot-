@@ -379,6 +379,93 @@ class OrderManager:
         
         return order
     
+    def update_tracking_number(self, order_id: str, new_tracking: str, notify_customer: bool, signal_handler) -> Order:
+        """
+        Update tracking number for a shipped order and optionally notify customer
+        
+        Args:
+            order_id: Order ID
+            new_tracking: New tracking number
+            notify_customer: Whether to send notification to customer
+            signal_handler: SignalHandler instance for sending notifications
+            
+        Returns:
+            Updated order
+            
+        Raises:
+            ValueError: If tracking number is empty or order not found
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Validate tracking number
+        if not new_tracking or len(new_tracking.strip()) == 0:
+            raise ValueError("Tracking number cannot be empty")
+        
+        # Get order
+        order = self.get_order(order_id)
+        if not order:
+            raise ValueError(f"Order {order_id} not found")
+        
+        old_tracking = order.tracking_number
+        
+        # Update tracking number
+        order.tracking_number = new_tracking.strip()
+        self.update_order(order)
+        
+        # Log the update
+        logger.info(f"Updated tracking for order {order_id}: {old_tracking} → {new_tracking}")
+        
+        # Notify customer if requested
+        if notify_customer and signal_handler:
+            try:
+                message = f"🚚 Updated tracking information:\nTracking: {new_tracking.strip()}"
+                signal_handler.send_message(order.customer_signal_id, message)
+                logger.info(f"Sent tracking update notification to {order.customer_signal_id}")
+            except Exception as e:
+                logger.error(f"Failed to send tracking update notification: {str(e)}")
+                raise ShippingNotificationError(f"Tracking updated but notification failed: {str(e)}")
+        
+        return order
+    
+    def resend_tracking_notification(self, order_id: str, signal_handler) -> Order:
+        """
+        Resend shipping notification to customer
+        
+        Args:
+            order_id: Order ID
+            signal_handler: SignalHandler instance for sending notifications
+            
+        Returns:
+            Order
+            
+        Raises:
+            ValueError: If order not found, not shipped, or no tracking number
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Get order
+        order = self.get_order(order_id)
+        if not order:
+            raise ValueError(f"Order {order_id} not found")
+        
+        if order.order_status != "shipped":
+            raise ValueError("Order must be shipped to resend tracking")
+        
+        if not order.tracking_number:
+            raise ValueError("No tracking number to send")
+        
+        # Send notification
+        try:
+            signal_handler.send_shipping_notification(order.customer_signal_id, order.tracking_number)
+            logger.info(f"Resent tracking notification for order {order_id} to {order.customer_signal_id}")
+        except Exception as e:
+            logger.error(f"Failed to resend tracking notification: {str(e)}")
+            raise ShippingNotificationError(f"Failed to resend tracking: {str(e)}")
+        
+        return order
+    
     def count_orders_matching(self, criteria: dict) -> int:
         """
         Count orders matching deletion criteria

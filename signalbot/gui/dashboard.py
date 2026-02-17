@@ -2588,14 +2588,20 @@ class OrdersTab(QWidget):
         self.details_layout.addWidget(shipping_group)
     
     def show_shipped_details(self, order):
-        """Show shipped order details with resend button"""
+        """Show shipped order details with edit and resend buttons"""
         shipping_group = QGroupBox("Shipping Information")
         shipping_layout = QVBoxLayout()
         
-        # Tracking number (read-only)
+        # Tracking number with Edit button
         tracking_layout = QHBoxLayout()
         tracking_layout.addWidget(QLabel("<b>Tracking:</b>"))
         tracking_layout.addWidget(QLabel(order.tracking_number or "N/A"))
+        # Add Edit button next to tracking number
+        edit_tracking_btn = QPushButton("Edit")
+        edit_tracking_btn.setMaximumWidth(80)
+        edit_tracking_btn.clicked.connect(self.on_edit_tracking)
+        tracking_layout.addWidget(edit_tracking_btn)
+        tracking_layout.addStretch()
         shipping_layout.addLayout(tracking_layout)
         
         # Shipped timestamp
@@ -2682,9 +2688,10 @@ class OrdersTab(QWidget):
             return
         
         try:
-            self.signal_handler.send_shipping_notification(
-                self.selected_order.customer_signal_id,
-                self.selected_order.tracking_number
+            # Use order_manager's resend method for consistency
+            self.order_manager.resend_tracking_notification(
+                self.selected_order.order_id,
+                self.signal_handler
             )
             
             QMessageBox.information(
@@ -2698,6 +2705,84 @@ class OrdersTab(QWidget):
                 "Error",
                 f"Failed to send notification: {str(e)}"
             )
+    
+    def on_edit_tracking(self):
+        """Handle Edit Tracking button click - show dialog to edit tracking number"""
+        if not self.selected_order or not self.selected_order.tracking_number:
+            return
+        
+        if not self.signal_handler:
+            QMessageBox.critical(self, "Error", "Signal handler not available")
+            return
+        
+        # Create edit dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Tracking Number")
+        dialog.setMinimumWidth(400)
+        
+        layout = QVBoxLayout()
+        
+        # Current tracking
+        current_label = QLabel(f"<b>Current:</b> {self.selected_order.tracking_number}")
+        layout.addWidget(current_label)
+        
+        layout.addSpacing(10)
+        
+        # New tracking input
+        new_tracking_label = QLabel("New:")
+        layout.addWidget(new_tracking_label)
+        new_tracking_input = QLineEdit()
+        new_tracking_input.setText(self.selected_order.tracking_number)
+        new_tracking_input.selectAll()
+        layout.addWidget(new_tracking_input)
+        
+        layout.addSpacing(10)
+        
+        # Notify checkbox
+        notify_checkbox = QCheckBox("Notify customer of update")
+        notify_checkbox.setChecked(True)
+        layout.addWidget(notify_checkbox)
+        
+        layout.addSpacing(10)
+        
+        # Buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        dialog.setLayout(layout)
+        
+        # Show dialog and handle result
+        if dialog.exec_() == QDialog.Accepted:
+            new_tracking = new_tracking_input.text().strip()
+            notify = notify_checkbox.isChecked()
+            
+            if not new_tracking:
+                QMessageBox.warning(self, "Error", "Tracking number cannot be empty")
+                return
+            
+            try:
+                # Update tracking number
+                self.order_manager.update_tracking_number(
+                    self.selected_order.order_id,
+                    new_tracking,
+                    notify,
+                    self.signal_handler
+                )
+                
+                QMessageBox.information(self, "Success", "✅ Tracking number updated!")
+                
+                # Refresh order view
+                self.load_orders()
+                
+                # Update details view
+                updated_order = self.order_manager.get_order(self.selected_order.order_id)
+                if updated_order:
+                    self.selected_order = updated_order
+                    self.show_order_details(updated_order)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to update tracking: {str(e)}")
 
 
 class DeleteOldOrdersDialog(QDialog):
