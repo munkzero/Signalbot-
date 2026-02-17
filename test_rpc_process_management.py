@@ -108,13 +108,14 @@ def test_cleanup_logic():
         content = f.read()
     
     # Check for smart cleanup patterns (the important ones)
+    # NOTE: We intentionally removed the PID file check to always restart for proper process tracking
     smart_patterns = [
-        ('if self.rpc_process and pid == self.rpc_process.pid', 'Checks if PID is our process'),
-        ('if pid == saved_pid', 'Checks against saved PID file'),
+        ('if self.rpc_process and pid == self.rpc_process.pid', 'Checks if PID is our currently tracked process'),
         ('["lsof", "-ti"', 'Uses lsof to check port'),
         ('signal.SIGTERM', 'Graceful termination before kill'),
         ('ProcessLookupError', 'Handles already-dead processes'),
         ('self._cleanup_orphaned_rpc()', 'Uses smart cleanup in start_rpc'),
+        ('We always kill processes on our port', 'Documents why we always kill for clean restart'),
     ]
     
     all_found = True

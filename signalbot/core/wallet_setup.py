@@ -839,7 +839,15 @@ class WalletSetupManager:
             return False
     
     def _cleanup_orphaned_rpc(self):
-        """Kill only truly orphaned RPC processes (not on our port)."""
+        """Kill orphaned RPC processes on our port.
+        
+        We always kill processes on our port (even if they match our PID file) because:
+        1. We need a proper process handle (self.rpc_process) for lifecycle management
+        2. We can't reliably "attach" to an existing process in Python
+        3. Restarting ensures clean state and proper initialization
+        
+        Exception: If it's our currently tracked process (self.rpc_process), we keep it.
+        """
         
         try:
             # Check if something is already on our port
@@ -852,27 +860,14 @@ class WalletSetupManager:
             if result.stdout:
                 pid = int(result.stdout.strip())
                 
-                # Check if it's our tracked process
+                # Only exception: if it's our currently tracked process, keep it
                 if self.rpc_process and pid == self.rpc_process.pid:
-                    logger.debug(f"Port {self.rpc_port} in use by our RPC (PID {pid})")
+                    logger.debug(f"Port {self.rpc_port} in use by our tracked RPC (PID {pid})")
                     return
                 
-                # Check if PID matches our saved PID file
-                if self.rpc_pid_file and os.path.exists(self.rpc_pid_file):
-                    try:
-                        with open(self.rpc_pid_file, 'r') as f:
-                            saved_pid = int(f.read().strip())
-                            # Validate PID is reasonable (security check)
-                            if not (1 < saved_pid < 99999):
-                                logger.warning(f"Invalid PID in file: {saved_pid}")
-                            elif pid == saved_pid:
-                                logger.debug(f"Port {self.rpc_port} in use by our saved RPC (PID {pid})")
-                                return
-                    except (ValueError, IOError) as e:
-                        logger.debug(f"Could not read PID file: {e}")
-                
-                # It's an orphaned process on our port
-                logger.warning(f"⚠ Found orphaned RPC on port {self.rpc_port} (PID {pid}), killing...")
+                # For all other cases (including PIDs from old PID files), kill and restart
+                # This ensures we always have a proper process handle
+                logger.warning(f"⚠ Found RPC on port {self.rpc_port} (PID {pid}), killing for clean restart...")
                 
                 # First try graceful termination
                 try:
@@ -885,6 +880,7 @@ class WalletSetupManager:
                         # Process still exists, force kill
                         logger.warning(f"Process {pid} didn't terminate gracefully, force killing...")
                         os.kill(pid, signal.SIGKILL)
+                        time.sleep(1)  # Give it a moment to die
                     except ProcessLookupError:
                         # Process already terminated
                         logger.debug(f"Process {pid} terminated gracefully")
@@ -993,12 +989,14 @@ class WalletSetupManager:
         Returns:
             True if RPC started successfully
         """
-        # Kill only truly orphaned processes (not on our port)
+        # Clean up any processes on our port (even orphans from previous runs)
+        # This ensures we always get a fresh start with proper process tracking
         self._cleanup_orphaned_rpc()
         
+        # Double-check that cleanup worked - port should be free now
         if self.is_rpc_running():
-            logger.info(f"✅ Wallet RPC already running on port {self.rpc_port}")
-            return True
+            logger.error(f"❌ Port {self.rpc_port} still in use after cleanup!")
+            return False
         
         if not self.wallet_exists():
             logger.error("❌ Cannot start RPC: wallet file doesn't exist")
