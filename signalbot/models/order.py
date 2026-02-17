@@ -395,6 +395,9 @@ class OrderManager:
         Raises:
             ValueError: If tracking number is empty or order not found
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         # Validate tracking number
         if not new_tracking or len(new_tracking.strip()) == 0:
             raise ValueError("Tracking number cannot be empty")
@@ -411,8 +414,6 @@ class OrderManager:
         self.update_order(order)
         
         # Log the update
-        from ..utils.logger import get_logger
-        logger = get_logger(__name__)
         logger.info(f"Updated tracking for order {order_id}: {old_tracking} → {new_tracking}")
         
         # Notify customer if requested
@@ -441,6 +442,9 @@ class OrderManager:
         Raises:
             ValueError: If order not found, not shipped, or no tracking number
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         # Get order
         order = self.get_order(order_id)
         if not order:
@@ -455,14 +459,8 @@ class OrderManager:
         # Send notification
         try:
             signal_handler.send_shipping_notification(order.customer_signal_id, order.tracking_number)
-            
-            # Log the resend
-            from ..utils.logger import get_logger
-            logger = get_logger(__name__)
             logger.info(f"Resent tracking notification for order {order_id} to {order.customer_signal_id}")
         except Exception as e:
-            from ..utils.logger import get_logger
-            logger = get_logger(__name__)
             logger.error(f"Failed to resend tracking notification: {str(e)}")
             raise ShippingNotificationError(f"Failed to resend tracking: {str(e)}")
         
