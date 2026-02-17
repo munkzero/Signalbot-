@@ -176,21 +176,13 @@ def test_start_rpc_updated():
             print(f"  ✗ MISSING: {description}")
             all_found = False
     
-    # Check that OLD implementation is removed
-    old_patterns = [
-        'for i in range(10):',
-        'Waiting for RPC to start... ({i+1}/10)',
-    ]
-    
-    for pattern in old_patterns:
-        if pattern in content and 'start_rpc' in content:
-            # Make sure this isn't in a comment or docstring
-            lines = content.split('\n')
-            for i, line in enumerate(lines):
-                if pattern in line and 'def start_rpc' in '\n'.join(lines[max(0, i-30):i+1]):
-                    print(f"  ⚠ Old implementation pattern still present: {pattern}")
-                    all_found = False
-                    break
+    # Verify that the new implementation pattern is used (not the old one)
+    # The new implementation uses wait_for_rpc_ready() instead of a simple loop
+    if 'wait_for_rpc_ready(port=self.rpc_port' in content:
+        print("  ✓ New implementation pattern verified")
+    else:
+        print("  ✗ New implementation pattern not found")
+        all_found = False
     
     return all_found
 

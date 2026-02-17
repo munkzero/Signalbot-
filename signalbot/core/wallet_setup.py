@@ -859,10 +859,13 @@ class WalletSetupManager:
                 current_height = initial_height
             
             # If height is changing or very low, wallet is syncing
-            if current_height > initial_height or initial_height < 100:
+            # Note: 100 blocks is roughly 200 minutes of blockchain history
+            # A newly created wallet starts at 0, so < 100 indicates new/unsynced wallet
+            MIN_SYNCED_HEIGHT = 100
+            if current_height > initial_height or initial_height < MIN_SYNCED_HEIGHT:
                 logger.info(f"⏳ Wallet syncing (height: {current_height})")
-                logger.info(f"🔄 Starting background sync monitor...")
-                logger.info(f"   This may take 5-60 minutes depending on internet speed")
+                logger.info("🔄 Starting background sync monitor...")
+                logger.info("   This may take 5-60 minutes depending on internet speed")
                 
                 # Start sync monitor in background thread
                 sync_thread = threading.Thread(
