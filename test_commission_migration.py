@@ -44,9 +44,13 @@ def test_migration():
             )
         ''')
         
-        # Create other tables
-        for table in ['sellers', 'products', 'contacts', 'messages', 'payment_history', 'monero_nodes']:
-            cursor.execute(f'CREATE TABLE {table} (id INTEGER PRIMARY KEY)')
+        # Create other tables (using hardcoded names for safety)
+        cursor.execute('CREATE TABLE sellers (id INTEGER PRIMARY KEY)')
+        cursor.execute('CREATE TABLE products (id INTEGER PRIMARY KEY)')
+        cursor.execute('CREATE TABLE contacts (id INTEGER PRIMARY KEY)')
+        cursor.execute('CREATE TABLE messages (id INTEGER PRIMARY KEY)')
+        cursor.execute('CREATE TABLE payment_history (id INTEGER PRIMARY KEY)')
+        cursor.execute('CREATE TABLE monero_nodes (id INTEGER PRIMARY KEY)')
         conn.commit()
         
         cursor.execute("PRAGMA table_info(orders)")

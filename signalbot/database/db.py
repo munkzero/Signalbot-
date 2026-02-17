@@ -269,6 +269,7 @@ class DatabaseManager:
                     ))
                     if result.scalar() == 0:
                         print("🔄 Adding commission_paid column to orders table...")
+                        # SQLite stores BOOLEAN as INTEGER (0 or 1)
                         conn.execute(text('ALTER TABLE orders ADD COLUMN commission_paid BOOLEAN DEFAULT 0'))
                         migrations_applied.append("commission_paid")
                         print("✓ Added commission_paid column")
@@ -305,9 +306,8 @@ class DatabaseManager:
                 except Exception as e:
                     trans.rollback()
                     print(f"❌ Database migration failed: {str(e)}")
-                    print("\nPlease backup your database and try:")
-                    print(f"  cd ~/Desktop/Signalbot--main")
-                    print(f"  cp data/signal_shop.db data/signal_shop.db.backup")
+                    print("\nPlease backup your database before reporting this error:")
+                    print(f"  cp {DATABASE_FILE} {DATABASE_FILE}.backup")
                     print(f"\nThen report this error on GitHub.")
                     raise e
                 
