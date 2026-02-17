@@ -209,12 +209,16 @@ class WalletSetupManager:
                     address = line
                     break
             
-            # Log seed phrase clearly
+            # Display seed phrase to console ONLY (not to log files)
+            # User must copy this immediately - it's not stored anywhere
             if seed:
-                logger.warning("=" * 70)
-                logger.warning("🔐 SAVE YOUR SEED PHRASE:")
-                logger.warning(seed)
-                logger.warning("=" * 70)
+                # Use print to console, not logger (which may write to files)
+                print("=" * 70)
+                print("🔐 SAVE YOUR SEED PHRASE (NOT STORED ANYWHERE):")
+                print(seed)
+                print("=" * 70)
+                # Log a reminder without the actual seed
+                logger.warning("⚠️ IMPORTANT: Seed phrase displayed in console - save it now!")
             
             logger.info("✓ Wallet created successfully")
             if address:
@@ -239,8 +243,6 @@ class WalletSetupManager:
         
         except Exception as e:
             raise WalletCreationError(f"Unexpected error creating wallet: {str(e)}")
-            logger.error(f"Error creating wallet: {e}")
-            return False, None, None
     
     def create_wallet_with_seed(self) -> Tuple[bool, Optional[str], Optional[str]]:
         """
