@@ -526,6 +526,29 @@ If you encounter "No space left on device" errors:
 
 See [TEMP_DIRECTORY_MANAGEMENT.md](TEMP_DIRECTORY_MANAGEMENT.md) for more details on managing temp directory disk usage.
 
+### Getting Help
+
+If you need help debugging issues, use the comprehensive diagnostic tool:
+
+```bash
+./debug-report.sh > debug-report.txt
+```
+
+This generates a complete diagnostic report including:
+- System information (OS, Python, Java, Monero RPC, Signal-CLI versions)
+- Running processes (Python, Monero, Signal-CLI, cleanup daemon)
+- Port status (Monero RPC port 18083)
+- File status (wallet files, logs, configs, temp directory usage)
+- Log contents (last 100 lines of all logs)
+- Connectivity tests (Monero node, RPC server, Signal-CLI)
+- Recent errors from all logs
+- Environment checks (virtual environment, packages, config files)
+- Auto-detected issues
+
+Share the `debug-report.txt` file when asking for help on GitHub issues.
+
+**Privacy Notice:** The report may contain wallet addresses. Review before sharing publicly.
+
 ## Development
 
 ### Running in Development Mode
