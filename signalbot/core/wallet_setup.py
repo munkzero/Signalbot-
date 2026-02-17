@@ -64,7 +64,42 @@ def cleanup_zombie_rpc_processes():
         logger.warning(f"⚠ Could not cleanup zombie processes: {e}")
 
 
-def wait_for_rpc_ready(port=18083, max_wait=60, retry_interval=2):
+def get_current_blockchain_height(daemon_address: str, daemon_port: int) -> Optional[int]:
+    """
+    Get the current blockchain height from the Monero daemon.
+    
+    Args:
+        daemon_address: Daemon address
+        daemon_port: Daemon port
+        
+    Returns:
+        Current blockchain height or None if failed
+    """
+    try:
+        logger.debug(f"Getting blockchain height from {daemon_address}:{daemon_port}...")
+        response = requests.get(
+            f"http://{daemon_address}:{daemon_port}/get_height",
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            height = response.json().get("height")
+            if height:
+                logger.info(f"✓ Current blockchain height: {height:,}")
+                return height
+        
+        logger.warning(f"⚠ Failed to get blockchain height (status: {response.status_code})")
+        return None
+        
+    except requests.RequestException as e:
+        logger.warning(f"⚠ Could not reach daemon: {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"⚠ Error getting blockchain height: {e}")
+        return None
+
+
+def wait_for_rpc_ready(port=18083, max_wait=60, retry_interval=2, is_new_wallet=False):
     """
     Wait for wallet RPC to be ready to accept connections.
     
@@ -80,10 +115,16 @@ def wait_for_rpc_ready(port=18083, max_wait=60, retry_interval=2):
         port: RPC port to connect to
         max_wait: Maximum seconds to wait before giving up
         retry_interval: Seconds between connection attempts
+        is_new_wallet: If True, use extended timeout (180s) for initial sync
         
     Returns:
         True if RPC is ready, False if timeout
     """
+    # Use extended timeout for new wallets
+    if is_new_wallet:
+        max_wait = 180
+        logger.info(f"⏳ New wallet - initial sync may take 2-3 minutes...")
+    
     start_time = time.time()
     attempt = 0
     
@@ -322,6 +363,38 @@ def extract_seed_from_output(output: str) -> Optional[str]:
     return None
 
 
+def display_seed_phrase(seed: str):
+    """
+    Display seed phrase in a prominent formatted box.
+    
+    Args:
+        seed: 25-word seed phrase
+    """
+    # Split seed into words for better formatting
+    words = seed.split()
+    
+    # Format seed phrase into 3 lines of 8 words + 1 word on last line
+    line1 = " ".join(words[0:8])
+    line2 = " ".join(words[8:16])
+    line3 = " ".join(words[16:24])
+    line4 = words[24] if len(words) > 24 else ""
+    
+    # Print to console (not logger to avoid logging sensitive data)
+    print("")
+    print("╔" + "═" * 60 + "╗")
+    print("║  🔑 NEW WALLET CREATED - SAVE YOUR SEED PHRASE!" + " " * 10 + "║")
+    print("║" + " " * 60 + "║")
+    print("║  " + line1.ljust(58) + "║")
+    print("║  " + line2.ljust(58) + "║")
+    print("║  " + line3.ljust(58) + "║")
+    print("║  " + line4.ljust(58) + "║")
+    print("║" + " " * 60 + "║")
+    print("║  ⚠️  WRITE THIS DOWN! You cannot recover your funds" + " " * 6 + "║")
+    print("║     without this seed phrase!" + " " * 29 + "║")
+    print("╚" + "═" * 60 + "╝")
+    print("")
+
+
 class WalletSetupManager:
     """Manages Monero wallet creation and RPC lifecycle"""
     
@@ -358,6 +431,17 @@ class WalletSetupManager:
         # Ensure directory exists
         self.wallet_path.parent.mkdir(parents=True, exist_ok=True)
         
+        # Get current blockchain height for restore height
+        current_height = get_current_blockchain_height(self.daemon_address, self.daemon_port)
+        restore_height = None
+        
+        if current_height:
+            # Set restore height to current - 1000 to avoid scanning old blocks
+            restore_height = max(0, current_height - 1000)
+            logger.info(f"🔧 Creating new wallet with restore height {restore_height:,}...")
+        else:
+            logger.warning("⚠ Could not get blockchain height, wallet will sync from genesis")
+        
         try:
             # Create wallet using monero-wallet-cli
             cmd = [
@@ -365,10 +449,17 @@ class WalletSetupManager:
                 '--generate-new-wallet', str(self.wallet_path),
                 '--password', self.password,
                 '--mnemonic-language', 'English',
+            ]
+            
+            # Add restore height if available
+            if restore_height is not None:
+                cmd.extend(['--restore-height', str(restore_height)])
+            
+            cmd.extend([
                 '--command', 'seed',
                 '--command', 'address',
                 '--command', 'exit'
-            ]
+            ])
             
             # Log password handling for debugging
             logger.debug(f"Creating wallet with password: {'<empty>' if self.password == '' else '<set>'}")
@@ -400,16 +491,11 @@ class WalletSetupManager:
                     address = line
                     break
             
-            # Display seed phrase to console ONLY (not to log files)
-            # User must copy this immediately - it's not stored anywhere
+            # Display seed phrase in nice formatted box
             if seed:
-                # Use print to console, not logger (which may write to files)
-                print("=" * 70)
-                print("🔐 SAVE YOUR SEED PHRASE (NOT STORED ANYWHERE):")
-                print(seed)
-                print("=" * 70)
+                display_seed_phrase(seed)
                 # Log a reminder without the actual seed
-                logger.warning("⚠️ IMPORTANT: Seed phrase displayed in console - save it now!")
+                logger.warning("⚠️ IMPORTANT: Seed phrase displayed above - save it now!")
             
             logger.info("✓ Wallet created successfully")
             if address:
@@ -547,13 +633,14 @@ class WalletSetupManager:
             return False
     
     def start_rpc(self, daemon_address: Optional[str] = None, 
-                  daemon_port: Optional[int] = None) -> bool:
+                  daemon_port: Optional[int] = None, is_new_wallet: bool = False) -> bool:
         """
         Start monero-wallet-rpc process
         
         Args:
             daemon_address: Override default daemon address
             daemon_port: Override default daemon port
+            is_new_wallet: True if this is a newly created wallet (uses extended timeout)
             
         Returns:
             True if RPC started successfully
@@ -602,7 +689,8 @@ class WalletSetupManager:
             logger.info(f"Started RPC process with PID: {self.rpc_process.pid}")
             
             # Wait for RPC to be ready with improved retry logic
-            if not wait_for_rpc_ready(port=self.rpc_port, max_wait=60, retry_interval=2):
+            # Use extended timeout for new wallets
+            if not wait_for_rpc_ready(port=self.rpc_port, max_wait=60, retry_interval=2, is_new_wallet=is_new_wallet):
                 logger.error("❌ RPC process started but not responding")
                 logger.error("💡 Check if monero-wallet-rpc is installed: monero-wallet-rpc --version")
                 return False
@@ -785,14 +873,10 @@ class WalletSetupManager:
             logger.info("🔧 Creating new wallet...")
             try:
                 success, address, seed = self.create_wallet()
-                if seed:
-                    logger.warning("⚠️  SAVE YOUR SEED PHRASE!")
-                    logger.warning(f"   {seed}")
-                    logger.warning("   This is the ONLY way to recover your wallet!")
                 
-                # Start RPC after creation
+                # Start RPC after creation with extended timeout for new wallets
                 logger.info("🔌 Starting wallet RPC...")
-                if not self.start_rpc():
+                if not self.start_rpc(is_new_wallet=True):
                     logger.error("❌ Failed to start wallet RPC")
                     logger.info("="*60)
                     return False, None
