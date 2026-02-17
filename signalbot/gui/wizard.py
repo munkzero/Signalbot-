@@ -621,8 +621,8 @@ class WalletCreationPage(QWizardPage):
         # Store node config for later use
         wizard.node_config = node_config
         
-        # Generate unique wallet name
-        wallet_name = f"shop_wallet_{int(time.time())}"
+        # Use consistent wallet name (no random suffix)
+        wallet_name = "shop_wallet"
         
         # Start wallet creation in background
         self.worker = WalletCreationWorker(wallet_name, wallet_password, node_config)

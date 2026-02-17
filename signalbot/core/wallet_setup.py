@@ -15,6 +15,122 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class WalletCreationError(Exception):
+    """Raised when wallet creation or setup fails"""
+    pass
+
+
+def check_existing_wallet(wallet_path: str) -> bool:
+    """
+    Check if wallet files already exist
+    
+    Args:
+        wallet_path: Path to wallet file (without .keys extension)
+        
+    Returns:
+        True if wallet exists
+    """
+    keys_file = f"{wallet_path}.keys"
+    
+    if os.path.exists(keys_file):
+        logger.info(f"✓ Found existing wallet: {os.path.basename(wallet_path)}")
+        return True
+    
+    return False
+
+
+def validate_wallet_files(wallet_path: str) -> bool:
+    """
+    Validate that wallet has both required files:
+    - wallet_name.keys (private keys - CRITICAL)
+    - wallet_name (cache - can be rebuilt)
+    
+    Args:
+        wallet_path: Path to wallet file (without .keys extension)
+        
+    Returns:
+        True if wallet files are valid
+    """
+    keys_file = f"{wallet_path}.keys"
+    cache_file = wallet_path
+    
+    # Keys file is CRITICAL
+    if not os.path.exists(keys_file):
+        logger.error(f"❌ Missing critical file: {keys_file}")
+        return False
+    
+    # Cache file can be rebuilt, just warn
+    if not os.path.exists(cache_file):
+        logger.warning(f"⚠ Missing cache file: {cache_file} (will be rebuilt on sync)")
+    
+    logger.info(f"✓ Wallet files validated: {os.path.basename(wallet_path)}")
+    return True
+
+
+def cleanup_orphaned_wallets(wallet_dir: str):
+    """
+    Remove orphaned wallet cache files (files without matching .keys)
+    
+    Example: shop_wallet_1770875498 exists but shop_wallet_1770875498.keys doesn't
+    
+    Args:
+        wallet_dir: Directory containing wallet files
+    """
+    if not os.path.exists(wallet_dir):
+        return
+    
+    logger.info("Checking for orphaned wallet files...")
+    
+    cleaned = []
+    
+    for filename in os.listdir(wallet_dir):
+        filepath = os.path.join(wallet_dir, filename)
+        
+        # Skip directories, .keys files, backups
+        if os.path.isdir(filepath) or filename.endswith(".keys") or "backup" in filename:
+            continue
+        
+        # Check if this looks like a wallet file
+        if filename.startswith("shop_wallet"):
+            keys_file = f"{filepath}.keys"
+            
+            if not os.path.exists(keys_file):
+                logger.warning(f"⚠ Found orphaned wallet cache: {filename}")
+                logger.info(f"🗑 Removing orphaned file (no .keys file exists)")
+                
+                try:
+                    os.remove(filepath)
+                    cleaned.append(filename)
+                except Exception as e:
+                    logger.error(f"Failed to remove {filename}: {e}")
+    
+    if cleaned:
+        logger.info(f"✓ Cleaned up {len(cleaned)} orphaned wallet file(s)")
+    else:
+        logger.info("✓ No orphaned wallet files found")
+
+
+def extract_seed_from_output(output: str) -> Optional[str]:
+    """
+    Extract seed phrase from monero-wallet-cli output
+    
+    Args:
+        output: stdout from wallet creation command
+        
+    Returns:
+        Seed phrase (25 words) or None if not found
+    """
+    if 'seed' in output.lower():
+        lines = output.split('\n')
+        for i, line in enumerate(lines):
+            if 'seed' in line.lower() and i + 1 < len(lines):
+                # Seed is usually on next line or same line
+                potential_seed = lines[i + 1].strip()
+                if len(potential_seed.split()) == 25:
+                    return potential_seed
+    return None
+
+
 class WalletSetupManager:
     """Manages Monero wallet creation and RPC lifecycle"""
     
@@ -34,16 +150,19 @@ class WalletSetupManager:
     
     def create_wallet(self) -> Tuple[bool, Optional[str], Optional[str]]:
         """
-        Create a new Monero wallet
+        Create a new Monero wallet with proper error handling
         
         Returns:
             Tuple of (success, wallet_address, seed_phrase)
+            
+        Raises:
+            WalletCreationError: If wallet creation fails
         """
         if self.wallet_exists():
             logger.info(f"Wallet already exists at {self.wallet_path}")
             return True, None, None
         
-        logger.info(f"Creating new wallet at {self.wallet_path}")
+        logger.info(f"Creating wallet: {self.wallet_path}")
         
         # Ensure directory exists
         self.wallet_path.parent.mkdir(parents=True, exist_ok=True)
@@ -74,24 +193,14 @@ class WalletSetupManager:
             )
             
             if result.returncode != 0:
-                logger.error(f"Failed to create wallet: {result.stderr}")
-                return False, None, None
+                # Capture actual error
+                error_msg = result.stderr.strip() or result.stdout.strip()
+                raise WalletCreationError(f"Wallet creation failed: {error_msg}")
             
-            # Parse output for seed and address
+            # Parse output for seed and address using helper function
             output = result.stdout
-            seed = None
+            seed = extract_seed_from_output(output)
             address = None
-            
-            # Extract seed (25 words)
-            if 'seed' in output.lower():
-                lines = output.split('\n')
-                for i, line in enumerate(lines):
-                    if 'seed' in line.lower() and i + 1 < len(lines):
-                        # Seed is usually on next line or same line
-                        potential_seed = lines[i + 1].strip()
-                        if len(potential_seed.split()) == 25:
-                            seed = potential_seed
-                            break
             
             # Extract address (starts with 4)
             for line in output.split('\n'):
@@ -100,18 +209,36 @@ class WalletSetupManager:
                     address = line
                     break
             
-            logger.info(f"✅ Wallet created successfully!")
+            # Log seed phrase clearly
+            if seed:
+                logger.warning("=" * 70)
+                logger.warning("🔐 SAVE YOUR SEED PHRASE:")
+                logger.warning(seed)
+                logger.warning("=" * 70)
+            
+            logger.info("✓ Wallet created successfully")
             if address:
                 logger.info(f"   Address: {address[:20]}...{address[-10:]}")
-            if seed:
-                logger.info(f"   Seed: {seed[:30]}... (SAVE THIS!)")
             
             return True, address, seed
             
+        except FileNotFoundError:
+            raise WalletCreationError(
+                "monero-wallet-cli not found!\n"
+                "Install Monero CLI tools:\n"
+                "  Ubuntu/Debian: sudo apt install monero\n"
+                "  Download: https://www.getmonero.org/downloads/"
+            )
+        
         except subprocess.TimeoutExpired:
-            logger.error("Wallet creation timed out")
-            return False, None, None
+            raise WalletCreationError("Wallet creation timed out (30s)")
+        
+        except WalletCreationError:
+            # Re-raise WalletCreationError as-is
+            raise
+        
         except Exception as e:
+            raise WalletCreationError(f"Unexpected error creating wallet: {str(e)}")
             logger.error(f"Error creating wallet: {e}")
             return False, None, None
     
@@ -416,6 +543,7 @@ class WalletSetupManager:
     def setup_wallet(self, create_if_missing: bool = True) -> Tuple[bool, Optional[str]]:
         """
         Complete wallet setup: create if needed, start RPC
+        Uses new validation and cleanup functions
         
         Args:
             create_if_missing: Auto-create wallet if it doesn't exist
@@ -427,34 +555,57 @@ class WalletSetupManager:
         logger.info("WALLET SETUP")
         logger.info("="*60)
         
-        # Step 1: Check/create wallet
-        if not self.wallet_exists():
-            if create_if_missing:
-                logger.info("📝 Wallet doesn't exist, creating new wallet...")
-                success, address, seed = self.create_wallet()
-                if not success:
-                    logger.error("❌ Failed to create wallet")
+        wallet_path_str = str(self.wallet_path)
+        
+        # Cleanup orphaned files first
+        wallet_dir = str(self.wallet_path.parent)
+        cleanup_orphaned_wallets(wallet_dir)
+        
+        # Check if wallet already exists
+        if check_existing_wallet(wallet_path_str):
+            logger.info("✓ Using existing wallet")
+            
+            # Validate wallet files
+            if validate_wallet_files(wallet_path_str):
+                # Step 2: Start RPC
+                logger.info("🔌 Starting wallet RPC...")
+                if self.start_rpc():
+                    logger.info("✅ Wallet RPC connected!")
+                    logger.info("="*60)
+                    return True, None
+                else:
+                    logger.error("❌ Failed to start wallet RPC")
+                    logger.info("="*60)
                     return False, None
-                logger.info("✅ Wallet created successfully!")
+            else:
+                logger.warning("⚠ Existing wallet files incomplete, will recreate")
+        
+        # Create new wallet
+        if create_if_missing:
+            logger.info("🔧 Creating new wallet...")
+            try:
+                success, address, seed = self.create_wallet()
                 if seed:
                     logger.warning("⚠️  SAVE YOUR SEED PHRASE!")
                     logger.warning(f"   {seed}")
                     logger.warning("   This is the ONLY way to recover your wallet!")
-                return True, seed
-            else:
-                logger.error("❌ Wallet doesn't exist and auto-create disabled")
+                
+                # Start RPC after creation
+                logger.info("🔌 Starting wallet RPC...")
+                if self.start_rpc():
+                    logger.info("✅ Wallet RPC connected!")
+                    logger.info("="*60)
+                    return True, seed
+                else:
+                    logger.error("❌ Failed to start wallet RPC")
+                    logger.info("="*60)
+                    return False, None
+            except WalletCreationError as e:
+                logger.error(f"❌ {e}")
+                logger.info("="*60)
                 return False, None
         else:
-            logger.info("✅ Wallet file exists")
-        
-        # Step 2: Start RPC
-        logger.info("🔌 Starting wallet RPC...")
-        if self.start_rpc():
-            logger.info("✅ Wallet RPC connected!")
-            logger.info("="*60)
-            return True, None
-        else:
-            logger.error("❌ Failed to start wallet RPC")
+            logger.error("❌ Wallet doesn't exist and auto-create disabled")
             logger.info("="*60)
             return False, None
 
@@ -488,3 +639,62 @@ def test_node_connectivity(nodes: List[Tuple[str, int]]) -> List[Tuple[str, int]
             logger.warning(f"❌ Node test failed: {address}:{port} - {e}")
     
     return working
+
+
+def initialize_wallet_system(wallet_path: str, daemon_address: str, daemon_port: int, 
+                            rpc_port: int = 18082, password: str = "") -> Optional[WalletSetupManager]:
+    """
+    Initialize wallet system with graceful error handling.
+    Returns WalletSetupManager instance or None if setup failed.
+    
+    This allows the bot to start in limited mode if wallet setup fails.
+    
+    Args:
+        wallet_path: Path to wallet file
+        daemon_address: Monero daemon address
+        daemon_port: Monero daemon port
+        rpc_port: Wallet RPC port
+        password: Wallet password
+        
+    Returns:
+        WalletSetupManager instance or None if setup failed
+    """
+    try:
+        # Create wallet setup manager
+        setup = WalletSetupManager(
+            wallet_path=wallet_path,
+            daemon_address=daemon_address,
+            daemon_port=daemon_port,
+            rpc_port=rpc_port,
+            password=password
+        )
+        
+        # Setup wallet (with cleanup and validation)
+        success, seed = setup.setup_wallet(create_if_missing=True)
+        
+        if success:
+            logger.info("✓ Wallet system initialized successfully")
+            return setup
+        else:
+            logger.error("❌ Wallet setup failed")
+            return None
+        
+    except WalletCreationError as e:
+        logger.error("=" * 70)
+        logger.error(f"❌ Wallet setup failed: {e}")
+        logger.error("=" * 70)
+        logger.error("⚠ Bot starting in LIMITED MODE")
+        logger.error("⚠ Payment features will be DISABLED")
+        logger.error("⚠ Signal messaging will still work")
+        logger.error("=" * 70)
+        logger.error("📋 To fix:")
+        logger.error("   1. Install monero-wallet-cli")
+        logger.error("   2. Check wallet file permissions")
+        logger.error("   3. Check disk space")
+        logger.error("=" * 70)
+        return None
+        
+    except Exception as e:
+        logger.error(f"❌ Unexpected wallet error: {e}")
+        logger.error("⚠ Bot starting in LIMITED MODE")
+        return None
