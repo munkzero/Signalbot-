@@ -2347,9 +2347,11 @@ class OrdersTab(QWidget):
     # Display constants
     TXID_TRUNCATE_LENGTH = 20  # Minimum length before truncating transaction IDs
     
-    def __init__(self, order_manager: OrderManager):
+    def __init__(self, order_manager: OrderManager, signal_handler=None):
         super().__init__()
         self.order_manager = order_manager
+        self.signal_handler = signal_handler
+        self.selected_order = None  # Currently selected order for details view
         
         layout = QVBoxLayout()
         
@@ -2374,6 +2376,9 @@ class OrdersTab(QWidget):
         
         layout.addLayout(button_layout)
         
+        # Create splitter for table and details
+        splitter = QSplitter(Qt.Vertical)
+        
         # Orders table
         self.table = QTableWidget()
         self.table.setColumnCount(9)
@@ -2391,7 +2396,20 @@ class OrdersTab(QWidget):
         self.table.setColumnWidth(5, 120)  # TX ID
         self.table.setColumnWidth(6, 100)  # Order Status
         self.table.setColumnWidth(7, 140)  # Date
-        layout.addWidget(self.table)
+        self.table.itemSelectionChanged.connect(self.on_order_selected)
+        splitter.addWidget(self.table)
+        
+        # Order details panel
+        self.details_widget = QWidget()
+        self.details_layout = QVBoxLayout()
+        self.details_widget.setLayout(self.details_layout)
+        self.details_widget.setVisible(False)  # Hidden by default
+        splitter.addWidget(self.details_widget)
+        
+        # Set splitter sizes (table takes 60%, details 40%)
+        splitter.setSizes([600, 400])
+        
+        layout.addWidget(splitter)
         
         # Connect signals
         refresh_btn.clicked.connect(self.load_orders)
@@ -2482,6 +2500,204 @@ class OrdersTab(QWidget):
                 f"Deleted {deleted_count} old order(s)"
             )
             self.load_orders()
+    
+    def on_order_selected(self):
+        """Handle order selection in table"""
+        selected_rows = self.table.selectedIndexes()
+        if not selected_rows:
+            self.details_widget.setVisible(False)
+            return
+        
+        row = selected_rows[0].row()
+        order_id = self.table.item(row, 0).text()
+        
+        # Get order details
+        order = self.order_manager.get_order(order_id)
+        if order:
+            self.selected_order = order
+            self.show_order_details(order)
+    
+    def show_order_details(self, order):
+        """Display order details in the details panel"""
+        # Clear existing layout
+        while self.details_layout.count():
+            child = self.details_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        
+        # Order details header
+        header = QLabel(f"Order Details: {order.order_id}")
+        header.setFont(QFont("Arial", 14, QFont.Bold))
+        self.details_layout.addWidget(header)
+        
+        # Order information
+        info_widget = QWidget()
+        info_layout = QGridLayout()
+        
+        info_layout.addWidget(QLabel("<b>Product:</b>"), 0, 0)
+        info_layout.addWidget(QLabel(order.product_name), 0, 1)
+        
+        info_layout.addWidget(QLabel("<b>Quantity:</b>"), 1, 0)
+        info_layout.addWidget(QLabel(str(order.quantity)), 1, 1)
+        
+        info_layout.addWidget(QLabel("<b>Customer:</b>"), 2, 0)
+        info_layout.addWidget(QLabel(order.customer_signal_id), 2, 1)
+        
+        info_layout.addWidget(QLabel("<b>Paid:</b>"), 3, 0)
+        info_layout.addWidget(QLabel(f"{order.amount_paid:.6f} XMR"), 3, 1)
+        
+        info_layout.addWidget(QLabel("<b>Payment Status:</b>"), 4, 0)
+        info_layout.addWidget(QLabel(order.payment_status), 4, 1)
+        
+        info_layout.addWidget(QLabel("<b>Order Status:</b>"), 5, 0)
+        info_layout.addWidget(QLabel(order.order_status), 5, 1)
+        
+        info_widget.setLayout(info_layout)
+        self.details_layout.addWidget(info_widget)
+        
+        # Shipping section based on order status
+        if order.order_status == "shipped":
+            # Show shipped order details
+            self.show_shipped_details(order)
+        elif order.payment_status == "paid":
+            # Show shipping input for confirmed orders
+            self.show_shipping_input(order)
+        
+        self.details_layout.addStretch()
+        self.details_widget.setVisible(True)
+    
+    def show_shipping_input(self, order):
+        """Show tracking input and Mark as Shipped button"""
+        shipping_group = QGroupBox("Ship Order")
+        shipping_layout = QVBoxLayout()
+        
+        # Tracking number input
+        tracking_layout = QHBoxLayout()
+        tracking_layout.addWidget(QLabel("Tracking Number:"))
+        self.tracking_input = QLineEdit()
+        self.tracking_input.setPlaceholderText("Enter tracking number")
+        tracking_layout.addWidget(self.tracking_input)
+        shipping_layout.addLayout(tracking_layout)
+        
+        # Ship button
+        ship_btn = QPushButton("Mark as Shipped")
+        ship_btn.clicked.connect(self.on_mark_shipped)
+        shipping_layout.addWidget(ship_btn)
+        
+        shipping_group.setLayout(shipping_layout)
+        self.details_layout.addWidget(shipping_group)
+    
+    def show_shipped_details(self, order):
+        """Show shipped order details with resend button"""
+        shipping_group = QGroupBox("Shipping Information")
+        shipping_layout = QVBoxLayout()
+        
+        # Tracking number (read-only)
+        tracking_layout = QHBoxLayout()
+        tracking_layout.addWidget(QLabel("<b>Tracking:</b>"))
+        tracking_layout.addWidget(QLabel(order.tracking_number or "N/A"))
+        shipping_layout.addLayout(tracking_layout)
+        
+        # Shipped timestamp
+        if order.shipped_at:
+            shipped_layout = QHBoxLayout()
+            shipped_layout.addWidget(QLabel("<b>Shipped:</b>"))
+            shipped_date = order.shipped_at.strftime("%b %d, %Y %H:%M")
+            shipped_layout.addWidget(QLabel(shipped_date))
+            shipping_layout.addLayout(shipped_layout)
+        
+        # Resend button
+        resend_btn = QPushButton("Resend Tracking Info")
+        resend_btn.clicked.connect(self.on_resend_tracking)
+        shipping_layout.addWidget(resend_btn)
+        
+        shipping_group.setLayout(shipping_layout)
+        self.details_layout.addWidget(shipping_group)
+    
+    def on_mark_shipped(self):
+        """Handle Mark as Shipped button click"""
+        if not self.selected_order:
+            return
+        
+        tracking_number = self.tracking_input.text().strip()
+        
+        if not tracking_number:
+            QMessageBox.warning(self, "Error", "Please enter a tracking number")
+            return
+        
+        if not self.signal_handler:
+            QMessageBox.critical(self, "Error", "Signal handler not available")
+            return
+        
+        try:
+            # Mark order as shipped
+            self.order_manager.mark_order_shipped(
+                self.selected_order.order_id,
+                tracking_number,
+                self.signal_handler
+            )
+            
+            QMessageBox.information(
+                self,
+                "Success",
+                "✅ Order shipped and customer notified!"
+            )
+            
+            # Refresh order view
+            self.load_orders()
+            
+            # Update details view
+            updated_order = self.order_manager.get_order(self.selected_order.order_id)
+            if updated_order:
+                self.selected_order = updated_order
+                self.show_order_details(updated_order)
+                
+        except Exception as e:
+            # Import custom exception
+            from ..models.order import ShippingNotificationError
+            
+            # Check if it's a notification failure (order was marked shipped)
+            if isinstance(e, ShippingNotificationError):
+                QMessageBox.warning(
+                    self,
+                    "Warning",
+                    "⚠️ Order marked as shipped but notification failed. Use 'Resend' button to retry."
+                )
+                # Still refresh the view since order was marked shipped
+                self.load_orders()
+                updated_order = self.order_manager.get_order(self.selected_order.order_id)
+                if updated_order:
+                    self.selected_order = updated_order
+                    self.show_order_details(updated_order)
+            else:
+                QMessageBox.critical(self, "Error", f"Failed to ship order: {str(e)}")
+    
+    def on_resend_tracking(self):
+        """Handle Resend Tracking Info button click"""
+        if not self.selected_order or not self.selected_order.tracking_number:
+            return
+        
+        if not self.signal_handler:
+            QMessageBox.critical(self, "Error", "Signal handler not available")
+            return
+        
+        try:
+            self.signal_handler.send_shipping_notification(
+                self.selected_order.customer_signal_id,
+                self.selected_order.tracking_number
+            )
+            
+            QMessageBox.information(
+                self,
+                "Success",
+                "✅ Tracking information resent to customer!"
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to send notification: {str(e)}"
+            )
 
 
 class DeleteOldOrdersDialog(QDialog):
@@ -5196,7 +5412,7 @@ class DashboardWindow(QMainWindow):
         # Add tabs
         tabs.addTab(WalletTab(self.wallet, self.db_manager, self.seller_manager), "💰 Wallet")
         tabs.addTab(ProductsTab(self.product_manager), "Products")
-        tabs.addTab(OrdersTab(self.order_manager), "Orders")
+        tabs.addTab(OrdersTab(self.order_manager, self.signal_handler), "Orders")
         tabs.addTab(MessagesTab(self.signal_handler, self.contact_manager, self.message_manager, self.seller_manager, self.product_manager), "Messages")
         tabs.addTab(ContactsTab(self.contact_manager, self.message_manager, self.signal_handler), "Contacts")
         tabs.addTab(SettingsTab(self.seller_manager, self.signal_handler), "Settings")
