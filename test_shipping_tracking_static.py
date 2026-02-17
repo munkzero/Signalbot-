@@ -169,7 +169,7 @@ def test_gui_orders_tab():
         'Resend button': '"Resend Tracking Info"' in content,
         'Calls mark_order_shipped': 'self.order_manager.mark_order_shipped(' in content,
         'Shows success message': '"✅ Order shipped and customer notified!"' in content,
-        'Handles notification failure': '"notification failed"' in content.lower()
+        'Handles notification failure': 'ShippingNotificationError' in content or 'isinstance(e,' in content
     }
     
     print("\nChecking OrdersTab class...")

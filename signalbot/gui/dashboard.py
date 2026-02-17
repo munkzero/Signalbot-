@@ -2653,8 +2653,11 @@ class OrdersTab(QWidget):
                 self.show_order_details(updated_order)
                 
         except Exception as e:
-            error_msg = str(e)
-            if "notification failed" in error_msg.lower():
+            # Import custom exception
+            from ..models.order import ShippingNotificationError
+            
+            # Check if it's a notification failure (order was marked shipped)
+            if isinstance(e, ShippingNotificationError):
                 QMessageBox.warning(
                     self,
                     "Warning",
@@ -2667,7 +2670,7 @@ class OrdersTab(QWidget):
                     self.selected_order = updated_order
                     self.show_order_details(updated_order)
             else:
-                QMessageBox.critical(self, "Error", f"Failed to ship order: {error_msg}")
+                QMessageBox.critical(self, "Error", f"Failed to ship order: {str(e)}")
     
     def on_resend_tracking(self):
         """Handle Resend Tracking Info button click"""

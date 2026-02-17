@@ -9,6 +9,12 @@ from ..database.db import Order as OrderModel, DatabaseManager
 from ..config.settings import ORDER_EXPIRATION_MINUTES
 
 
+class ShippingNotificationError(Exception):
+    """Raised when shipping notification fails to send"""
+    pass
+
+
+
 class Order:
     """Order entity with encryption support"""
     
@@ -368,9 +374,8 @@ class OrderManager:
         try:
             signal_handler.send_shipping_notification(order.customer_signal_id, tracking_number)
         except Exception as e:
-            # Log error but don't fail the operation
-            print(f"⚠️ Warning: Order marked as shipped but notification failed: {str(e)}")
-            raise Exception(f"Order marked as shipped but notification failed: {str(e)}")
+            # Raise custom exception for better error handling in GUI
+            raise ShippingNotificationError(f"Order marked as shipped but notification failed: {str(e)}")
         
         return order
     
