@@ -5,11 +5,7 @@
 # Get the script's directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Color codes for terminal output (optional)
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+
 
 # Header
 echo "========================================"
@@ -82,7 +78,7 @@ fi
 echo ""
 echo "Data directory:"
 if [ -d "$SCRIPT_DIR/data/" ]; then
-    find "$SCRIPT_DIR/data/" -type f -name "*.keys" -o -name "*.db" -o -name "wallet*" 2>/dev/null | while read -r file; do
+    find "$SCRIPT_DIR/data/" -type f \( -name "*.keys" -o -name "*.db" -o -name "wallet*" \) 2>/dev/null | while read -r file; do
         ls -lh "$file" 2>/dev/null
     done || echo "No data files found"
 else
@@ -137,7 +133,7 @@ fi
 echo ""
 
 echo "### Other Log Files"
-find "$SCRIPT_DIR" -maxdepth 2 -name "*.log" -type f ! -path "*/data/wallet/*" ! -path "*/logs/cleanup.log" 2>/dev/null | while read -r logfile; do
+find "$SCRIPT_DIR" -maxdepth 2 -name "*.log" -type f ! -path "$SCRIPT_DIR/data/wallet/*" ! -path "$SCRIPT_DIR/logs/cleanup.log" 2>/dev/null | while read -r logfile; do
     echo "#### $logfile (last 50 lines)"
     tail -50 "$logfile" 2>/dev/null || echo "Cannot read log file"
     echo ""
@@ -217,7 +213,7 @@ fi
 echo ""
 echo "Config file (.env): $([ -f "$SCRIPT_DIR/.env" ] && echo 'Yes' || echo 'No')"
 if [ -f "$SCRIPT_DIR/.env" ]; then
-    echo "  Size: $(ls -lh "$SCRIPT_DIR/.env" 2>/dev/null | awk '{print $5}')"
+    echo "  Size: $(du -h "$SCRIPT_DIR/.env" 2>/dev/null | cut -f1)"
 fi
 echo ""
 echo "Python packages:"
@@ -230,7 +226,7 @@ echo ""
 echo "Requirements file:"
 if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
     echo "✓ requirements.txt exists"
-    wc -l "$SCRIPT_DIR/requirements.txt" 2>/dev/null
+    echo "  Lines: $(wc -l < "$SCRIPT_DIR/requirements.txt" 2>/dev/null)"
 else
     echo "✗ requirements.txt not found"
 fi
