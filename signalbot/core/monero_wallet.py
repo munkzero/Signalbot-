@@ -60,7 +60,8 @@ class InHouseWallet:
         self.use_ssl = use_ssl
         self.wallet = None
         self.rpc_process = None
-        self.rpc_port = 18082  # Default wallet RPC port
+        self.rpc_port = 18083  # Default wallet RPC port (MUST match wallet_setup.py)
+        self._connected = False  # Track wallet connection status
         
         # Auto-setup manager for wallet creation and RPC management
         self.setup_manager = WalletSetupManager(
@@ -228,6 +229,78 @@ class InHouseWallet:
             except Exception:
                 return None
         return None
+    
+    def is_connected(self) -> bool:
+        """
+        Check if wallet object is connected to RPC.
+        
+        Returns:
+            True if wallet is connected and responsive
+        """
+        # First check if wallet object exists
+        if not self.wallet:
+            # Check if setup_manager has wallet object
+            if hasattr(self.setup_manager, 'wallet') and self.setup_manager.wallet:
+                # Sync wallet object from setup_manager
+                self.wallet = self.setup_manager.wallet
+                logger.debug("✓ Synced wallet object from setup_manager")
+            else:
+                return False
+        
+        try:
+            # Test connection by getting address
+            self.wallet.address()
+            self._connected = True
+            return True
+        except Exception as e:
+            logger.debug(f"Wallet not connected: {e}")
+            self._connected = False
+            return False
+    
+    def address(self, account: int = 0) -> Optional[str]:
+        """
+        Get primary address for account (safe method with connection check).
+        
+        Args:
+            account: Account index (default 0)
+            
+        Returns:
+            Primary address or None if wallet not connected
+        """
+        if not self.is_connected():
+            logger.error("Wallet not connected - cannot get address")
+            return None
+        
+        try:
+            return str(self.wallet.address(account=account))
+        except Exception as e:
+            logger.error(f"Failed to get address: {e}")
+            return None
+    
+    def new_address(self, account: int = 0, label: str = "") -> Optional[str]:
+        """
+        Generate new subaddress (safe method with connection check).
+        
+        Args:
+            account: Account index (default 0)
+            label: Optional label for the address
+            
+        Returns:
+            New subaddress or None if failed
+            
+        Raises:
+            Exception: If wallet not connected
+        """
+        if not self.is_connected():
+            raise Exception("Wallet not connected")
+        
+        try:
+            addr = self.wallet.new_address(account=account, label=label)
+            logger.info(f"✓ Generated new subaddress: {addr}")
+            return str(addr)
+        except Exception as e:
+            logger.error(f"Failed to generate subaddress: {e}")
+            raise
     
     def get_address(self, account_index: int = 0) -> str:
         """
@@ -492,6 +565,12 @@ class InHouseWallet:
         if success and self.setup_manager.rpc_process:
             self.rpc_process = self.setup_manager.rpc_process
             logger.debug(f"✓ Synced RPC process reference (PID: {self.rpc_process.pid})")
+        
+        # CRITICAL: Sync the wallet object from setup_manager
+        # This ensures wallet methods can access the connected wallet
+        if success and hasattr(self.setup_manager, 'wallet') and self.setup_manager.wallet:
+            self.wallet = self.setup_manager.wallet
+            logger.debug(f"✓ Synced wallet object from setup_manager")
         
         if success and seed:
             # New wallet created - store seed for later retrieval
