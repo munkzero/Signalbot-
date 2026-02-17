@@ -9,6 +9,44 @@ Confirms that InHouseWallet.auto_setup_wallet() properly uses all the improvemen
 
 import os
 import sys
+from pathlib import Path
+
+# Get the repository root directory
+REPO_ROOT = Path(__file__).parent.absolute()
+
+def extract_method_content(file_content, method_name, max_lines=200):
+    """
+    Extract method content from file content.
+    Returns content up to max_lines or next method definition at same indentation.
+    
+    Args:
+        file_content: Full file content as string
+        method_name: Method name to search for (e.g., 'def setup_wallet(')
+        max_lines: Maximum number of lines to extract
+        
+    Returns:
+        str: Method content or empty string if not found
+    """
+    start_idx = file_content.find(method_name)
+    if start_idx < 0:
+        return ""
+    
+    # Get content starting from method definition
+    lines = file_content[start_idx:].split('\n')
+    
+    # Find the indentation level of the method
+    method_line = lines[0]
+    method_indent = len(method_line) - len(method_line.lstrip())
+    
+    # Extract until we find another method at same indentation or max_lines
+    extracted_lines = [lines[0]]
+    for i, line in enumerate(lines[1:max_lines], 1):
+        # Stop if we find another method definition at same indentation
+        if line.strip().startswith('def ') and not line.startswith(' ' * (method_indent + 1)):
+            break
+        extracted_lines.append(line)
+    
+    return '\n'.join(extracted_lines)
 
 # Verify the integration by checking source code
 def verify_integration():
@@ -20,7 +58,8 @@ def verify_integration():
     
     # Test 1: Check that auto_setup_wallet calls setup_manager.setup_wallet
     print("\n[Test 1] Verifying InHouseWallet.auto_setup_wallet() implementation...")
-    with open('signalbot/core/monero_wallet.py', 'r') as f:
+    monero_wallet_path = REPO_ROOT / 'signalbot' / 'core' / 'monero_wallet.py'
+    with open(monero_wallet_path, 'r') as f:
         content = f.read()
         if 'self.setup_manager.setup_wallet(create_if_missing=create_if_missing)' in content:
             print("  ✓ auto_setup_wallet() calls self.setup_manager.setup_wallet()")
@@ -31,62 +70,44 @@ def verify_integration():
     
     # Test 2: Check that setup_wallet calls cleanup_zombie_rpc_processes
     print("\n[Test 2] Verifying WalletSetupManager.setup_wallet() calls cleanup...")
-    with open('signalbot/core/wallet_setup.py', 'r') as f:
+    wallet_setup_path = REPO_ROOT / 'signalbot' / 'core' / 'wallet_setup.py'
+    with open(wallet_setup_path, 'r') as f:
         content = f.read()
-        # Find the setup_wallet method
-        setup_wallet_start = content.find('def setup_wallet(')
-        if setup_wallet_start > 0:
-            # Get the method content (approximate - next 2000 chars)
-            method_content = content[setup_wallet_start:setup_wallet_start+2000]
-            if 'cleanup_zombie_rpc_processes()' in method_content:
-                print("  ✓ setup_wallet() calls cleanup_zombie_rpc_processes()")
-                test_results.append(True)
-            else:
-                print("  ❌ setup_wallet() does NOT call cleanup_zombie_rpc_processes()")
-                test_results.append(False)
+        method_content = extract_method_content(content, 'def setup_wallet(')
+        if method_content and 'cleanup_zombie_rpc_processes()' in method_content:
+            print("  ✓ setup_wallet() calls cleanup_zombie_rpc_processes()")
+            test_results.append(True)
         else:
-            print("  ❌ Could not find setup_wallet() method")
+            print("  ❌ setup_wallet() does NOT call cleanup_zombie_rpc_processes()")
             test_results.append(False)
     
     # Test 3: Check that start_rpc calls wait_for_rpc_ready
     print("\n[Test 3] Verifying WalletSetupManager.start_rpc() calls wait_for_rpc_ready...")
-    with open('signalbot/core/wallet_setup.py', 'r') as f:
+    with open(wallet_setup_path, 'r') as f:
         content = f.read()
-        # Find the start_rpc method
-        start_rpc_start = content.find('def start_rpc(')
-        if start_rpc_start > 0:
-            # Get the method content (approximate - next 3000 chars to be safe)
-            method_content = content[start_rpc_start:start_rpc_start+3000]
-            if 'wait_for_rpc_ready(' in method_content:
-                print("  ✓ start_rpc() calls wait_for_rpc_ready()")
-                test_results.append(True)
-            else:
-                print("  ❌ start_rpc() does NOT call wait_for_rpc_ready()")
-                test_results.append(False)
+        method_content = extract_method_content(content, 'def start_rpc(')
+        if method_content and 'wait_for_rpc_ready(' in method_content:
+            print("  ✓ start_rpc() calls wait_for_rpc_ready()")
+            test_results.append(True)
         else:
-            print("  ❌ Could not find start_rpc() method")
+            print("  ❌ start_rpc() does NOT call wait_for_rpc_ready()")
             test_results.append(False)
     
     # Test 4: Check that setup_wallet calls _check_and_monitor_sync
     print("\n[Test 4] Verifying WalletSetupManager.setup_wallet() calls sync monitoring...")
-    with open('signalbot/core/wallet_setup.py', 'r') as f:
+    with open(wallet_setup_path, 'r') as f:
         content = f.read()
-        setup_wallet_start = content.find('def setup_wallet(')
-        if setup_wallet_start > 0:
-            method_content = content[setup_wallet_start:setup_wallet_start+3000]
-            if '_check_and_monitor_sync()' in method_content:
-                print("  ✓ setup_wallet() calls _check_and_monitor_sync()")
-                test_results.append(True)
-            else:
-                print("  ❌ setup_wallet() does NOT call _check_and_monitor_sync()")
-                test_results.append(False)
+        method_content = extract_method_content(content, 'def setup_wallet(')
+        if method_content and '_check_and_monitor_sync()' in method_content:
+            print("  ✓ setup_wallet() calls _check_and_monitor_sync()")
+            test_results.append(True)
         else:
-            print("  ❌ Could not find setup_wallet() method")
+            print("  ❌ setup_wallet() does NOT call _check_and_monitor_sync()")
             test_results.append(False)
     
     # Test 5: Verify all helper functions exist
     print("\n[Test 5] Verifying helper functions exist in wallet_setup.py...")
-    with open('signalbot/core/wallet_setup.py', 'r') as f:
+    with open(wallet_setup_path, 'r') as f:
         content = f.read()
         functions_found = 0
         required_functions = [
@@ -105,7 +126,7 @@ def verify_integration():
     
     # Test 6: Verify expected logging messages
     print("\n[Test 6] Verifying expected logging messages...")
-    with open('signalbot/core/wallet_setup.py', 'r') as f:
+    with open(wallet_setup_path, 'r') as f:
         content = f.read()
         expected_logs = [
             '🔍 Checking for zombie RPC processes...',
