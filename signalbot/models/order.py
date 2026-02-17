@@ -35,6 +35,8 @@ class Order:
         commission_txid: Optional[str] = None,
         commission_paid_at: Optional[datetime] = None,
         shipping_info: Optional[str] = None,
+        tracking_number: Optional[str] = None,
+        shipped_at: Optional[datetime] = None,
         expires_at: Optional[datetime] = None,
         paid_at: Optional[datetime] = None,
         created_at: Optional[datetime] = None
@@ -60,6 +62,8 @@ class Order:
         self.commission_txid = commission_txid
         self.commission_paid_at = commission_paid_at
         self.shipping_info = shipping_info
+        self.tracking_number = tracking_number
+        self.shipped_at = shipped_at
         self.expires_at = expires_at or (datetime.utcnow() + timedelta(minutes=ORDER_EXPIRATION_MINUTES))
         self.paid_at = paid_at
         self.created_at = created_at or datetime.utcnow()
@@ -123,6 +127,8 @@ class Order:
             commission_txid=getattr(db_order, 'commission_txid', None),
             commission_paid_at=getattr(db_order, 'commission_paid_at', None),
             shipping_info=shipping_info,
+            tracking_number=getattr(db_order, 'tracking_number', None),
+            shipped_at=getattr(db_order, 'shipped_at', None),
             expires_at=db_order.expires_at,
             paid_at=db_order.paid_at,
             created_at=db_order.created_at
@@ -170,6 +176,8 @@ class Order:
             commission_paid_at=self.commission_paid_at,
             shipping_info=shipping_info_enc,
             shipping_info_salt=shipping_info_salt,
+            tracking_number=self.tracking_number,
+            shipped_at=self.shipped_at,
             expires_at=self.expires_at,
             paid_at=self.paid_at
         )
@@ -224,6 +232,8 @@ class OrderManager:
         db_order.paid_at = order.paid_at
         db_order.address_index = order.address_index
         db_order.payment_txid = order.payment_txid
+        db_order.tracking_number = order.tracking_number
+        db_order.shipped_at = order.shipped_at
         
         if order.shipping_info:
             shipping_enc, shipping_salt = self.db.encrypt_field(order.shipping_info)
@@ -321,6 +331,48 @@ class OrderManager:
             db_order.payment_status = 'partial'
         
         self.db.session.commit()
+    
+    def mark_order_shipped(self, order_id: str, tracking_number: str, signal_handler) -> Order:
+        """
+        Mark order as shipped and notify customer
+        
+        Args:
+            order_id: Order ID
+            tracking_number: Shipping tracking number
+            signal_handler: SignalHandler instance for sending notifications
+            
+        Returns:
+            Updated order
+            
+        Raises:
+            ValueError: If tracking number is empty or order not found
+        """
+        # Validate tracking number
+        if not tracking_number or len(tracking_number.strip()) == 0:
+            raise ValueError("Tracking number cannot be empty")
+        
+        # Get order
+        order = self.get_order(order_id)
+        if not order:
+            raise ValueError(f"Order {order_id} not found")
+        
+        # Update order
+        order.order_status = "shipped"
+        order.tracking_number = tracking_number.strip()
+        order.shipped_at = datetime.utcnow()
+        
+        # Save to database
+        self.update_order(order)
+        
+        # Send notification to customer
+        try:
+            signal_handler.send_shipping_notification(order.customer_signal_id, tracking_number)
+        except Exception as e:
+            # Log error but don't fail the operation
+            print(f"⚠️ Warning: Order marked as shipped but notification failed: {str(e)}")
+            raise Exception(f"Order marked as shipped but notification failed: {str(e)}")
+        
+        return order
     
     def count_orders_matching(self, criteria: dict) -> int:
         """

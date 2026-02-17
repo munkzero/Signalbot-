@@ -78,6 +78,8 @@ class Order(Base):
     commission_paid_at = Column(DateTime, nullable=True)  # When commission was paid
     shipping_info = Column(Text, nullable=True)  # Encrypted
     shipping_info_salt = Column(String(255), nullable=True)
+    tracking_number = Column(Text, nullable=True)  # Shipping tracking number
+    shipped_at = Column(DateTime, nullable=True)  # When order was shipped
     expires_at = Column(DateTime, nullable=False)
     paid_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -293,6 +295,26 @@ class DatabaseManager:
                         conn.execute(text('ALTER TABLE orders ADD COLUMN commission_paid_at TIMESTAMP'))
                         migrations_applied.append("commission_paid_at")
                         print("✓ Added commission_paid_at column")
+                    
+                    # Check if tracking_number column exists
+                    result = conn.execute(text(
+                        "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name='tracking_number'"
+                    ))
+                    if result.scalar() == 0:
+                        print("🔄 Adding tracking_number column to orders table...")
+                        conn.execute(text('ALTER TABLE orders ADD COLUMN tracking_number TEXT'))
+                        migrations_applied.append("tracking_number")
+                        print("✓ Added tracking_number column")
+                    
+                    # Check if shipped_at column exists
+                    result = conn.execute(text(
+                        "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name='shipped_at'"
+                    ))
+                    if result.scalar() == 0:
+                        print("🔄 Adding shipped_at column to orders table...")
+                        conn.execute(text('ALTER TABLE orders ADD COLUMN shipped_at TIMESTAMP'))
+                        migrations_applied.append("shipped_at")
+                        print("✓ Added shipped_at column")
                     
                     # Commit transaction
                     trans.commit()

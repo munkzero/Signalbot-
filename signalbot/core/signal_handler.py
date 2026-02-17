@@ -485,6 +485,17 @@ Thank you for your purchase!
         
         self.send_message(recipient, message)
     
+    def send_shipping_notification(self, recipient: str, tracking_number: str):
+        """
+        Send shipping notification to customer
+        
+        Args:
+            recipient: Buyer's phone number
+            tracking_number: Shipping tracking number
+        """
+        message = f"🚚 Your order has been shipped!\nTracking: {tracking_number}"
+        self.send_message(recipient, message)
+    
     def send_group_redirect(self, group_id: str, member: str):
         """
         Send message redirecting to private chat
