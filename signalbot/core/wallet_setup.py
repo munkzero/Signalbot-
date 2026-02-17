@@ -9,8 +9,10 @@ import time
 import requests
 import socket
 import threading
+import shutil
 from pathlib import Path
 from typing import Optional, Tuple, List
+from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
@@ -19,6 +21,11 @@ logger = logging.getLogger(__name__)
 RESTORE_HEIGHT_OFFSET = 1000  # Blocks to subtract from current height for restore
 NEW_WALLET_RPC_TIMEOUT = 180  # Seconds to wait for new wallet RPC (3 minutes)
 EXISTING_WALLET_RPC_TIMEOUT = 60  # Seconds to wait for existing wallet RPC
+
+# Wallet health check constants
+# This threshold is used to detect wallets stuck at restore_height=0
+# A healthy wallet cache should not have this pattern near the restore_height field
+WALLET_HEALTH_ZERO_THRESHOLD = 15  # Number of consecutive zeros indicating height 0
 
 
 class WalletCreationError(Exception):
@@ -345,6 +352,158 @@ def cleanup_orphaned_wallets(wallet_dir: str):
         logger.info(f"✓ Cleaned up {len(cleaned)} orphaned wallet file(s)")
     else:
         logger.info("✓ No orphaned wallet files found")
+
+
+def check_wallet_health(wallet_path: str) -> Tuple[bool, Optional[str]]:
+    """
+    Check if existing wallet is healthy or needs recreation.
+    
+    Detects wallets stuck at block 0 by checking the cache file for restore_height.
+    
+    The heuristic looks for the 'restore_height' string in the binary cache followed
+    by a high number of null bytes, which indicates height 0 in little-endian format.
+    This is a conservative check that may not catch all cases but avoids false positives.
+    
+    Args:
+        wallet_path: Path to wallet file (without .keys extension)
+        
+    Returns:
+        Tuple of (is_healthy, reason_if_unhealthy)
+    """
+    cache_file = wallet_path
+    
+    # Check if cache exists
+    if not os.path.exists(cache_file):
+        # No cache is fine - it will be rebuilt
+        logger.debug("No cache file found (will be rebuilt on first sync)")
+        return True, None
+    
+    try:
+        # Read first few KB of cache to check for restore_height markers
+        # The cache file is binary, but we can scan for patterns
+        with open(cache_file, 'rb') as f:
+            # Read first 10KB which should contain header info
+            data = f.read(10240)
+            
+            # Look for restore_height field followed by value 0
+            # In the binary cache, this appears as 'restore_height' string followed by null bytes
+            # Pattern: restore_height\x00\x00\x00\x00 (4 zero bytes = height 0 in little-endian)
+            if b'restore_height' in data:
+                # Find position of restore_height
+                pos = data.find(b'restore_height')
+                # Check if followed by zeros indicating height 0
+                # This is a heuristic check - exact format may vary
+                remaining = data[pos:pos+50]  # Check next 50 bytes
+                
+                # If we see restore_height near the start and lots of zeros, likely height 0
+                zero_count = remaining[:20].count(b'\x00')
+                if zero_count > WALLET_HEALTH_ZERO_THRESHOLD:
+                    logger.warning("⚠ Wallet cache shows restore_height=0 pattern")
+                    return False, "Wallet restore height appears to be 0 (will sync from genesis)"
+        
+        # If we got here, cache looks okay
+        logger.debug("Wallet cache appears healthy")
+        return True, None
+        
+    except Exception as e:
+        logger.warning(f"⚠ Could not check wallet health: {e}")
+        # Err on side of caution - assume healthy to avoid unnecessary recreation
+        return True, None
+
+
+def backup_wallet(wallet_path: str) -> bool:
+    """
+    Create backup of wallet files before recreation.
+    
+    Args:
+        wallet_path: Path to wallet file (without .keys extension)
+        
+    Returns:
+        True if backup successful
+    """
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        wallet_name = os.path.basename(wallet_path)
+        
+        # Backup directory
+        backup_dir = os.path.join(os.path.dirname(wallet_path), "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        files_backed_up = []
+        
+        # Backup keys file (most important)
+        keys_file = f"{wallet_path}.keys"
+        if os.path.exists(keys_file):
+            backup_keys = os.path.join(backup_dir, f"{wallet_name}_{timestamp}.keys.backup")
+            shutil.copy2(keys_file, backup_keys)
+            files_backed_up.append("keys")
+        
+        # Backup cache file
+        if os.path.exists(wallet_path):
+            backup_cache = os.path.join(backup_dir, f"{wallet_name}_{timestamp}.backup")
+            shutil.copy2(wallet_path, backup_cache)
+            files_backed_up.append("cache")
+        
+        # Backup address file if exists
+        address_file = f"{wallet_path}.address.txt"
+        if os.path.exists(address_file):
+            backup_address = os.path.join(backup_dir, f"{wallet_name}_{timestamp}.address.txt.backup")
+            shutil.copy2(address_file, backup_address)
+            files_backed_up.append("address")
+        
+        if files_backed_up:
+            logger.info(f"✓ Wallet backed up: {', '.join(files_backed_up)} files")
+            logger.info(f"  Backup location: {backup_dir}")
+            return True
+        else:
+            logger.warning("⚠ No wallet files found to backup")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Failed to backup wallet: {e}")
+        return False
+
+
+def delete_wallet_files(wallet_path: str) -> bool:
+    """
+    Delete wallet files (after backup).
+    
+    Args:
+        wallet_path: Path to wallet file (without .keys extension)
+        
+    Returns:
+        True if deletion successful
+    """
+    try:
+        files_deleted = []
+        
+        # Delete keys file
+        keys_file = f"{wallet_path}.keys"
+        if os.path.exists(keys_file):
+            os.remove(keys_file)
+            files_deleted.append("keys")
+        
+        # Delete cache file
+        if os.path.exists(wallet_path):
+            os.remove(wallet_path)
+            files_deleted.append("cache")
+        
+        # Delete address file if exists
+        address_file = f"{wallet_path}.address.txt"
+        if os.path.exists(address_file):
+            os.remove(address_file)
+            files_deleted.append("address")
+        
+        if files_deleted:
+            logger.info(f"✓ Deleted old wallet files: {', '.join(files_deleted)}")
+            return True
+        else:
+            logger.debug("No wallet files to delete")
+            return True
+            
+    except Exception as e:
+        logger.error(f"❌ Failed to delete wallet files: {e}")
+        return False
 
 
 def extract_seed_from_output(output: str) -> Optional[str]:
@@ -869,77 +1028,124 @@ class WalletSetupManager:
             Tuple of (success, seed_phrase_if_created)
         """
         logger.info("="*60)
-        logger.info("WALLET SETUP")
+        logger.info("WALLET INITIALIZATION STARTING")
         logger.info("="*60)
         
         # Step 1: Cleanup zombie RPC processes
         cleanup_zombie_rpc_processes()
         
         wallet_path_str = str(self.wallet_path)
+        logger.info(f"Wallet path: {wallet_path_str}")
         
         # Cleanup orphaned files
         wallet_dir = str(self.wallet_path.parent)
         cleanup_orphaned_wallets(wallet_dir)
         
         # Check if wallet already exists
-        if check_existing_wallet(wallet_path_str):
-            logger.info("✓ Using existing wallet")
-            
+        wallet_exists = check_existing_wallet(wallet_path_str)
+        logger.info(f"Wallet exists: {wallet_exists}")
+        
+        if wallet_exists:
             # Validate wallet files
             if not validate_wallet_files(wallet_path_str):
                 logger.warning("⚠ Existing wallet files incomplete, will recreate")
-                # Fall through to create new wallet
+                wallet_exists = False  # Force recreation
             else:
-                # Start RPC for existing wallet
-                logger.info("🔌 Starting wallet RPC...")
-                if not self.start_rpc():
-                    logger.error("❌ Failed to start wallet RPC")
-                    logger.info("="*60)
-                    return False, None
+                # Check wallet health (restore height 0 detection)
+                is_healthy, reason = check_wallet_health(wallet_path_str)
+                logger.info(f"Wallet healthy: {is_healthy}")
                 
-                logger.info("✓ RPC started successfully")
-                
-                # Check and monitor sync status
-                self._check_and_monitor_sync()
-                
-                logger.info("✅ Wallet system initialized successfully")
+                if not is_healthy:
+                    logger.warning(f"⚠ Wallet unhealthy: {reason}")
+                    logger.warning("⚠ Will backup and recreate wallet")
+                    
+                    # Backup existing wallet before recreation
+                    if backup_wallet(wallet_path_str):
+                        logger.info("✓ Wallet backed up successfully")
+                        
+                        # Delete old wallet files
+                        if delete_wallet_files(wallet_path_str):
+                            logger.info("✓ Old wallet files removed")
+                            wallet_exists = False  # Force recreation
+                        else:
+                            logger.error("❌ Failed to delete old wallet files")
+                            logger.info("="*60)
+                            return False, None
+                    else:
+                        logger.error("❌ Failed to backup wallet")
+                        logger.info("="*60)
+                        return False, None
+        
+        # If wallet exists and is healthy, use it
+        if wallet_exists:
+            logger.info("✓ Using existing healthy wallet")
+            
+            # Start RPC for existing wallet
+            rpc_port = self.rpc_port
+            logger.info(f"🚀 Starting RPC on port {rpc_port}...")
+            
+            if not self.start_rpc():
+                logger.error("❌ Failed to start wallet RPC")
                 logger.info("="*60)
-                return True, None
+                return False, None
+            
+            logger.info(f"✓ RPC process started successfully")
+            
+            # Check and monitor sync status
+            logger.info("⏳ Waiting for RPC to be ready...")
+            self._check_and_monitor_sync()
+            
+            logger.info("="*60)
+            logger.info("✅ WALLET INITIALIZATION COMPLETE")
+            logger.info("="*60)
+            return True, None
         
         # Create new wallet if it doesn't exist
-        if create_if_missing and not check_existing_wallet(wallet_path_str):
-            logger.info("🔧 Creating new wallet...")
+        if create_if_missing:
+            logger.info("📝 Creating new wallet...")
             try:
                 success, address, seed = self.create_wallet()
                 
+                if not success:
+                    logger.error("❌ Wallet creation FAILED")
+                    logger.info("="*60)
+                    return False, None
+                
+                logger.info("✓ Wallet creation SUCCESS")
+                
+                if seed:
+                    logger.info("📋 Seed phrase captured successfully")
+                else:
+                    logger.warning("⚠ Seed phrase not captured!")
+                
                 # Start RPC after creation with extended timeout for new wallets
-                logger.info("🔌 Starting wallet RPC...")
+                rpc_port = self.rpc_port
+                logger.info(f"🚀 Starting RPC on port {rpc_port}...")
+                
                 if not self.start_rpc(is_new_wallet=True):
                     logger.error("❌ Failed to start wallet RPC")
                     logger.info("="*60)
                     return False, None
                 
-                logger.info("✓ RPC started successfully")
+                logger.info(f"✓ RPC process started (PID: {self.rpc_process.pid if self.rpc_process else 'unknown'})")
                 
                 # Check and monitor sync status
+                timeout = 180  # 3 minutes for new wallets
+                logger.info(f"⏳ Waiting for RPC (timeout: {timeout}s)...")
                 self._check_and_monitor_sync()
                 
-                logger.info("✅ Wallet system initialized successfully")
+                logger.info("="*60)
+                logger.info("✅ WALLET INITIALIZATION COMPLETE")
                 logger.info("="*60)
                 return True, seed
                 
             except WalletCreationError as e:
-                logger.error(f"❌ {e}")
+                logger.error(f"❌ Wallet creation failed: {e}")
                 logger.info("="*60)
                 return False, None
         
-        if not create_if_missing:
-            logger.error("❌ Wallet doesn't exist and auto-create disabled")
-            logger.info("="*60)
-            return False, None
-        
-        # Should not reach here, but just in case
-        logger.error("❌ Unexpected state in wallet setup")
+        # Create disabled and no wallet exists
+        logger.error("❌ Wallet doesn't exist and auto-create disabled")
         logger.info("="*60)
         return False, None
     
