@@ -36,12 +36,19 @@ class WalletCreationError(Exception):
 
 def cleanup_zombie_rpc_processes():
     """
-    Kill any orphaned monero-wallet-rpc processes from previous runs.
+    DEPRECATED: Kill any orphaned monero-wallet-rpc processes from previous runs.
+    
+    This function is deprecated and should not be used. It kills ALL monero-wallet-rpc
+    processes indiscriminately, which can cause issues.
+    
+    Use WalletSetupManager._cleanup_orphaned_rpc() instead, which intelligently
+    identifies and removes only truly orphaned processes.
     
     This prevents wallet lock file issues when bot was force-killed
     and didn't clean up properly.
     """
     try:
+        logger.warning("⚠ cleanup_zombie_rpc_processes() is deprecated - use WalletSetupManager._cleanup_orphaned_rpc() instead")
         logger.info("🔍 Checking for zombie RPC processes...")
         
         # Find monero-wallet-rpc processes
@@ -1179,9 +1186,6 @@ class WalletSetupManager:
         logger.info("="*60)
         logger.info("WALLET INITIALIZATION STARTING")
         logger.info("="*60)
-        
-        # Step 1: Cleanup zombie RPC processes
-        cleanup_zombie_rpc_processes()
         
         wallet_path_str = str(self.wallet_path)
         logger.info(f"Wallet path: {wallet_path_str}")
