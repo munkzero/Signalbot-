@@ -10,6 +10,7 @@ import subprocess
 import time
 import os
 import shutil
+import warnings
 from datetime import datetime
 from pathlib import Path
 from monero.wallet import JSONRPCWallet
@@ -465,9 +466,8 @@ class InHouseWallet:
         """
         Auto-setup wallet: create if needed, start RPC.
         
-        .. deprecated::
-           Use :meth:`setup_wallet` from WalletSetupManager instead.
-           This method is kept for backward compatibility only.
+        DEPRECATED: Use setup_wallet() from WalletSetupManager instead.
+        This method is kept for backward compatibility only.
         
         Args:
             create_if_missing: Auto-create wallet if it doesn't exist
@@ -475,7 +475,6 @@ class InHouseWallet:
         Returns:
             Tuple of (success, seed_phrase_if_created)
         """
-        import warnings
         warnings.warn(
             "auto_setup_wallet() is deprecated, use setup_wallet() instead",
             DeprecationWarning,
