@@ -77,7 +77,7 @@ def test_signal_handler_improvements():
         ('global _dashboard_instance', 'Signal handler uses global reference'),
         ('_dashboard_instance = dashboard', 'Dashboard stored in global'),
         ('setup_manager.stop_rpc()', 'RPC cleanup in signal handler'),
-        ('hasattr(_dashboard_instance, \'wallet\')', 'Check for wallet attribute'),
+        ('getattr(', 'Uses getattr for safe attribute access'),
     ]
     
     all_found = True

@@ -862,22 +862,35 @@ class WalletSetupManager:
                     try:
                         with open(self.rpc_pid_file, 'r') as f:
                             saved_pid = int(f.read().strip())
-                            if pid == saved_pid:
+                            # Validate PID is reasonable (security check)
+                            if not (1 < saved_pid < 99999):
+                                logger.warning(f"Invalid PID in file: {saved_pid}")
+                            elif pid == saved_pid:
                                 logger.debug(f"Port {self.rpc_port} in use by our saved RPC (PID {pid})")
                                 return
-                    except (ValueError, IOError):
-                        pass
+                    except (ValueError, IOError) as e:
+                        logger.debug(f"Could not read PID file: {e}")
                 
                 # It's an orphaned process on our port
                 logger.warning(f"⚠ Found orphaned RPC on port {self.rpc_port} (PID {pid}), killing...")
-                os.kill(pid, signal.SIGTERM)
-                time.sleep(2)
                 
-                # Force kill if still alive
+                # First try graceful termination
                 try:
-                    os.kill(pid, signal.SIGKILL)
+                    os.kill(pid, signal.SIGTERM)
+                    time.sleep(2)
+                    
+                    # Check if process is still alive before SIGKILL
+                    try:
+                        os.kill(pid, 0)  # Signal 0 checks if process exists
+                        # Process still exists, force kill
+                        logger.warning(f"Process {pid} didn't terminate gracefully, force killing...")
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        # Process already terminated
+                        logger.debug(f"Process {pid} terminated gracefully")
                 except ProcessLookupError:
-                    pass
+                    # Process already dead
+                    logger.debug(f"Process {pid} already dead")
             
         except FileNotFoundError:
             # lsof not available, try alternative
@@ -1021,10 +1034,12 @@ class WalletSetupManager:
             ]
             
             # Start process
+            # Note: Using DEVNULL for stdout/stderr to avoid pipe buffer blocking
+            # RPC logs to its own file, so we don't need to capture output
             self.rpc_process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,  # Prevents interactive prompts
                 start_new_session=True
             )
@@ -1063,9 +1078,13 @@ class WalletSetupManager:
         if self.rpc_process:
             logger.info("Stopping RPC process...")
             try:
-                self.rpc_process.terminate()
-                self.rpc_process.wait(timeout=10)
-                logger.info(f"✓ Stopped wallet RPC (PID: {self.rpc_process.pid})")
+                # Check if process is still running before terminating
+                if self.rpc_process.poll() is None:
+                    self.rpc_process.terminate()
+                    self.rpc_process.wait(timeout=10)
+                    logger.info(f"✓ Stopped wallet RPC (PID: {self.rpc_process.pid})")
+                else:
+                    logger.debug(f"RPC process already exited (exit code: {self.rpc_process.poll()})")
             except subprocess.TimeoutExpired:
                 logger.warning("RPC didn't stop gracefully, killing...")
                 self.rpc_process.kill()
@@ -1074,11 +1093,14 @@ class WalletSetupManager:
             
             self.rpc_process = None
         
-        # Clean up PID file
-        if self.rpc_pid_file and os.path.exists(self.rpc_pid_file):
+        # Clean up PID file (handle race condition with try-except)
+        if self.rpc_pid_file:
             try:
                 os.remove(self.rpc_pid_file)
                 logger.debug(f"✓ Removed PID file: {self.rpc_pid_file}")
+            except FileNotFoundError:
+                # File already removed, not an error
+                logger.debug(f"PID file already removed: {self.rpc_pid_file}")
             except Exception as e:
                 logger.warning(f"Could not remove PID file: {e}")
     
@@ -1369,7 +1391,9 @@ class WalletSetupManager:
     
     def __del__(self):
         """Cleanup when object is destroyed."""
-        self._stop_rpc()
+        # Guard against cleanup during interpreter shutdown
+        if hasattr(self, '_stop_rpc'):
+            self._stop_rpc()
 
 
 

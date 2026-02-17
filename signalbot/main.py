@@ -67,15 +67,16 @@ def signal_handler(signum, frame):
     
     print(f"\n\nReceived {signal_name}, shutting down gracefully...")
     
-    # Stop wallet RPC if available
+    # Stop wallet RPC if available (using simplified attribute access)
     global _dashboard_instance
-    if _dashboard_instance and hasattr(_dashboard_instance, 'wallet') and _dashboard_instance.wallet:
-        try:
-            if hasattr(_dashboard_instance.wallet, 'setup_manager') and _dashboard_instance.wallet.setup_manager:
-                print("Stopping wallet RPC...")
-                _dashboard_instance.wallet.setup_manager.stop_rpc()
-        except Exception as e:
-            print(f"Error stopping wallet RPC: {e}")
+    try:
+        wallet = getattr(_dashboard_instance, 'wallet', None)
+        setup_manager = getattr(wallet, 'setup_manager', None)
+        if setup_manager:
+            print("Stopping wallet RPC...")
+            setup_manager.stop_rpc()
+    except Exception as e:
+        print(f"Error stopping wallet RPC: {e}")
     
     # Clean up temp files
     cleanup_temp_files()
