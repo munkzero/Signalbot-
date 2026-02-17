@@ -227,7 +227,7 @@ def test_monero_library_requirement():
     with open(req_path, 'r') as f:
         content = f.read()
     
-    if 'monero>=1.1' in content:
+    if 'monero>=1.1.0' in content or 'monero>=1.1' in content:
         print("  ✓ monero>=1.1.0 found in requirements.txt")
         return True
     else:

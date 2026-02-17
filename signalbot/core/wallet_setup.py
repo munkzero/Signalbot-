@@ -1159,7 +1159,7 @@ class WalletSetupManager:
             
             # Test connection by getting address
             address = self.wallet.address()
-            logger.info(f"✓ Wallet object connected")
+            logger.info(f"✓ Wallet object connected to RPC at 127.0.0.1:{self.rpc_port}")
             logger.info(f"✓ Primary address: {address}")
             
             return True

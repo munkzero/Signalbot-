@@ -1897,7 +1897,7 @@ class WalletTab(QWidget):
         
         try:
             # Get primary address using safe method
-            primary = self.wallet.address()  # Use new safe address() method
+            primary = self.wallet.address()
             
             if primary:
                 self.primary_address_label.setText(primary)
