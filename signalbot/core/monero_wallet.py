@@ -10,6 +10,7 @@ import subprocess
 import time
 import os
 import shutil
+import warnings
 from datetime import datetime
 from pathlib import Path
 from monero.wallet import JSONRPCWallet
@@ -463,7 +464,10 @@ class InHouseWallet:
     
     def auto_setup_wallet(self, create_if_missing: bool = True) -> Tuple[bool, Optional[str]]:
         """
-        Auto-setup wallet: create if needed, start RPC
+        Auto-setup wallet: create if needed, start RPC.
+        
+        DEPRECATED: Use setup_wallet() from WalletSetupManager instead.
+        This method is kept for backward compatibility only.
         
         Args:
             create_if_missing: Auto-create wallet if it doesn't exist
@@ -471,10 +475,23 @@ class InHouseWallet:
         Returns:
             Tuple of (success, seed_phrase_if_created)
         """
+        warnings.warn(
+            "auto_setup_wallet() is deprecated, use setup_wallet() instead",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        logger.warning("⚠ auto_setup_wallet() is DEPRECATED - use setup_wallet() instead")
+        logger.warning("⚠ Redirecting to new setup_wallet() method...")
         logger.info("Running wallet auto-setup...")
         
         # Use WalletSetupManager to handle setup
         success, seed = self.setup_manager.setup_wallet(create_if_missing=create_if_missing)
+        
+        # CRITICAL: Sync the RPC process reference from setup_manager to wallet
+        # This ensures that subsequent calls to connect() or other methods can find the running RPC
+        if success and self.setup_manager.rpc_process:
+            self.rpc_process = self.setup_manager.rpc_process
+            logger.debug(f"✓ Synced RPC process reference (PID: {self.rpc_process.pid})")
         
         if success and seed:
             # New wallet created - store seed for later retrieval
@@ -495,6 +512,16 @@ class InHouseWallet:
             Seed phrase or None
         """
         return getattr(self, '_seed_phrase', None)
+    
+    def get_rpc_status(self) -> dict:
+        """
+        Get current RPC status for debugging.
+        Delegates to WalletSetupManager.
+        
+        Returns:
+            Dict with status info
+        """
+        return self.setup_manager.get_rpc_status()
     
     def close(self):
         """Close wallet connection"""
