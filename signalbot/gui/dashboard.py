@@ -1351,7 +1351,9 @@ class RefreshBalanceWorker(QThread):
             # Try wallet object's get_balance() method first
             balance = self.wallet.get_balance()
             self.finished.emit(balance)
+            print("✓ Got balance from wallet object")
         except Exception as e:
+            print(f"⚠ Wallet object get_balance() failed: {e}, trying direct RPC...")
             # Fallback to direct RPC call
             try:
                 import requests
@@ -1389,8 +1391,10 @@ class RefreshBalanceWorker(QThread):
                         return
                 
                 # If direct RPC also failed, emit the original error
+                print(f"❌ Direct RPC get_balance also failed")
                 self.error.emit(str(e))
             except Exception as e2:
+                print(f"❌ Direct RPC get_balance failed: {e2}")
                 self.error.emit(f"{str(e)} (Direct RPC also failed: {str(e2)})")
 
 
@@ -1991,12 +1995,15 @@ class WalletTab(QWidget):
         
         # Try method 1: Use wallet object's address() method
         try:
-            primary = self.wallet.address()
-            
-            if primary:
-                self.primary_address_label.setText(primary)
-                address_found = True
-                print(f"✓ Got address from wallet object: {primary[:20]}...")
+            if self.wallet.is_connected():
+                primary = self.wallet.address()
+                
+                if primary:
+                    self.primary_address_label.setText(primary)
+                    address_found = True
+                    print(f"✓ Got address from wallet object: {primary[:20]}...")
+            else:
+                print("⚠ Wallet object not connected, will try direct RPC...")
         except Exception as e:
             print(f"Wallet object address() failed: {e}")
         
@@ -2091,6 +2098,9 @@ class WalletTab(QWidget):
         
         if ok:
             address = None
+            rpc_port = 18083
+            if self.wallet and hasattr(self.wallet, 'rpc_port'):
+                rpc_port = self.wallet.rpc_port
             
             # Try method 1: Use wallet object's new_address() method
             try:
@@ -2098,6 +2108,8 @@ class WalletTab(QWidget):
                     address = self.wallet.new_address(account=0, label=label if label else "")
                     if address:
                         print(f"✓ Generated subaddress via wallet object: {address[:20]}...")
+                else:
+                    print("⚠ Wallet object not connected, will try direct RPC...")
             except Exception as e:
                 print(f"Wallet object new_address() failed: {e}")
             
@@ -2132,7 +2144,7 @@ class WalletTab(QWidget):
                 QMessageBox.critical(
                     self, 
                     "Error", 
-                    "Failed to generate subaddress.\nMake sure wallet RPC is running on port 18083."
+                    f"Failed to generate subaddress.\nMake sure wallet RPC is running on port {rpc_port}."
                 )
     
     def copy_address(self, address):
