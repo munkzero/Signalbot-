@@ -1588,7 +1588,7 @@ def test_node_connectivity(nodes: List[Tuple[str, int]]) -> List[Tuple[str, int]
 
 
 def initialize_wallet_system(wallet_path: str, daemon_address: str, daemon_port: int, 
-                            rpc_port: int = 18082, password: str = "") -> Optional[WalletSetupManager]:
+                            rpc_port: int = 18083, password: str = "") -> Optional[WalletSetupManager]:
     """
     Initialize wallet system with graceful error handling.
     Returns WalletSetupManager instance or None if setup failed.
