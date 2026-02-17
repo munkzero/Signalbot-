@@ -51,6 +51,10 @@ def cleanup_temp_files():
             print(f"Error during temp file cleanup: {e}")
 
 
+# Global reference to dashboard for cleanup
+_dashboard_instance = None
+
+
 def signal_handler(signum, frame):
     """
     Handle SIGINT (Ctrl+C) and SIGTERM signals for graceful shutdown.
@@ -63,6 +67,16 @@ def signal_handler(signum, frame):
     
     print(f"\n\nReceived {signal_name}, shutting down gracefully...")
     
+    # Stop wallet RPC if available
+    global _dashboard_instance
+    if _dashboard_instance and hasattr(_dashboard_instance, 'wallet') and _dashboard_instance.wallet:
+        try:
+            if hasattr(_dashboard_instance.wallet, 'setup_manager') and _dashboard_instance.wallet.setup_manager:
+                print("Stopping wallet RPC...")
+                _dashboard_instance.wallet.setup_manager.stop_rpc()
+        except Exception as e:
+            print(f"Error stopping wallet RPC: {e}")
+    
     # Clean up temp files
     cleanup_temp_files()
     
@@ -72,6 +86,8 @@ def signal_handler(signum, frame):
 
 def main():
     """Main application entry point"""
+    
+    global _dashboard_instance
     
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
@@ -97,6 +113,7 @@ def main():
                 # Setup completed, show dashboard
                 if DashboardWindow.verify_pin(db_manager):
                     dashboard = DashboardWindow(db_manager)
+                    _dashboard_instance = dashboard  # Store for signal handler
                     dashboard.show()
                 else:
                     sys.exit(0)
@@ -107,6 +124,7 @@ def main():
             # Verify PIN and show dashboard
             if DashboardWindow.verify_pin(db_manager):
                 dashboard = DashboardWindow(db_manager)
+                _dashboard_instance = dashboard  # Store for signal handler
                 dashboard.show()
             else:
                 sys.exit(0)
