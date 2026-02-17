@@ -54,7 +54,7 @@ def test_wait_for_rpc_ready_updated():
     checks = [
         ('def wait_for_rpc_ready(port=18083, max_wait=60, retry_interval=2, is_new_wallet=False)', 'Function signature with is_new_wallet'),
         ('if is_new_wallet:', 'Check for new wallet flag'),
-        ('max_wait = 180', 'Extended timeout for new wallets'),
+        ('NEW_WALLET_RPC_TIMEOUT', 'Use constant for timeout'),
         ('New wallet - initial sync may take 2-3 minutes', 'New wallet message'),
     ]
     
@@ -82,11 +82,15 @@ def test_display_seed_phrase():
     checks = [
         ('def display_seed_phrase(seed: str)', 'Function signature'),
         ('words = seed.split()', 'Split seed into words'),
-        ('print("╔" + "═" * 60 + "╗")', 'Top border'),
+        ('if len(words) != 25:', 'Validate 25 words'),
+        ('ValueError', 'Raise error on invalid seed'),
+        ('box_width = 60', 'Box width constant'),
+        ('def pad_line', 'Helper function for padding'),
+        ('╔', 'Top border'),
         ('🔑 NEW WALLET CREATED - SAVE YOUR SEED PHRASE!', 'Title message'),
         ('⚠️  WRITE THIS DOWN!', 'Warning message'),
         ('without this seed phrase!', 'Recovery warning'),
-        ('print("╚" + "═" * 60 + "╝")', 'Bottom border'),
+        ('╚', 'Bottom border'),
     ]
     
     all_found = True
@@ -112,7 +116,7 @@ def test_create_wallet_with_restore_height():
     
     checks = [
         ('get_current_blockchain_height(self.daemon_address, self.daemon_port)', 'Get blockchain height'),
-        ('restore_height = max(0, current_height - 1000)', 'Calculate restore height'),
+        ('RESTORE_HEIGHT_OFFSET', 'Use constant for offset'),
         ('Creating new wallet with restore height', 'Log restore height'),
         ("'--restore-height', str(restore_height)", 'Pass restore height to CLI'),
         ('display_seed_phrase(seed)', 'Display seed phrase in formatted box'),

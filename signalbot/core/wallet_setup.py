@@ -15,6 +15,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Configuration constants
+RESTORE_HEIGHT_OFFSET = 1000  # Blocks to subtract from current height for restore
+NEW_WALLET_RPC_TIMEOUT = 180  # Seconds to wait for new wallet RPC (3 minutes)
+EXISTING_WALLET_RPC_TIMEOUT = 60  # Seconds to wait for existing wallet RPC
+
 
 class WalletCreationError(Exception):
     """Raised when wallet creation or setup fails"""
@@ -122,7 +127,7 @@ def wait_for_rpc_ready(port=18083, max_wait=60, retry_interval=2, is_new_wallet=
     """
     # Use extended timeout for new wallets
     if is_new_wallet:
-        max_wait = 180
+        max_wait = NEW_WALLET_RPC_TIMEOUT
         logger.info(f"⏳ New wallet - initial sync may take 2-3 minutes...")
     
     start_time = time.time()
@@ -369,29 +374,57 @@ def display_seed_phrase(seed: str):
     
     Args:
         seed: 25-word seed phrase
+        
+    Raises:
+        ValueError: If seed doesn't have exactly 25 words
     """
     # Split seed into words for better formatting
     words = seed.split()
+    
+    # Validate seed has exactly 25 words (Monero standard)
+    if len(words) != 25:
+        logger.error(f"❌ Invalid seed phrase: expected 25 words, got {len(words)}")
+        raise ValueError(f"Invalid seed phrase: expected 25 words, got {len(words)}")
     
     # Format seed phrase into 3 lines of 8 words + 1 word on last line
     line1 = " ".join(words[0:8])
     line2 = " ".join(words[8:16])
     line3 = " ".join(words[16:24])
-    line4 = words[24] if len(words) > 24 else ""
+    line4 = words[24]
+    
+    # Box configuration
+    box_width = 60
+    
+    # Helper function to pad text to fit in box
+    def pad_line(text: str, width: int = box_width - 2) -> str:
+        """Pad text to fit within box width (accounting for borders)"""
+        return text.ljust(width)
     
     # Print to console (not logger to avoid logging sensitive data)
     print("")
-    print("╔" + "═" * 60 + "╗")
-    print("║  🔑 NEW WALLET CREATED - SAVE YOUR SEED PHRASE!" + " " * 10 + "║")
-    print("║" + " " * 60 + "║")
-    print("║  " + line1.ljust(58) + "║")
-    print("║  " + line2.ljust(58) + "║")
-    print("║  " + line3.ljust(58) + "║")
-    print("║  " + line4.ljust(58) + "║")
-    print("║" + " " * 60 + "║")
-    print("║  ⚠️  WRITE THIS DOWN! You cannot recover your funds" + " " * 6 + "║")
-    print("║     without this seed phrase!" + " " * 29 + "║")
-    print("╚" + "═" * 60 + "╝")
+    print("╔" + "═" * box_width + "╗")
+    
+    # Title line
+    title = "🔑 NEW WALLET CREATED - SAVE YOUR SEED PHRASE!"
+    print("║  " + pad_line(title, box_width - 4) + "  ║")
+    
+    print("║" + " " * box_width + "║")
+    
+    # Seed phrase lines
+    print("║  " + pad_line(line1, box_width - 4) + "  ║")
+    print("║  " + pad_line(line2, box_width - 4) + "  ║")
+    print("║  " + pad_line(line3, box_width - 4) + "  ║")
+    print("║  " + pad_line(line4, box_width - 4) + "  ║")
+    
+    print("║" + " " * box_width + "║")
+    
+    # Warning lines
+    warning1 = "⚠️  WRITE THIS DOWN! You cannot recover your funds"
+    warning2 = "    without this seed phrase!"
+    print("║  " + pad_line(warning1, box_width - 4) + "  ║")
+    print("║  " + pad_line(warning2, box_width - 4) + "  ║")
+    
+    print("╚" + "═" * box_width + "╝")
     print("")
 
 
@@ -436,8 +469,13 @@ class WalletSetupManager:
         restore_height = None
         
         if current_height:
-            # Set restore height to current - 1000 to avoid scanning old blocks
-            restore_height = max(0, current_height - 1000)
+            # Set restore height to avoid scanning old blocks
+            # The offset (RESTORE_HEIGHT_OFFSET) is intentionally set to 1000 blocks to balance:
+            # - Performance: Avoids scanning from genesis (2014), reducing sync time from hours to seconds
+            # - Safety: 1000 blocks (~33 hours at 2 min/block) provides reasonable buffer for most use cases
+            # Note: For brand new wallets that just received their first transaction, the offset
+            # means the wallet will sync from slightly before that transaction occurred
+            restore_height = max(0, current_height - RESTORE_HEIGHT_OFFSET)
             logger.info(f"🔧 Creating new wallet with restore height {restore_height:,}...")
         else:
             logger.warning("⚠ Could not get blockchain height, wallet will sync from genesis")
