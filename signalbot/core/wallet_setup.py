@@ -10,6 +10,7 @@ import requests
 import socket
 import threading
 import shutil
+import signal
 from pathlib import Path
 from typing import Optional, Tuple, List
 from datetime import datetime
@@ -35,12 +36,19 @@ class WalletCreationError(Exception):
 
 def cleanup_zombie_rpc_processes():
     """
-    Kill any orphaned monero-wallet-rpc processes from previous runs.
+    DEPRECATED: Kill any orphaned monero-wallet-rpc processes from previous runs.
+    
+    This function is deprecated and should not be used. It kills ALL monero-wallet-rpc
+    processes indiscriminately, which can cause issues.
+    
+    Use WalletSetupManager._cleanup_orphaned_rpc() instead, which intelligently
+    identifies and removes only truly orphaned processes.
     
     This prevents wallet lock file issues when bot was force-killed
     and didn't clean up properly.
     """
     try:
+        logger.warning("⚠ cleanup_zombie_rpc_processes() is deprecated - use WalletSetupManager._cleanup_orphaned_rpc() instead")
         logger.info("🔍 Checking for zombie RPC processes...")
         
         # Find monero-wallet-rpc processes
@@ -598,6 +606,7 @@ class WalletSetupManager:
         self.rpc_port = rpc_port
         self.password = password
         self.rpc_process = None
+        self.rpc_pid_file = None
         
     def wallet_exists(self) -> bool:
         """Check if wallet files exist"""
@@ -829,10 +838,152 @@ class WalletSetupManager:
         except:
             return False
     
+    def _cleanup_orphaned_rpc(self):
+        """Kill only truly orphaned RPC processes (not on our port)."""
+        
+        try:
+            # Check if something is already on our port
+            result = subprocess.run(
+                ["lsof", "-ti", f":{self.rpc_port}"],
+                capture_output=True,
+                text=True
+            )
+            
+            if result.stdout:
+                pid = int(result.stdout.strip())
+                
+                # Check if it's our tracked process
+                if self.rpc_process and pid == self.rpc_process.pid:
+                    logger.debug(f"Port {self.rpc_port} in use by our RPC (PID {pid})")
+                    return
+                
+                # Check if PID matches our saved PID file
+                if self.rpc_pid_file and os.path.exists(self.rpc_pid_file):
+                    try:
+                        with open(self.rpc_pid_file, 'r') as f:
+                            saved_pid = int(f.read().strip())
+                            # Validate PID is reasonable (security check)
+                            if not (1 < saved_pid < 99999):
+                                logger.warning(f"Invalid PID in file: {saved_pid}")
+                            elif pid == saved_pid:
+                                logger.debug(f"Port {self.rpc_port} in use by our saved RPC (PID {pid})")
+                                return
+                    except (ValueError, IOError) as e:
+                        logger.debug(f"Could not read PID file: {e}")
+                
+                # It's an orphaned process on our port
+                logger.warning(f"⚠ Found orphaned RPC on port {self.rpc_port} (PID {pid}), killing...")
+                
+                # First try graceful termination
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    time.sleep(2)
+                    
+                    # Check if process is still alive before SIGKILL
+                    try:
+                        os.kill(pid, 0)  # Signal 0 checks if process exists
+                        # Process still exists, force kill
+                        logger.warning(f"Process {pid} didn't terminate gracefully, force killing...")
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        # Process already terminated
+                        logger.debug(f"Process {pid} terminated gracefully")
+                except ProcessLookupError:
+                    # Process already dead
+                    logger.debug(f"Process {pid} already dead")
+            
+        except FileNotFoundError:
+            # lsof not available, try alternative
+            self._cleanup_orphaned_rpc_fallback()
+        except Exception as e:
+            logger.warning(f"Could not check for orphaned RPC: {e}")
+
+    def _cleanup_orphaned_rpc_fallback(self):
+        """Fallback cleanup using pgrep/netstat."""
+        
+        try:
+            # Find all monero-wallet-rpc processes
+            result = subprocess.run(
+                ["pgrep", "-f", "monero-wallet-rpc"],
+                capture_output=True,
+                text=True
+            )
+            
+            if not result.stdout:
+                return
+            
+            pids = [int(pid) for pid in result.stdout.strip().split('\n')]
+            
+            for pid in pids:
+                # Skip our own process
+                if self.rpc_process and pid == self.rpc_process.pid:
+                    continue
+                
+                # Check if this process is using our wallet file
+                try:
+                    with open(f"/proc/{pid}/cmdline", "r") as f:
+                        cmdline = f.read()
+                    
+                    # If it's using our wallet file, it's probably orphaned
+                    if str(self.wallet_path) in cmdline:
+                        logger.warning(f"⚠ Found orphaned RPC using our wallet (PID {pid}), killing...")
+                        os.kill(pid, signal.SIGTERM)
+                        time.sleep(1)
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                except:
+                    # Can't read process info, skip
+                    pass
+                    
+        except Exception as e:
+            logger.warning(f"Fallback cleanup failed: {e}")
+    
+    def _wait_for_rpc_ready(self, timeout: int = 60) -> bool:
+        """Wait for RPC to be ready to accept connections."""
+        
+        url = f"http://127.0.0.1:{self.rpc_port}/json_rpc"
+        start_time = time.time()
+        attempt = 0
+        
+        logger.info(f"⏳ Waiting for RPC to be ready (timeout: {timeout}s)...")
+        
+        while time.time() - start_time < timeout:
+            attempt += 1
+            
+            # Check if process is still alive
+            if self.rpc_process and self.rpc_process.poll() is not None:
+                logger.error(f"❌ RPC process died (exit code: {self.rpc_process.poll()})")
+                return False
+            
+            try:
+                # Try to connect
+                response = requests.post(
+                    url,
+                    json={"jsonrpc": "2.0", "id": "0", "method": "get_balance"},
+                    timeout=5
+                )
+                
+                if response.status_code == 200:
+                    logger.info(f"✓ RPC ready after {attempt} attempts ({time.time() - start_time:.1f}s)")
+                    return True
+                    
+            except requests.exceptions.ConnectionError:
+                # Expected during startup
+                pass
+            except Exception as e:
+                logger.debug(f"RPC check failed (attempt {attempt}): {e}")
+            
+            time.sleep(2)
+        
+        logger.error(f"❌ RPC did not become ready within {timeout}s")
+        return False
+    
     def start_rpc(self, daemon_address: Optional[str] = None, 
                   daemon_port: Optional[int] = None, is_new_wallet: bool = False) -> bool:
         """
-        Start monero-wallet-rpc process
+        Start monero-wallet-rpc process and track it properly
         
         Args:
             daemon_address: Override default daemon address
@@ -842,6 +993,9 @@ class WalletSetupManager:
         Returns:
             True if RPC started successfully
         """
+        # Kill only truly orphaned processes (not on our port)
+        self._cleanup_orphaned_rpc()
+        
         if self.is_rpc_running():
             logger.info(f"✅ Wallet RPC already running on port {self.rpc_port}")
             return True
@@ -853,9 +1007,14 @@ class WalletSetupManager:
         daemon_addr = daemon_address or self.daemon_address
         daemon_port_to_use = daemon_port or self.daemon_port
         
-        logger.info(f"🔧 Starting wallet RPC process...")
+        # Create PID file path
+        self.rpc_pid_file = os.path.join(
+            os.path.dirname(str(self.wallet_path)),
+            '.rpc.pid'
+        )
+        
+        logger.info(f"🚀 Starting wallet RPC on port {self.rpc_port}...")
         logger.info(f"  Daemon: {daemon_addr}:{daemon_port_to_use}")
-        logger.info(f"  RPC Port: {self.rpc_port}")
         logger.info(f"  Wallet: {self.wallet_path}")
         
         # Log password handling for debugging
@@ -874,57 +1033,76 @@ class WalletSetupManager:
                 '--log-level', '1'
             ]
             
-            # Use Popen to capture process handle (don't use --detach)
-            # CRITICAL: Use stdin=subprocess.DEVNULL to prevent password prompts
+            # Start process
+            # Note: Using DEVNULL for stdout/stderr to avoid pipe buffer blocking
+            # RPC logs to its own file, so we don't need to capture output
             self.rpc_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL  # Prevents interactive prompts
+                stdin=subprocess.DEVNULL,  # Prevents interactive prompts
+                start_new_session=True
             )
             
-            logger.info(f"Started RPC process with PID: {self.rpc_process.pid}")
+            # Save PID to file
+            with open(self.rpc_pid_file, 'w') as f:
+                f.write(str(self.rpc_process.pid))
             
-            # Wait for RPC to be ready with improved retry logic
-            # Use extended timeout for new wallets
-            if not wait_for_rpc_ready(port=self.rpc_port, max_wait=60, retry_interval=2, is_new_wallet=is_new_wallet):
-                logger.error("❌ RPC process started but not responding")
-                logger.error("💡 Check if monero-wallet-rpc is installed: monero-wallet-rpc --version")
+            logger.info(f"✓ RPC process started (PID: {self.rpc_process.pid})")
+            
+            # Wait for RPC to be ready
+            timeout = 180 if is_new_wallet else 60
+            if not self._wait_for_rpc_ready(timeout):
+                logger.error("❌ RPC failed to become ready")
+                self._stop_rpc()
                 return False
             
-            logger.info(f"✅ Wallet RPC started successfully!")
+            logger.info("✓ RPC is ready and accepting connections")
             return True
             
         except FileNotFoundError:
             logger.error("❌ monero-wallet-rpc not found. Is it installed?")
+            logger.error("💡 Install: sudo apt install monero")
             return False
         except Exception as e:
             logger.error(f"❌ Failed to start RPC: {e}")
             return False
     
     def stop_rpc(self):
-        """Stop monero-wallet-rpc process"""
-        try:
-            # Use the process handle if we have it
-            if self.rpc_process and hasattr(self.rpc_process, 'pid'):
-                import signal
-                try:
-                    os.kill(self.rpc_process.pid, signal.SIGTERM)
-                    self.rpc_process.wait(timeout=5)
-                    logger.info(f"Stopped wallet RPC (PID: {self.rpc_process.pid})")
-                except subprocess.TimeoutExpired:
-                    # Force kill if it doesn't terminate gracefully
-                    os.kill(self.rpc_process.pid, signal.SIGKILL)
-                    logger.warning(f"Force killed wallet RPC (PID: {self.rpc_process.pid})")
-                except ProcessLookupError:
-                    # Process already dead
-                    logger.debug("RPC process already terminated")
-                self.rpc_process = None
-            else:
-                logger.debug("No RPC process to stop")
-        except Exception as e:
-            logger.error(f"Error stopping RPC: {e}")
+        """Stop monero-wallet-rpc process (public method for backward compatibility)"""
+        self._stop_rpc()
+    
+    def _stop_rpc(self):
+        """Stop the RPC process gracefully."""
+        
+        if self.rpc_process:
+            logger.info("Stopping RPC process...")
+            try:
+                # Check if process is still running before terminating
+                if self.rpc_process.poll() is None:
+                    self.rpc_process.terminate()
+                    self.rpc_process.wait(timeout=10)
+                    logger.info(f"✓ Stopped wallet RPC (PID: {self.rpc_process.pid})")
+                else:
+                    logger.debug(f"RPC process already exited (exit code: {self.rpc_process.poll()})")
+            except subprocess.TimeoutExpired:
+                logger.warning("RPC didn't stop gracefully, killing...")
+                self.rpc_process.kill()
+            except Exception as e:
+                logger.error(f"Error stopping RPC: {e}")
+            
             self.rpc_process = None
+        
+        # Clean up PID file (handle race condition with try-except)
+        if self.rpc_pid_file:
+            try:
+                os.remove(self.rpc_pid_file)
+                logger.debug(f"✓ Removed PID file: {self.rpc_pid_file}")
+            except FileNotFoundError:
+                # File already removed, not an error
+                logger.debug(f"PID file already removed: {self.rpc_pid_file}")
+            except Exception as e:
+                logger.warning(f"Could not remove PID file: {e}")
     
     def test_node_connection(self, daemon_address: Optional[str] = None, 
                             daemon_port: Optional[int] = None) -> dict:
@@ -1030,9 +1208,6 @@ class WalletSetupManager:
         logger.info("="*60)
         logger.info("WALLET INITIALIZATION STARTING")
         logger.info("="*60)
-        
-        # Step 1: Cleanup zombie RPC processes
-        cleanup_zombie_rpc_processes()
         
         wallet_path_str = str(self.wallet_path)
         logger.info(f"Wallet path: {wallet_path_str}")
@@ -1213,6 +1388,13 @@ class WalletSetupManager:
         except Exception as e:
             logger.warning(f"⚠ Could not check sync status: {e}")
             logger.info("💡 Continuing anyway - sync status unknown")
+    
+    def __del__(self):
+        """Cleanup when object is destroyed."""
+        # Guard against cleanup during interpreter shutdown
+        if hasattr(self, '_stop_rpc'):
+            self._stop_rpc()
+
 
 
 def test_node_connectivity(nodes: List[Tuple[str, int]]) -> List[Tuple[str, int]]:
