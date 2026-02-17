@@ -463,10 +463,11 @@ class InHouseWallet:
     
     def auto_setup_wallet(self, create_if_missing: bool = True) -> Tuple[bool, Optional[str]]:
         """
-        DEPRECATED: Old setup method - redirects to setup_wallet()
+        Auto-setup wallet: create if needed, start RPC.
         
-        This method is kept for backward compatibility but should not be used.
-        Use setup_wallet() directly instead, which includes proper RPC management.
+        .. deprecated::
+           Use :meth:`setup_wallet` from WalletSetupManager instead.
+           This method is kept for backward compatibility only.
         
         Args:
             create_if_missing: Auto-create wallet if it doesn't exist
@@ -474,6 +475,12 @@ class InHouseWallet:
         Returns:
             Tuple of (success, seed_phrase_if_created)
         """
+        import warnings
+        warnings.warn(
+            "auto_setup_wallet() is deprecated, use setup_wallet() instead",
+            DeprecationWarning,
+            stacklevel=2
+        )
         logger.warning("⚠ auto_setup_wallet() is DEPRECATED - use setup_wallet() instead")
         logger.warning("⚠ Redirecting to new setup_wallet() method...")
         logger.info("Running wallet auto-setup...")

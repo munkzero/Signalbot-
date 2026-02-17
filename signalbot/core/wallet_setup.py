@@ -1350,7 +1350,8 @@ class WalletSetupManager:
             
             logger.info(f"✅ RPC is running (PID: {rpc_status['pid']})")
             logger.info(f"✅ RPC is responding on port {rpc_status['port']}")
-            logger.info(f"✅ Balance: {rpc_status.get('balance', 0) / 1e12:.12f} XMR")
+            balance = rpc_status.get('balance', 0) or 0
+            logger.info(f"✅ Balance: {balance / 1e12:.12f} XMR")
             
             logger.info("="*60)
             logger.info("✅ WALLET INITIALIZATION COMPLETE")
@@ -1412,7 +1413,8 @@ class WalletSetupManager:
                 
                 logger.info(f"✅ RPC is running (PID: {rpc_status['pid']})")
                 logger.info(f"✅ RPC is responding on port {rpc_status['port']}")
-                logger.info(f"✅ Balance: {rpc_status.get('balance', 0) / 1e12:.12f} XMR")
+                balance = rpc_status.get('balance', 0) or 0
+                logger.info(f"✅ Balance: {balance / 1e12:.12f} XMR")
                 
                 logger.info("="*60)
                 logger.info("✅ WALLET INITIALIZATION COMPLETE")

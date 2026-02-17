@@ -5458,7 +5458,8 @@ class DashboardWindow(QMainWindow):
                                 if rpc_status.get('error'):
                                     print(f"   Error: {rpc_status['error']}")
                                 if rpc_status.get('balance') is not None:
-                                    balance_xmr = rpc_status['balance'] / 1e12
+                                    balance = rpc_status.get('balance', 0) or 0
+                                    balance_xmr = balance / 1e12
                                     print(f"   Balance: {balance_xmr:.12f} XMR")
                             except Exception as e:
                                 print(f"⚠ Could not get RPC status: {e}")
