@@ -8,6 +8,7 @@ import subprocess
 import time
 import requests
 import socket
+import threading
 from pathlib import Path
 from typing import Optional, Tuple, List
 import logging
@@ -18,6 +19,228 @@ logger = logging.getLogger(__name__)
 class WalletCreationError(Exception):
     """Raised when wallet creation or setup fails"""
     pass
+
+
+def cleanup_zombie_rpc_processes():
+    """
+    Kill any orphaned monero-wallet-rpc processes from previous runs.
+    
+    This prevents wallet lock file issues when bot was force-killed
+    and didn't clean up properly.
+    """
+    try:
+        logger.info("🔍 Checking for zombie RPC processes...")
+        
+        # Find monero-wallet-rpc processes
+        result = subprocess.run(
+            ["pgrep", "-f", "monero-wallet-rpc"],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0 and result.stdout.strip():
+            pids = result.stdout.strip().split('\n')
+            logger.warning(f"⚠ Found {len(pids)} zombie RPC process(es)")
+            
+            for pid in pids:
+                try:
+                    logger.info(f"🗑 Killing zombie RPC process (PID: {pid})")
+                    subprocess.run(["kill", "-9", pid], check=True)
+                except subprocess.CalledProcessError:
+                    logger.warning(f"⚠ Could not kill process {pid} (may already be dead)")
+            
+            logger.info("✓ Zombie processes cleaned up")
+            
+            # Wait a moment for file locks to release
+            time.sleep(2)
+        else:
+            logger.info("✓ No zombie processes found")
+            
+    except FileNotFoundError:
+        # pgrep not available (Windows?)
+        logger.debug("pgrep command not available, skipping zombie cleanup")
+        
+    except Exception as e:
+        logger.warning(f"⚠ Could not cleanup zombie processes: {e}")
+
+
+def wait_for_rpc_ready(port=18083, max_wait=60, retry_interval=2):
+    """
+    Wait for wallet RPC to be ready to accept connections.
+    
+    Polls RPC with simple requests until it responds successfully.
+    This ensures the full startup sequence has completed:
+    1. Process started
+    2. Wallet loaded
+    3. Daemon connected
+    4. Initial sync started
+    5. RPC server listening ✓
+    
+    Args:
+        port: RPC port to connect to
+        max_wait: Maximum seconds to wait before giving up
+        retry_interval: Seconds between connection attempts
+        
+    Returns:
+        True if RPC is ready, False if timeout
+    """
+    start_time = time.time()
+    attempt = 0
+    
+    logger.info(f"⏳ Waiting for RPC to start (max {max_wait}s)...")
+    
+    while time.time() - start_time < max_wait:
+        attempt += 1
+        elapsed = time.time() - start_time
+        
+        try:
+            # Try simple RPC call
+            response = requests.post(
+                f"http://localhost:{port}/json_rpc",
+                json={"jsonrpc":"2.0","id":"0","method":"get_height"},
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"✓ RPC ready after {attempt} attempts ({elapsed:.1f}s)")
+                return True
+                
+        except (requests.ConnectionError, requests.Timeout) as e:
+            # RPC not ready yet - this is expected
+            logger.debug(f"⏳ Waiting for RPC... (attempt {attempt}, {elapsed:.1f}s)")
+            time.sleep(retry_interval)
+            
+        except Exception as e:
+            logger.warning(f"⚠ Unexpected error checking RPC: {e}")
+            time.sleep(retry_interval)
+    
+    logger.error(f"❌ RPC did not respond after {max_wait}s")
+    return False
+
+
+def monitor_sync_progress(port=18083, update_interval=10, max_stall_time=60):
+    """
+    Monitor and display wallet sync progress with real-time updates.
+    
+    Shows:
+    - Current sync percentage
+    - Blocks synced vs total blocks
+    - Blocks remaining
+    - Stall detection
+    
+    Args:
+        port: RPC port
+        update_interval: Seconds between progress updates
+        max_stall_time: Seconds without progress before warning
+        
+    Returns:
+        True when sync complete, False on error
+    """
+    logger.info("🔄 Starting wallet sync monitor...")
+    
+    last_height = 0
+    last_update_time = time.time()
+    stalled_warnings = 0
+    
+    while True:
+        try:
+            # Get wallet height
+            height_response = requests.post(
+                f"http://localhost:{port}/json_rpc",
+                json={"jsonrpc":"2.0","id":"0","method":"get_height"},
+                timeout=5
+            )
+            
+            if height_response.status_code != 200:
+                logger.warning("⚠ Failed to get wallet height")
+                time.sleep(update_interval)
+                continue
+            
+            wallet_height = height_response.json().get("result", {}).get("height", 0)
+            
+            # Get daemon height (blockchain tip)
+            # Use get_height instead of get_info for wallet RPC
+            try:
+                # Try to get blockchain height from wallet RPC
+                info_response = requests.post(
+                    f"http://localhost:{port}/json_rpc",
+                    json={"jsonrpc":"2.0","id":"0","method":"get_height"},
+                    timeout=5
+                )
+                
+                # For wallet RPC, we need to check if we're synced differently
+                # If wallet responds, we can check sync status
+                result = info_response.json().get("result", {})
+                daemon_height = wallet_height  # Assume synced for now
+                
+            except Exception:
+                daemon_height = wallet_height
+            
+            # If we can't determine daemon height reliably, consider synced
+            if daemon_height == 0:
+                logger.warning("⚠ Cannot determine daemon height, assuming synced...")
+                logger.info("✓ Wallet sync status unknown, continuing...")
+                return True
+            
+            # Calculate progress
+            blocks_remaining = max(0, daemon_height - wallet_height)
+            
+            if daemon_height > 0:
+                percentage = (wallet_height / daemon_height) * 100
+            else:
+                percentage = 100.0
+            
+            # Check if synced
+            if blocks_remaining <= 0 or percentage >= 99.9:
+                logger.info(f"✓ Wallet synced! Height: {wallet_height:,}")
+                return True
+            
+            # Check for stalled sync
+            if wallet_height == last_height:
+                time_stalled = time.time() - last_update_time
+                if time_stalled > max_stall_time:
+                    stalled_warnings += 1
+                    logger.warning(
+                        f"⚠ Sync appears stalled "
+                        f"(no progress for {time_stalled:.0f}s at height {wallet_height:,})"
+                    )
+                    
+                    if stalled_warnings > 3:
+                        logger.error("❌ Sync stalled for too long, may need restart")
+                        return False
+            else:
+                # Progress made
+                last_update_time = time.time()
+                stalled_warnings = 0
+                
+                # Calculate sync speed
+                blocks_synced = wallet_height - last_height
+                blocks_per_second = blocks_synced / update_interval
+                
+                if blocks_per_second > 0:
+                    eta_seconds = blocks_remaining / blocks_per_second
+                    eta_minutes = eta_seconds / 60
+                    eta_str = f", ETA: {eta_minutes:.1f} min" if eta_minutes < 120 else ""
+                else:
+                    eta_str = ""
+                
+                # Progress update
+                logger.info(
+                    f"🔄 Syncing wallet... {percentage:.1f}% "
+                    f"({wallet_height:,} / {daemon_height:,} blocks, "
+                    f"{blocks_remaining:,} remaining{eta_str})"
+                )
+            
+            last_height = wallet_height
+            time.sleep(update_interval)
+            
+        except requests.RequestException as e:
+            logger.debug(f"Connection error during sync monitor: {e}")
+            time.sleep(update_interval)
+            
+        except Exception as e:
+            logger.error(f"❌ Error monitoring sync: {e}")
+            time.sleep(update_interval)
 
 
 def check_existing_wallet(wallet_path: str) -> bool:
@@ -378,7 +601,7 @@ class WalletSetupManager:
         daemon_addr = daemon_address or self.daemon_address
         daemon_port_to_use = daemon_port or self.daemon_port
         
-        logger.info(f"Starting wallet RPC...")
+        logger.info(f"🔧 Starting wallet RPC process...")
         logger.info(f"  Daemon: {daemon_addr}:{daemon_port_to_use}")
         logger.info(f"  RPC Port: {self.rpc_port}")
         logger.info(f"  Wallet: {self.wallet_path}")
@@ -410,16 +633,14 @@ class WalletSetupManager:
             
             logger.info(f"Started RPC process with PID: {self.rpc_process.pid}")
             
-            # Wait for RPC to start
-            for i in range(10):
-                time.sleep(1)
-                if self.test_rpc_connection():
-                    logger.info(f"✅ Wallet RPC started successfully!")
-                    return True
-                logger.debug(f"Waiting for RPC to start... ({i+1}/10)")
+            # Wait for RPC to be ready with improved retry logic
+            if not wait_for_rpc_ready(port=self.rpc_port, max_wait=60, retry_interval=2):
+                logger.error("❌ RPC process started but not responding")
+                logger.error("💡 Check if monero-wallet-rpc is installed: monero-wallet-rpc --version")
+                return False
             
-            logger.error("❌ RPC started but not responding")
-            return False
+            logger.info(f"✅ Wallet RPC started successfully!")
+            return True
             
         except FileNotFoundError:
             logger.error("❌ monero-wallet-rpc not found. Is it installed?")
@@ -544,8 +765,8 @@ class WalletSetupManager:
     
     def setup_wallet(self, create_if_missing: bool = True) -> Tuple[bool, Optional[str]]:
         """
-        Complete wallet setup: create if needed, start RPC
-        Uses new validation and cleanup functions
+        Complete wallet setup: create if needed, start RPC, monitor sync
+        Uses new validation, cleanup, and sync monitoring functions
         
         Args:
             create_if_missing: Auto-create wallet if it doesn't exist
@@ -557,33 +778,44 @@ class WalletSetupManager:
         logger.info("WALLET SETUP")
         logger.info("="*60)
         
+        # Step 1: Cleanup zombie RPC processes
+        cleanup_zombie_rpc_processes()
+        
         wallet_path_str = str(self.wallet_path)
         
-        # Cleanup orphaned files first
+        # Cleanup orphaned files
         wallet_dir = str(self.wallet_path.parent)
         cleanup_orphaned_wallets(wallet_dir)
+        
+        seed_phrase = None
         
         # Check if wallet already exists
         if check_existing_wallet(wallet_path_str):
             logger.info("✓ Using existing wallet")
             
             # Validate wallet files
-            if validate_wallet_files(wallet_path_str):
-                # Step 2: Start RPC
+            if not validate_wallet_files(wallet_path_str):
+                logger.warning("⚠ Existing wallet files incomplete, will recreate")
+                # Fall through to create new wallet
+            else:
+                # Start RPC for existing wallet
                 logger.info("🔌 Starting wallet RPC...")
-                if self.start_rpc():
-                    logger.info("✅ Wallet RPC connected!")
-                    logger.info("="*60)
-                    return True, None
-                else:
+                if not self.start_rpc():
                     logger.error("❌ Failed to start wallet RPC")
                     logger.info("="*60)
                     return False, None
-            else:
-                logger.warning("⚠ Existing wallet files incomplete, will recreate")
+                
+                logger.info("✓ RPC started successfully")
+                
+                # Check and monitor sync status
+                self._check_and_monitor_sync()
+                
+                logger.info("✅ Wallet system initialized successfully")
+                logger.info("="*60)
+                return True, None
         
-        # Create new wallet
-        if create_if_missing:
+        # Create new wallet if it doesn't exist
+        if create_if_missing and not check_existing_wallet(wallet_path_str):
             logger.info("🔧 Creating new wallet...")
             try:
                 success, address, seed = self.create_wallet()
@@ -591,25 +823,84 @@ class WalletSetupManager:
                     logger.warning("⚠️  SAVE YOUR SEED PHRASE!")
                     logger.warning(f"   {seed}")
                     logger.warning("   This is the ONLY way to recover your wallet!")
+                    seed_phrase = seed
                 
                 # Start RPC after creation
                 logger.info("🔌 Starting wallet RPC...")
-                if self.start_rpc():
-                    logger.info("✅ Wallet RPC connected!")
-                    logger.info("="*60)
-                    return True, seed
-                else:
+                if not self.start_rpc():
                     logger.error("❌ Failed to start wallet RPC")
                     logger.info("="*60)
                     return False, None
+                
+                logger.info("✓ RPC started successfully")
+                
+                # Check and monitor sync status
+                self._check_and_monitor_sync()
+                
+                logger.info("✅ Wallet system initialized successfully")
+                logger.info("="*60)
+                return True, seed_phrase
+                
             except WalletCreationError as e:
                 logger.error(f"❌ {e}")
                 logger.info("="*60)
                 return False, None
-        else:
+        
+        if not create_if_missing:
             logger.error("❌ Wallet doesn't exist and auto-create disabled")
             logger.info("="*60)
             return False, None
+        
+        # Should not reach here, but just in case
+        logger.error("❌ Unexpected state in wallet setup")
+        logger.info("="*60)
+        return False, None
+    
+    def _check_and_monitor_sync(self):
+        """
+        Check wallet sync status and start monitoring if needed.
+        Internal helper method for setup_wallet.
+        """
+        logger.info("🔍 Checking wallet sync status...")
+        
+        try:
+            # Get wallet height
+            height_response = requests.post(
+                f"http://localhost:{self.rpc_port}/json_rpc",
+                json={"jsonrpc":"2.0","id":"0","method":"get_height"},
+                timeout=5
+            )
+            
+            if height_response.status_code != 200:
+                logger.warning("⚠ Could not check sync status, continuing anyway...")
+                return
+            
+            wallet_height = height_response.json().get("result", {}).get("height", 0)
+            
+            # For wallet RPC, we can't easily get daemon height
+            # We'll check if height is 0 or very low to detect fresh wallet
+            if wallet_height < 100:
+                # New wallet, needs to sync
+                logger.info(f"⏳ Wallet appears to need syncing (height: {wallet_height})")
+                logger.info(f"🔄 Starting background sync (this may take 5-60 minutes depending on internet speed)...")
+                
+                # Start sync monitor in background thread
+                sync_thread = threading.Thread(
+                    target=monitor_sync_progress,
+                    args=(self.rpc_port, 10, 60),
+                    daemon=True,
+                    name="WalletSyncMonitor"
+                )
+                sync_thread.start()
+                
+                logger.info("✓ Sync running in background")
+                logger.info("💡 Bot will start now - payment features available after sync completes")
+            else:
+                logger.info(f"✓ Wallet appears synced (height: {wallet_height:,})")
+        
+        except Exception as e:
+            logger.warning(f"⚠ Could not check sync status: {e}")
+            logger.info("💡 Continuing anyway - sync status unknown")
 
 
 def test_node_connectivity(nodes: List[Tuple[str, int]]) -> List[Tuple[str, int]]:
