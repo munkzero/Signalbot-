@@ -2,7 +2,7 @@
 """
 Test wallet health check and backup functionality.
 
-Tests the new features added in PR #XX:
+Tests the new features added in PR #48:
 - check_wallet_health() function
 - backup_wallet() function
 - delete_wallet_files() function

@@ -9,8 +9,10 @@ import time
 import requests
 import socket
 import threading
+import shutil
 from pathlib import Path
 from typing import Optional, Tuple, List
+from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
@@ -19,6 +21,11 @@ logger = logging.getLogger(__name__)
 RESTORE_HEIGHT_OFFSET = 1000  # Blocks to subtract from current height for restore
 NEW_WALLET_RPC_TIMEOUT = 180  # Seconds to wait for new wallet RPC (3 minutes)
 EXISTING_WALLET_RPC_TIMEOUT = 60  # Seconds to wait for existing wallet RPC
+
+# Wallet health check constants
+# This threshold is used to detect wallets stuck at restore_height=0
+# A healthy wallet cache should not have this pattern near the restore_height field
+WALLET_HEALTH_ZERO_THRESHOLD = 15  # Number of consecutive zeros indicating height 0
 
 
 class WalletCreationError(Exception):
@@ -353,6 +360,10 @@ def check_wallet_health(wallet_path: str) -> Tuple[bool, Optional[str]]:
     
     Detects wallets stuck at block 0 by checking the cache file for restore_height.
     
+    The heuristic looks for the 'restore_height' string in the binary cache followed
+    by a high number of null bytes, which indicates height 0 in little-endian format.
+    This is a conservative check that may not catch all cases but avoids false positives.
+    
     Args:
         wallet_path: Path to wallet file (without .keys extension)
         
@@ -386,7 +397,7 @@ def check_wallet_health(wallet_path: str) -> Tuple[bool, Optional[str]]:
                 
                 # If we see restore_height near the start and lots of zeros, likely height 0
                 zero_count = remaining[:20].count(b'\x00')
-                if zero_count > 15:  # More than 15 zeros in first 20 bytes after restore_height
+                if zero_count > WALLET_HEALTH_ZERO_THRESHOLD:
                     logger.warning("⚠ Wallet cache shows restore_height=0 pattern")
                     return False, "Wallet restore height appears to be 0 (will sync from genesis)"
         
@@ -410,9 +421,6 @@ def backup_wallet(wallet_path: str) -> bool:
     Returns:
         True if backup successful
     """
-    import shutil
-    from datetime import datetime
-    
     try:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         wallet_name = os.path.basename(wallet_path)

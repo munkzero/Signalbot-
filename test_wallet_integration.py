@@ -62,8 +62,10 @@ def test_wallet_health_check_unhealthy():
         # Create a fake cache file with restore_height=0 pattern
         # The pattern needs to match what check_wallet_health looks for:
         # 'restore_height' followed by 15+ zeros in the next 20 bytes
+        # Note: This is a simplified test fixture that mimics the pattern
+        # The actual Monero wallet cache format is more complex
         with open(wallet_path, 'wb') as f:
-            # Write some header data
+            # Write some header data (simplified, not actual Monero format)
             f.write(b'monero_wallet_cache_v1')
             f.write(b'\x00' * 100)  # Some padding
             
