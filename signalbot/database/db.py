@@ -215,6 +215,9 @@ class DatabaseManager:
     
     def _run_migrations(self):
         """Run database migrations for schema updates"""
+        print("Checking for database migrations...")
+        migrations_applied = []
+        
         try:
             with self.engine.connect() as conn:
                 # Begin explicit transaction
@@ -227,6 +230,7 @@ class DatabaseManager:
                     if result.scalar() == 0:
                         print("🔄 Adding address_index column to orders table...")
                         conn.execute(text('ALTER TABLE orders ADD COLUMN address_index INTEGER'))
+                        migrations_applied.append("address_index")
                         print("✓ Added address_index column")
                     
                     # Check if payment_txid column exists
@@ -236,13 +240,75 @@ class DatabaseManager:
                     if result.scalar() == 0:
                         print("🔄 Adding payment_txid column to orders table...")
                         conn.execute(text('ALTER TABLE orders ADD COLUMN payment_txid TEXT'))
+                        migrations_applied.append("payment_txid")
                         print("✓ Added payment_txid column")
+                    
+                    # Check if commission_amount column exists
+                    result = conn.execute(text(
+                        "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name='commission_amount'"
+                    ))
+                    if result.scalar() == 0:
+                        print("🔄 Adding commission_amount column to orders table...")
+                        conn.execute(text('ALTER TABLE orders ADD COLUMN commission_amount REAL'))
+                        migrations_applied.append("commission_amount")
+                        print("✓ Added commission_amount column")
+                    
+                    # Check if seller_amount column exists
+                    result = conn.execute(text(
+                        "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name='seller_amount'"
+                    ))
+                    if result.scalar() == 0:
+                        print("🔄 Adding seller_amount column to orders table...")
+                        conn.execute(text('ALTER TABLE orders ADD COLUMN seller_amount REAL'))
+                        migrations_applied.append("seller_amount")
+                        print("✓ Added seller_amount column")
+                    
+                    # Check if commission_paid column exists
+                    result = conn.execute(text(
+                        "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name='commission_paid'"
+                    ))
+                    if result.scalar() == 0:
+                        print("🔄 Adding commission_paid column to orders table...")
+                        conn.execute(text('ALTER TABLE orders ADD COLUMN commission_paid BOOLEAN DEFAULT 0'))
+                        migrations_applied.append("commission_paid")
+                        print("✓ Added commission_paid column")
+                    
+                    # Check if commission_txid column exists
+                    result = conn.execute(text(
+                        "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name='commission_txid'"
+                    ))
+                    if result.scalar() == 0:
+                        print("🔄 Adding commission_txid column to orders table...")
+                        conn.execute(text('ALTER TABLE orders ADD COLUMN commission_txid TEXT'))
+                        migrations_applied.append("commission_txid")
+                        print("✓ Added commission_txid column")
+                    
+                    # Check if commission_paid_at column exists
+                    result = conn.execute(text(
+                        "SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name='commission_paid_at'"
+                    ))
+                    if result.scalar() == 0:
+                        print("🔄 Adding commission_paid_at column to orders table...")
+                        conn.execute(text('ALTER TABLE orders ADD COLUMN commission_paid_at TIMESTAMP'))
+                        migrations_applied.append("commission_paid_at")
+                        print("✓ Added commission_paid_at column")
                     
                     # Commit transaction
                     trans.commit()
                     
+                    # Print summary
+                    if migrations_applied:
+                        print(f"✓ Applied migrations: {', '.join(migrations_applied)}")
+                    else:
+                        print("✓ Database schema up to date")
+                    
                 except Exception as e:
                     trans.rollback()
+                    print(f"❌ Database migration failed: {str(e)}")
+                    print("\nPlease backup your database and try:")
+                    print(f"  cd ~/Desktop/Signalbot--main")
+                    print(f"  cp data/signal_shop.db data/signal_shop.db.backup")
+                    print(f"\nThen report this error on GitHub.")
                     raise e
                 
         except Exception as e:
