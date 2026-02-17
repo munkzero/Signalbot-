@@ -1076,6 +1076,61 @@ class WalletSetupManager:
         """Stop monero-wallet-rpc process (public method for backward compatibility)"""
         self._stop_rpc()
     
+    def get_rpc_status(self) -> dict:
+        """
+        Get current RPC status for debugging.
+        
+        Returns:
+            Dict with status info
+        """
+        status = {
+            "running": False,
+            "pid": None,
+            "port": self.rpc_port,
+            "responding": False,
+            "error": None
+        }
+        
+        # Check if process object exists
+        if self.rpc_process:
+            status["pid"] = self.rpc_process.pid
+            
+            # Check if process is still alive
+            if self.rpc_process.poll() is None:
+                status["running"] = True
+            else:
+                status["error"] = f"Process died with exit code {self.rpc_process.poll()}"
+                return status
+        else:
+            status["error"] = "No RPC process tracked"
+            return status
+        
+        # Check if RPC is responding
+        try:
+            url = f"http://127.0.0.1:{self.rpc_port}/json_rpc"
+            response = requests.post(
+                url,
+                json={"jsonrpc": "2.0", "id": "0", "method": "get_balance"},
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                status["responding"] = True
+                
+                # Get balance info
+                result = response.json().get("result", {})
+                status["balance"] = result.get("balance", 0)
+                status["unlocked_balance"] = result.get("unlocked_balance", 0)
+            else:
+                status["error"] = f"RPC returned status {response.status_code}"
+                
+        except requests.exceptions.ConnectionError:
+            status["error"] = "RPC not accepting connections"
+        except Exception as e:
+            status["error"] = f"RPC check failed: {str(e)}"
+        
+        return status
+    
     def _stop_rpc(self):
         """Stop the RPC process gracefully."""
         
@@ -1274,6 +1329,29 @@ class WalletSetupManager:
             logger.info("⏳ Waiting for RPC to be ready...")
             self._check_and_monitor_sync()
             
+            # FINAL VERIFICATION before returning success
+            logger.info("="*60)
+            logger.info("FINAL VERIFICATION")
+            logger.info("="*60)
+            
+            rpc_status = self.get_rpc_status()
+            
+            if not rpc_status["running"]:
+                logger.error("❌ VERIFICATION FAILED: RPC not running!")
+                logger.error(f"   Error: {rpc_status.get('error', 'Unknown')}")
+                logger.info("="*60)
+                return False, None
+            
+            if not rpc_status["responding"]:
+                logger.error("❌ VERIFICATION FAILED: RPC not responding!")
+                logger.error(f"   Error: {rpc_status.get('error', 'Unknown')}")
+                logger.info("="*60)
+                return False, None
+            
+            logger.info(f"✅ RPC is running (PID: {rpc_status['pid']})")
+            logger.info(f"✅ RPC is responding on port {rpc_status['port']}")
+            logger.info(f"✅ Balance: {rpc_status.get('balance', 0) / 1e12:.12f} XMR")
+            
             logger.info("="*60)
             logger.info("✅ WALLET INITIALIZATION COMPLETE")
             logger.info("="*60)
@@ -1312,6 +1390,29 @@ class WalletSetupManager:
                 timeout = 180  # 3 minutes for new wallets
                 logger.info(f"⏳ Waiting for RPC (timeout: {timeout}s)...")
                 self._check_and_monitor_sync()
+                
+                # FINAL VERIFICATION before returning success
+                logger.info("="*60)
+                logger.info("FINAL VERIFICATION")
+                logger.info("="*60)
+                
+                rpc_status = self.get_rpc_status()
+                
+                if not rpc_status["running"]:
+                    logger.error("❌ VERIFICATION FAILED: RPC not running!")
+                    logger.error(f"   Error: {rpc_status.get('error', 'Unknown')}")
+                    logger.info("="*60)
+                    return False, None
+                
+                if not rpc_status["responding"]:
+                    logger.error("❌ VERIFICATION FAILED: RPC not responding!")
+                    logger.error(f"   Error: {rpc_status.get('error', 'Unknown')}")
+                    logger.info("="*60)
+                    return False, None
+                
+                logger.info(f"✅ RPC is running (PID: {rpc_status['pid']})")
+                logger.info(f"✅ RPC is responding on port {rpc_status['port']}")
+                logger.info(f"✅ Balance: {rpc_status.get('balance', 0) / 1e12:.12f} XMR")
                 
                 logger.info("="*60)
                 logger.info("✅ WALLET INITIALIZATION COMPLETE")

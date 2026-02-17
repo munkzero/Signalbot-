@@ -5434,43 +5434,61 @@ class DashboardWindow(QMainWindow):
                         print(f"✓ DEBUG: Wallet instance created")
                         
                         # Auto-setup wallet (create if missing, start RPC)
-                        print(f"🔧 DEBUG: Running wallet auto-setup...")
+                        print(f"🔧 DEBUG: Running NEW wallet setup with RPC management...")
+                        print(f"🔧 DEBUG: This will:")
+                        print(f"   1. Validate/create wallet")
+                        print(f"   2. Start monero-wallet-rpc")
+                        print(f"   3. Wait for RPC to be ready")
+                        print(f"   4. Verify RPC is responding")
+                        
+                        # Call the setup method that handles everything
                         setup_success, seed_phrase = self.wallet.auto_setup_wallet(create_if_missing=True)
                         
                         if setup_success:
-                            print("✓ Wallet auto-setup completed")
+                            print("✓ Complete wallet setup successful")
+                            
+                            # Show RPC status for debugging
+                            try:
+                                rpc_status = self.wallet.get_rpc_status()
+                                print(f"🔍 RPC Status Check:")
+                                print(f"   Running: {rpc_status['running']}")
+                                print(f"   PID: {rpc_status.get('pid', 'N/A')}")
+                                print(f"   Port: {rpc_status['port']}")
+                                print(f"   Responding: {rpc_status['responding']}")
+                                if rpc_status.get('error'):
+                                    print(f"   Error: {rpc_status['error']}")
+                                if rpc_status.get('balance') is not None:
+                                    balance_xmr = rpc_status['balance'] / 1e12
+                                    print(f"   Balance: {balance_xmr:.12f} XMR")
+                            except Exception as e:
+                                print(f"⚠ Could not get RPC status: {e}")
                             
                             # If new wallet created, show seed phrase
                             if seed_phrase:
                                 QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, 
                                     lambda: self._show_seed_phrase_dialog(seed_phrase))
                             
-                            # Connect to node
-                            print(f"🔧 DEBUG: Attempting to connect to node...")
-                            connection_result = self.wallet.connect()
-                            print(f"🔧 DEBUG: Connection result: {connection_result}")
+                            # RPC is already started and connected by setup_wallet()
+                            # No need to call connect() again - just start the monitor
+                            print("✓ RPC already started and ready")
                             
-                            if connection_result:
-                                print("✓ Wallet connected successfully")
-                                
-                                # Start node health monitor
-                                self.node_monitor = NodeHealthMonitor(self.wallet.setup_manager)
-                                if len(working_nodes) > 1:
-                                    # Use other working nodes as backups (exclude current default)
-                                    backup_nodes = [
-                                        (addr, port) for addr, port in working_nodes 
-                                        if addr != default_node.address or port != default_node.port
-                                    ]
-                                    self.node_monitor.set_backup_nodes(backup_nodes)
-                                self.node_monitor.start()
-                                print("✓ Node health monitor started")
-                            else:
-                                print("⚠ Wallet initialized but connection failed")
-                                # Defer warning dialog until after dashboard loads
-                                QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, lambda: self._show_connection_warning())
-                                self.wallet = None
+                            # Start node health monitor (setup_wallet already connected)
+                            self.node_monitor = NodeHealthMonitor(self.wallet.setup_manager)
+                            if len(working_nodes) > 1:
+                                # Use other working nodes as backups (exclude current default)
+                                backup_nodes = [
+                                    (addr, port) for addr, port in working_nodes 
+                                    if addr != default_node.address or port != default_node.port
+                                ]
+                                self.node_monitor.set_backup_nodes(backup_nodes)
+                            self.node_monitor.start()
+                            print("✓ Node health monitor started")
+                            print("✓ Dashboard initialization complete")
                         else:
-                            print("⚠ Wallet auto-setup failed")
+                            print("❌ Wallet setup failed completely")
+                            print("💡 Check logs above for specific error")
+                            
+                            # Show detailed error
                             QTimer.singleShot(self.DIALOG_DEFER_DELAY_MS, 
                                 lambda: self._show_setup_failed_dialog())
                             self.wallet = None
