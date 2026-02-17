@@ -141,6 +141,7 @@ def monitor_sync_progress(port=18083, update_interval=10, max_stall_time=60):
     last_height = 0
     last_update_time = time.time()
     stalled_warnings = 0
+    no_progress_iterations = 0
     
     while True:
         try:
@@ -158,77 +159,44 @@ def monitor_sync_progress(port=18083, update_interval=10, max_stall_time=60):
             
             wallet_height = height_response.json().get("result", {}).get("height", 0)
             
-            # Get daemon height (blockchain tip)
-            # Use get_height instead of get_info for wallet RPC
-            try:
-                # Try to get blockchain height from wallet RPC
-                info_response = requests.post(
-                    f"http://localhost:{port}/json_rpc",
-                    json={"jsonrpc":"2.0","id":"0","method":"get_height"},
-                    timeout=5
-                )
-                
-                # For wallet RPC, we need to check if we're synced differently
-                # If wallet responds, we can check sync status
-                result = info_response.json().get("result", {})
-                daemon_height = wallet_height  # Assume synced for now
-                
-            except Exception:
-                daemon_height = wallet_height
+            # For wallet RPC, we can't easily get daemon height directly
+            # We monitor progress by checking if height increases over time
+            # If height stops increasing for too long, wallet is likely synced or stalled
             
-            # If we can't determine daemon height reliably, consider synced
-            if daemon_height == 0:
-                logger.warning("⚠ Cannot determine daemon height, assuming synced...")
-                logger.info("✓ Wallet sync status unknown, continuing...")
-                return True
-            
-            # Calculate progress
-            blocks_remaining = max(0, daemon_height - wallet_height)
-            
-            if daemon_height > 0:
-                percentage = (wallet_height / daemon_height) * 100
-            else:
-                percentage = 100.0
-            
-            # Check if synced
-            if blocks_remaining <= 0 or percentage >= 99.9:
-                logger.info(f"✓ Wallet synced! Height: {wallet_height:,}")
-                return True
-            
-            # Check for stalled sync
+            # Check if we're making progress
             if wallet_height == last_height:
+                no_progress_iterations += 1
                 time_stalled = time.time() - last_update_time
-                if time_stalled > max_stall_time:
-                    stalled_warnings += 1
-                    logger.warning(
-                        f"⚠ Sync appears stalled "
-                        f"(no progress for {time_stalled:.0f}s at height {wallet_height:,})"
-                    )
-                    
-                    if stalled_warnings > 3:
-                        logger.error("❌ Sync stalled for too long, may need restart")
-                        return False
+                
+                # If no progress for a while, assume sync is complete or stalled
+                if no_progress_iterations >= 3:  # 3 iterations with no progress
+                    if time_stalled > max_stall_time:
+                        stalled_warnings += 1
+                        logger.warning(
+                            f"⚠ No sync progress for {time_stalled:.0f}s at height {wallet_height:,}"
+                        )
+                        
+                        if stalled_warnings > 3:
+                            logger.warning("⚠ Sync appears stalled or already complete")
+                            logger.info(f"✓ Wallet height stable at {wallet_height:,}")
+                            return True
+                    else:
+                        # Just stable, probably synced
+                        logger.info(f"✓ Wallet height stable at {wallet_height:,} - assuming synced")
+                        return True
             else:
                 # Progress made
+                no_progress_iterations = 0
                 last_update_time = time.time()
                 stalled_warnings = 0
                 
                 # Calculate sync speed
                 blocks_synced = wallet_height - last_height
-                blocks_per_second = blocks_synced / update_interval
                 
-                if blocks_per_second > 0:
-                    eta_seconds = blocks_remaining / blocks_per_second
-                    eta_minutes = eta_seconds / 60
-                    eta_str = f", ETA: {eta_minutes:.1f} min" if eta_minutes < 120 else ""
-                else:
-                    eta_str = ""
-                
-                # Progress update
+                # Progress update - we don't know total, so just show current height
                 logger.info(
-                    f"🔄 Syncing wallet... {percentage:.1f}% "
-                    f"({wallet_height:,} / {daemon_height:,} blocks, "
-                    f"{blocks_remaining:,} remaining{eta_str})"
+                    f"🔄 Syncing wallet... Height: {wallet_height:,} "
+                    f"(+{blocks_synced} blocks in {update_interval}s)"
                 )
             
             last_height = wallet_height
@@ -787,8 +755,6 @@ class WalletSetupManager:
         wallet_dir = str(self.wallet_path.parent)
         cleanup_orphaned_wallets(wallet_dir)
         
-        seed_phrase = None
-        
         # Check if wallet already exists
         if check_existing_wallet(wallet_path_str):
             logger.info("✓ Using existing wallet")
@@ -823,7 +789,6 @@ class WalletSetupManager:
                     logger.warning("⚠️  SAVE YOUR SEED PHRASE!")
                     logger.warning(f"   {seed}")
                     logger.warning("   This is the ONLY way to recover your wallet!")
-                    seed_phrase = seed
                 
                 # Start RPC after creation
                 logger.info("🔌 Starting wallet RPC...")
@@ -839,7 +804,7 @@ class WalletSetupManager:
                 
                 logger.info("✅ Wallet system initialized successfully")
                 logger.info("="*60)
-                return True, seed_phrase
+                return True, seed
                 
             except WalletCreationError as e:
                 logger.error(f"❌ {e}")
@@ -860,11 +825,13 @@ class WalletSetupManager:
         """
         Check wallet sync status and start monitoring if needed.
         Internal helper method for setup_wallet.
+        
+        Monitors wallet height changes over time to detect if syncing is needed.
         """
         logger.info("🔍 Checking wallet sync status...")
         
         try:
-            # Get wallet height
+            # Get initial wallet height
             height_response = requests.post(
                 f"http://localhost:{self.rpc_port}/json_rpc",
                 json={"jsonrpc":"2.0","id":"0","method":"get_height"},
@@ -875,14 +842,27 @@ class WalletSetupManager:
                 logger.warning("⚠ Could not check sync status, continuing anyway...")
                 return
             
-            wallet_height = height_response.json().get("result", {}).get("height", 0)
+            initial_height = height_response.json().get("result", {}).get("height", 0)
             
-            # For wallet RPC, we can't easily get daemon height
-            # We'll check if height is 0 or very low to detect fresh wallet
-            if wallet_height < 100:
-                # New wallet, needs to sync
-                logger.info(f"⏳ Wallet appears to need syncing (height: {wallet_height})")
-                logger.info(f"🔄 Starting background sync (this may take 5-60 minutes depending on internet speed)...")
+            # Wait a moment and check again to see if height is increasing
+            time.sleep(2)
+            
+            height_response2 = requests.post(
+                f"http://localhost:{self.rpc_port}/json_rpc",
+                json={"jsonrpc":"2.0","id":"0","method":"get_height"},
+                timeout=5
+            )
+            
+            if height_response2.status_code == 200:
+                current_height = height_response2.json().get("result", {}).get("height", 0)
+            else:
+                current_height = initial_height
+            
+            # If height is changing or very low, wallet is syncing
+            if current_height > initial_height or initial_height < 100:
+                logger.info(f"⏳ Wallet syncing (height: {current_height})")
+                logger.info(f"🔄 Starting background sync monitor...")
+                logger.info(f"   This may take 5-60 minutes depending on internet speed")
                 
                 # Start sync monitor in background thread
                 sync_thread = threading.Thread(
@@ -893,10 +873,11 @@ class WalletSetupManager:
                 )
                 sync_thread.start()
                 
-                logger.info("✓ Sync running in background")
+                logger.info("✓ Sync monitor running in background")
                 logger.info("💡 Bot will start now - payment features available after sync completes")
             else:
-                logger.info(f"✓ Wallet appears synced (height: {wallet_height:,})")
+                # Height stable and reasonable, probably synced
+                logger.info(f"✓ Wallet appears synced (height: {current_height:,})")
         
         except Exception as e:
             logger.warning(f"⚠ Could not check sync status: {e}")
