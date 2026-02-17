@@ -599,7 +599,7 @@ class WalletSetupManager:
     """Manages Monero wallet creation and RPC lifecycle"""
     
     def __init__(self, wallet_path: str, daemon_address: str, daemon_port: int, 
-                 rpc_port: int = 18082, password: str = ""):
+                 rpc_port: int = 18083, password: str = ""):
         self.wallet_path = Path(wallet_path)
         self.daemon_address = daemon_address
         self.daemon_port = daemon_port
@@ -1131,6 +1131,44 @@ class WalletSetupManager:
         
         return status
     
+    def _initialize_wallet_object(self) -> bool:
+        """
+        Initialize monero-python Wallet object to connect to running RPC.
+        
+        This must be called AFTER start_rpc() succeeds.
+        
+        Returns:
+            True if wallet object initialized successfully
+        """
+        try:
+            from monero.wallet import Wallet
+            from monero.backends.jsonrpc import JSONRPCWallet
+            
+            logger.info("🔗 Connecting monero-python Wallet to RPC...")
+            
+            # Create JSON-RPC backend pointing to our running RPC
+            backend = JSONRPCWallet(
+                host='127.0.0.1',
+                port=self.rpc_port,
+                user='',
+                password=''
+            )
+            
+            # Initialize Wallet object
+            self.wallet = Wallet(backend)
+            
+            # Test connection by getting address
+            address = self.wallet.address()
+            logger.info(f"✓ Wallet object connected to RPC at 127.0.0.1:{self.rpc_port}")
+            logger.info(f"✓ Primary address: {address}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize wallet object: {e}")
+            logger.error(f"   Make sure 'monero' python package is installed")
+            return False
+    
     def _stop_rpc(self):
         """Stop the RPC process gracefully."""
         
@@ -1325,6 +1363,13 @@ class WalletSetupManager:
             
             logger.info(f"✓ RPC process started successfully")
             
+            # Initialize wallet object to connect to RPC
+            if not self._initialize_wallet_object():
+                logger.error("❌ Failed to initialize wallet object")
+                logger.warning("⚠ RPC is running but wallet object not connected")
+                # Don't fail completely - RPC is still usable
+                # But wallet features won't work
+            
             # Check and monitor sync status
             logger.info("⏳ Waiting for RPC to be ready...")
             self._check_and_monitor_sync()
@@ -1386,6 +1431,13 @@ class WalletSetupManager:
                     return False, None
                 
                 logger.info(f"✓ RPC process started (PID: {self.rpc_process.pid if self.rpc_process else 'unknown'})")
+                
+                # Initialize wallet object to connect to RPC
+                if not self._initialize_wallet_object():
+                    logger.error("❌ Failed to initialize wallet object")
+                    logger.warning("⚠ RPC is running but wallet object not connected")
+                    # Don't fail completely - RPC is still usable
+                    # But wallet features won't work
                 
                 # Check and monitor sync status
                 timeout = 180  # 3 minutes for new wallets
@@ -1536,7 +1588,7 @@ def test_node_connectivity(nodes: List[Tuple[str, int]]) -> List[Tuple[str, int]
 
 
 def initialize_wallet_system(wallet_path: str, daemon_address: str, daemon_port: int, 
-                            rpc_port: int = 18082, password: str = "") -> Optional[WalletSetupManager]:
+                            rpc_port: int = 18083, password: str = "") -> Optional[WalletSetupManager]:
     """
     Initialize wallet system with graceful error handling.
     Returns WalletSetupManager instance or None if setup failed.

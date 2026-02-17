@@ -1896,14 +1896,19 @@ class WalletTab(QWidget):
             return
         
         try:
-            # Get primary address
-            primary = self.wallet.get_address()
-            self.primary_address_label.setText(primary)
+            # Get primary address using safe method
+            primary = self.wallet.address()
             
+            if primary:
+                self.primary_address_label.setText(primary)
+            else:
+                self.primary_address_label.setText("Not connected")
+                
             # Note: Getting subaddresses would require additional wallet methods
             # For now, we'll keep the current list
         except Exception as e:
             print(f"Error refreshing addresses: {e}")
+            self.primary_address_label.setText("Error loading address")
     
     def refresh_transactions(self):
         """Refresh transaction history"""
@@ -1973,23 +1978,35 @@ class WalletTab(QWidget):
             self.show_not_connected()
             return
         
+        # Check if wallet is connected
+        if not self.wallet.is_connected():
+            QMessageBox.warning(
+                self,
+                "Wallet Not Connected",
+                "Wallet not connected. Please restart the application."
+            )
+            return
+        
         label, ok = QInputDialog.getText(self, "Generate Subaddress", "Enter label (optional):")
         
         if ok:
             try:
-                subaddr = self.wallet.create_subaddress(label if label else None)
-                address = subaddr.get('address', '')
+                # Use new safe new_address() method
+                address = self.wallet.new_address(account=0, label=label if label else "")
                 
-                # Add to list
-                item = QListWidgetItem(f"{label or 'Unlabeled'}: {address[:30]}...")
-                item.setData(Qt.UserRole, address)
-                self.subaddress_list.addItem(item)
-                
-                QMessageBox.information(
-                    self,
-                    "Success",
-                    f"Subaddress generated:\n{address}\n\nClick to view QR code."
-                )
+                if address:
+                    # Add to list
+                    item = QListWidgetItem(f"{label or 'Unlabeled'}: {address[:30]}...")
+                    item.setData(Qt.UserRole, address)
+                    self.subaddress_list.addItem(item)
+                    
+                    QMessageBox.information(
+                        self,
+                        "Success",
+                        f"Subaddress generated:\n{address}\n\nClick to view QR code."
+                    )
+                else:
+                    QMessageBox.warning(self, "Error", "Failed to generate subaddress")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to generate subaddress:\n{e}")
     
