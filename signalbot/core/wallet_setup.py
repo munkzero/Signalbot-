@@ -987,9 +987,15 @@ class WalletSetupManager:
             is_new_wallet: True if this is a newly created wallet (uses extended timeout)
             
         Returns:
-            True if RPC started successfully
+            True if RPC started successfully OR is already running under our control
         """
-        # Clean up any processes on our port (even orphans from previous runs)
+        # Check if we already have a running RPC process tracked
+        if self.rpc_process and self.rpc_process.poll() is None:
+            # Our process is still alive
+            logger.debug(f"RPC already running under our control (PID: {self.rpc_process.pid})")
+            return True
+        
+        # Clean up any processes on our port (orphans from previous runs or dead processes)
         # This ensures we always get a fresh start with proper process tracking
         self._cleanup_orphaned_rpc()
         
