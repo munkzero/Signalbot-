@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize
 from PyQt5.QtGui import QFont, QPixmap, QCursor, QColor, QIcon
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict
 
 from ..database.db import DatabaseManager
 from ..models.seller import SellerManager
@@ -1348,10 +1348,50 @@ class RefreshBalanceWorker(QThread):
     
     def run(self):
         try:
+            # Try wallet object's get_balance() method first
             balance = self.wallet.get_balance()
             self.finished.emit(balance)
         except Exception as e:
-            self.error.emit(str(e))
+            # Fallback to direct RPC call
+            try:
+                import requests
+                
+                rpc_port = 18083
+                if hasattr(self.wallet, 'rpc_port'):
+                    rpc_port = self.wallet.rpc_port
+                
+                response = requests.post(
+                    f'http://127.0.0.1:{rpc_port}/json_rpc',
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": "0",
+                        "method": "get_balance",
+                        "params": {"account_index": 0}
+                    },
+                    headers={'Content-Type': 'application/json'},
+                    timeout=5
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'result' in data:
+                        # Balance is in atomic units (piconero) - convert to XMR
+                        # 1 XMR = 1e12 atomic units
+                        balance_atomic = data['result'].get('balance', 0)
+                        unlocked_atomic = data['result'].get('unlocked_balance', 0)
+                        
+                        total_xmr = balance_atomic / 1e12
+                        unlocked_xmr = unlocked_atomic / 1e12
+                        locked_xmr = total_xmr - unlocked_xmr
+                        
+                        self.finished.emit((total_xmr, unlocked_xmr, locked_xmr))
+                        print(f"✓ Got balance from direct RPC: {total_xmr:.12f} XMR")
+                        return
+                
+                # If direct RPC also failed, emit the original error
+                self.error.emit(str(e))
+            except Exception as e2:
+                self.error.emit(f"{str(e)} (Direct RPC also failed: {str(e2)})")
 
 
 class RefreshTransfersWorker(QThread):
@@ -1890,25 +1930,94 @@ class WalletTab(QWidget):
         self.connection_indicator.setStyleSheet("color: red; font-size: 20px;")
         self.connection_status.setText("Error")
     
+    def _rpc_call_direct(self, method: str, params: Optional[dict] = None) -> Optional[dict]:
+        """
+        Make direct RPC call to wallet RPC (fallback when wallet object fails).
+        
+        Args:
+            method: RPC method name (e.g., "get_address", "get_balance")
+            params: Optional parameters dict
+            
+        Returns:
+            Response dict or None if failed
+        """
+        try:
+            import requests
+            
+            # Use default RPC port
+            rpc_port = 18083
+            if self.wallet and hasattr(self.wallet, 'rpc_port'):
+                rpc_port = self.wallet.rpc_port
+            
+            url = f'http://127.0.0.1:{rpc_port}/json_rpc'
+            
+            payload = {
+                "jsonrpc": "2.0",
+                "id": "0",
+                "method": method
+            }
+            
+            if params:
+                payload["params"] = params
+            
+            response = requests.post(
+                url,
+                json=payload,
+                headers={'Content-Type': 'application/json'},
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'result' in data:
+                    return data['result']
+                elif 'error' in data:
+                    print(f"RPC Error: {data['error']}")
+                    return None
+            else:
+                print(f"RPC returned status {response.status_code}")
+                return None
+                
+        except Exception as e:
+            print(f"Direct RPC call failed: {e}")
+            return None
+    
     def refresh_addresses(self):
         """Refresh wallet addresses"""
         if not self.wallet:
             return
         
+        address_found = False
+        
+        # Try method 1: Use wallet object's address() method
         try:
-            # Get primary address using safe method
             primary = self.wallet.address()
             
             if primary:
                 self.primary_address_label.setText(primary)
-            else:
-                self.primary_address_label.setText("Not connected")
-                
-            # Note: Getting subaddresses would require additional wallet methods
-            # For now, we'll keep the current list
+                address_found = True
+                print(f"✓ Got address from wallet object: {primary[:20]}...")
         except Exception as e:
-            print(f"Error refreshing addresses: {e}")
-            self.primary_address_label.setText("Error loading address")
+            print(f"Wallet object address() failed: {e}")
+        
+        # Try method 2: Direct RPC call if wallet object method failed
+        if not address_found:
+            print("Attempting direct RPC call to get_address...")
+            try:
+                result = self._rpc_call_direct("get_address", {"account_index": 0})
+                
+                if result and 'address' in result:
+                    primary = result['address']
+                    self.primary_address_label.setText(primary)
+                    address_found = True
+                    print(f"✓ Got address from direct RPC: {primary[:20]}...")
+            except Exception as e:
+                print(f"Direct RPC address fetch failed: {e}")
+        
+        # If both methods failed, show not connected
+        if not address_found:
+            self.primary_address_label.setText("Not connected")
+            print("❌ Failed to fetch address from both methods")
     
     def refresh_transactions(self):
         """Refresh transaction history"""
@@ -1978,37 +2087,53 @@ class WalletTab(QWidget):
             self.show_not_connected()
             return
         
-        # Check if wallet is connected
-        if not self.wallet.is_connected():
-            QMessageBox.warning(
-                self,
-                "Wallet Not Connected",
-                "Wallet not connected. Please restart the application."
-            )
-            return
-        
         label, ok = QInputDialog.getText(self, "Generate Subaddress", "Enter label (optional):")
         
         if ok:
+            address = None
+            
+            # Try method 1: Use wallet object's new_address() method
             try:
-                # Use new safe new_address() method
-                address = self.wallet.new_address(account=0, label=label if label else "")
-                
-                if address:
-                    # Add to list
-                    item = QListWidgetItem(f"{label or 'Unlabeled'}: {address[:30]}...")
-                    item.setData(Qt.UserRole, address)
-                    self.subaddress_list.addItem(item)
-                    
-                    QMessageBox.information(
-                        self,
-                        "Success",
-                        f"Subaddress generated:\n{address}\n\nClick to view QR code."
-                    )
-                else:
-                    QMessageBox.warning(self, "Error", "Failed to generate subaddress")
+                if self.wallet.is_connected():
+                    address = self.wallet.new_address(account=0, label=label if label else "")
+                    if address:
+                        print(f"✓ Generated subaddress via wallet object: {address[:20]}...")
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to generate subaddress:\n{e}")
+                print(f"Wallet object new_address() failed: {e}")
+            
+            # Try method 2: Direct RPC call if wallet object method failed
+            if not address:
+                print("Attempting direct RPC call to create_address...")
+                try:
+                    result = self._rpc_call_direct("create_address", {
+                        "account_index": 0,
+                        "label": label if label else ""
+                    })
+                    
+                    if result and 'address' in result:
+                        address = result['address']
+                        print(f"✓ Generated subaddress via direct RPC: {address[:20]}...")
+                except Exception as e:
+                    print(f"Direct RPC create_address failed: {e}")
+            
+            # Show result
+            if address:
+                # Add to list
+                item = QListWidgetItem(f"{label or 'Unlabeled'}: {address[:30]}...")
+                item.setData(Qt.UserRole, address)
+                self.subaddress_list.addItem(item)
+                
+                QMessageBox.information(
+                    self,
+                    "Success",
+                    f"Subaddress generated:\n{address}\n\nClick to view QR code."
+                )
+            else:
+                QMessageBox.critical(
+                    self, 
+                    "Error", 
+                    "Failed to generate subaddress.\nMake sure wallet RPC is running on port 18083."
+                )
     
     def copy_address(self, address):
         """Copy address to clipboard"""
