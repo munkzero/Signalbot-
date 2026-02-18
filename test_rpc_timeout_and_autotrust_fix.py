@@ -116,7 +116,7 @@ def test_start_sh_autotrust_autofix():
     # Read start.sh
     start_sh_path = os.path.join(os.path.dirname(__file__), 'start.sh')
     try:
-        with open(start_sh_path, 'r') as f:
+        with open(start_sh_path, 'r', encoding='utf-8') as f:
             content = f.read()
     except FileNotFoundError:
         print("  ✗ start.sh not found")

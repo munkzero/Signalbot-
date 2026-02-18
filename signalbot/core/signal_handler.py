@@ -567,7 +567,7 @@ Thank you for your purchase!
             
             for path in config_paths:
                 if os.path.exists(path):
-                    with open(path, 'r') as f:
+                    with open(path, 'r', encoding='utf-8') as f:
                         config = json.load(f)
                         trust_mode = config.get('trustNewIdentities', 'NOT_SET')
                         

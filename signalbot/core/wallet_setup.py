@@ -952,7 +952,7 @@ class WalletSetupManager:
             elapsed = time.time() - start_time
             
             # Log progress every 15 seconds
-            if elapsed - (last_log_time - start_time) >= 15:
+            if time.time() - last_log_time >= 15:
                 logger.info(f"   Still waiting... ({elapsed:.0f}s elapsed, {timeout - elapsed:.0f}s remaining)")
                 last_log_time = time.time()
             
