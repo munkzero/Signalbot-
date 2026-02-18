@@ -28,6 +28,12 @@ EXISTING_WALLET_RPC_TIMEOUT = 60  # Seconds to wait for existing wallet RPC
 # A healthy wallet cache should not have this pattern near the restore_height field
 WALLET_HEALTH_ZERO_THRESHOLD = 15  # Number of consecutive zeros indicating height 0
 
+# Maximum expected cache file size in MB
+# A healthy cache file is typically under 5-10MB. Files over 50MB may indicate
+# a wallet trying to sync from block 0, which would take hours and create huge cache files.
+# This is used as a warning threshold, not a hard limit.
+MAX_HEALTHY_CACHE_SIZE_MB = 50
+
 
 class WalletCreationError(Exception):
     """Raised when wallet creation or setup fails"""
@@ -390,7 +396,7 @@ def check_wallet_health(wallet_path: str) -> Tuple[bool, Optional[str]]:
     try:
         # Check file size first - cache shouldn't be huge for normal operation
         file_size_mb = cache_file.stat().st_size / (1024 * 1024)
-        if file_size_mb > 50:  # Cache shouldn't be more than ~50MB normally
+        if file_size_mb > MAX_HEALTHY_CACHE_SIZE_MB:
             logger.warning(f"⚠ Large cache file detected: {file_size_mb:.1f}MB")
             logger.warning("   This may indicate wallet is syncing from block 0")
         

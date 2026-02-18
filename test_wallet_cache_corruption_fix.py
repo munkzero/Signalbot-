@@ -61,7 +61,7 @@ def test_enhanced_check_wallet_health():
     checks = [
         ('cache_file = Path(wallet_path)', 'Use Path object'),
         ('file_size_mb = cache_file.stat().st_size / (1024 * 1024)', 'Check file size'),
-        ('if file_size_mb > 50:', 'Warn on large cache'),
+        ('if file_size_mb > MAX_HEALTHY_CACHE_SIZE_MB:', 'Warn on large cache'),
         ('consecutive_zeros = 0', 'Track consecutive zeros'),
         ('for byte in after_marker:', 'Iterate through bytes after marker'),
         ('if byte == 0:', 'Check for zero byte'),
