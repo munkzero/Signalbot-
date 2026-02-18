@@ -28,6 +28,12 @@ EXISTING_WALLET_RPC_TIMEOUT = 60  # Seconds to wait for existing wallet RPC
 # A healthy wallet cache should not have this pattern near the restore_height field
 WALLET_HEALTH_ZERO_THRESHOLD = 15  # Number of consecutive zeros indicating height 0
 
+# Maximum expected cache file size in MB
+# A healthy cache file is typically under 5-10MB. Files over 50MB may indicate
+# a wallet trying to sync from block 0, which would take hours and create huge cache files.
+# This is used as a warning threshold, not a hard limit.
+MAX_HEALTHY_CACHE_SIZE_MB = 50
+
 
 class WalletCreationError(Exception):
     """Raised when wallet creation or setup fails"""
@@ -364,13 +370,14 @@ def cleanup_orphaned_wallets(wallet_dir: str):
 
 def check_wallet_health(wallet_path: str) -> Tuple[bool, Optional[str]]:
     """
-    Check if existing wallet is healthy or needs recreation.
+    Check if existing wallet cache is healthy or corrupted.
     
-    Detects wallets stuck at block 0 by checking the cache file for restore_height.
+    Detects wallets stuck at restore_height=0 by checking the cache file for patterns
+    indicating the wallet would try to sync from genesis block (block 0).
     
     The heuristic looks for the 'restore_height' string in the binary cache followed
     by a high number of null bytes, which indicates height 0 in little-endian format.
-    This is a conservative check that may not catch all cases but avoids false positives.
+    Also checks for abnormally large cache files which may indicate a sync from block 0.
     
     Args:
         wallet_path: Path to wallet file (without .keys extension)
@@ -378,15 +385,21 @@ def check_wallet_health(wallet_path: str) -> Tuple[bool, Optional[str]]:
     Returns:
         Tuple of (is_healthy, reason_if_unhealthy)
     """
-    cache_file = wallet_path
+    cache_file = Path(wallet_path)
     
     # Check if cache exists
-    if not os.path.exists(cache_file):
+    if not cache_file.exists():
         # No cache is fine - it will be rebuilt
-        logger.debug("No cache file found (will be rebuilt on first sync)")
+        logger.debug("✓ No cache file found (will be rebuilt on first sync)")
         return True, None
     
     try:
+        # Check file size first - cache shouldn't be huge for normal operation
+        file_size_mb = cache_file.stat().st_size / (1024 * 1024)
+        if file_size_mb > MAX_HEALTHY_CACHE_SIZE_MB:
+            logger.warning(f"⚠ Large cache file detected: {file_size_mb:.1f}MB")
+            logger.warning("   This may indicate wallet is syncing from block 0")
+        
         # Read first few KB of cache to check for restore_height markers
         # The cache file is binary, but we can scan for patterns
         with open(cache_file, 'rb') as f:
@@ -399,18 +412,26 @@ def check_wallet_health(wallet_path: str) -> Tuple[bool, Optional[str]]:
             if b'restore_height' in data:
                 # Find position of restore_height
                 pos = data.find(b'restore_height')
-                # Check if followed by zeros indicating height 0
-                # This is a heuristic check - exact format may vary
-                remaining = data[pos:pos+50]  # Check next 50 bytes
+                # Check bytes AFTER the 'restore_height' string for zeros
+                # Skip past the string itself (14 bytes)
+                after_marker = data[pos + 14:pos + 64]  # Check 50 bytes after marker
                 
-                # If we see restore_height near the start and lots of zeros, likely height 0
-                zero_count = remaining[:20].count(b'\x00')
-                if zero_count > WALLET_HEALTH_ZERO_THRESHOLD:
-                    logger.warning("⚠ Wallet cache shows restore_height=0 pattern")
-                    return False, "Wallet restore height appears to be 0 (will sync from genesis)"
+                # Count consecutive zeros after restore_height marker
+                consecutive_zeros = 0
+                for byte in after_marker:
+                    if byte == 0:
+                        consecutive_zeros += 1
+                    else:
+                        break
+                
+                # If we see many consecutive zeros, likely restore_height=0
+                if consecutive_zeros > WALLET_HEALTH_ZERO_THRESHOLD:
+                    logger.warning("⚠ DETECTED: Wallet cache corrupted (restore_height=0)")
+                    logger.warning(f"   Found {consecutive_zeros} consecutive zero bytes after restore_height marker")
+                    return False, "Corrupted cache detected (restore_height=0)"
         
         # If we got here, cache looks okay
-        logger.debug("Wallet cache appears healthy")
+        logger.debug("✓ Wallet cache appears healthy")
         return True, None
         
     except Exception as e:
@@ -470,6 +491,46 @@ def backup_wallet(wallet_path: str) -> bool:
     except Exception as e:
         logger.error(f"❌ Failed to backup wallet: {e}")
         return False
+
+
+def delete_corrupted_cache(wallet_path: str) -> bool:
+    """
+    Delete corrupted wallet cache file, keeping keys file safe.
+    
+    This is specifically for fixing corrupted cache files (e.g., restore_height=0)
+    without recreating the entire wallet. Only the cache file is deleted,
+    preserving the .keys file which contains the actual wallet.
+    
+    Args:
+        wallet_path: Path to wallet (without extension)
+        
+    Returns:
+        True if cache deleted successfully or doesn't exist
+    """
+    cache_file = Path(wallet_path)
+    keys_file = Path(f"{wallet_path}.keys")
+    
+    # Safety check - keys file MUST exist
+    if not keys_file.exists():
+        logger.error("❌ Keys file not found - cannot delete cache!")
+        logger.error("   Aborting to prevent data loss")
+        return False
+    
+    # Delete cache file if it exists
+    if cache_file.exists():
+        try:
+            logger.warning(f"🗑 Deleting corrupted cache: {cache_file.name}")
+            cache_file.unlink()
+            logger.info("✓ Corrupted cache deleted")
+            logger.info(f"✓ Keys file preserved: {keys_file.name}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to delete cache: {e}")
+            return False
+    
+    # Cache doesn't exist - that's fine
+    logger.debug("Cache file doesn't exist (nothing to delete)")
+    return True
 
 
 def delete_wallet_files(wallet_path: str) -> bool:
@@ -1352,29 +1413,43 @@ class WalletSetupManager:
                 wallet_exists = False  # Force recreation
             else:
                 # Check wallet health (restore height 0 detection)
+                logger.info("🔍 Checking wallet cache health...")
                 is_healthy, reason = check_wallet_health(wallet_path_str)
                 logger.info(f"Wallet healthy: {is_healthy}")
                 
                 if not is_healthy:
-                    logger.warning(f"⚠ Wallet unhealthy: {reason}")
-                    logger.warning("⚠ Will backup and recreate wallet")
+                    logger.warning(f"⚠ Wallet cache corrupted: {reason}")
+                    logger.warning("⚠ This would cause RPC to hang trying to sync from block 0")
                     
-                    # Backup existing wallet before recreation
-                    if backup_wallet(wallet_path_str):
-                        logger.info("✓ Wallet backed up successfully")
+                    # Try less aggressive fix first: delete only cache, keep keys
+                    logger.info("🔧 Attempting automatic cache repair...")
+                    if delete_corrupted_cache(wallet_path_str):
+                        logger.info("✓ Corrupted cache removed")
+                        logger.info("🔧 Will rebuild cache from current blockchain height")
+                        logger.info("✓ Keys file preserved - wallet intact")
+                        # Cache now gone, RPC will rebuild it correctly
+                        # Continue to RPC startup below
+                    else:
+                        # Cache deletion failed - fall back to full recreation
+                        logger.error("❌ Failed to delete corrupted cache")
+                        logger.warning("⚠ Falling back to full wallet recreation...")
                         
-                        # Delete old wallet files
-                        if delete_wallet_files(wallet_path_str):
-                            logger.info("✓ Old wallet files removed")
-                            wallet_exists = False  # Force recreation
+                        # Backup existing wallet before recreation
+                        if backup_wallet(wallet_path_str):
+                            logger.info("✓ Wallet backed up successfully")
+                            
+                            # Delete old wallet files
+                            if delete_wallet_files(wallet_path_str):
+                                logger.info("✓ Old wallet files removed")
+                                wallet_exists = False  # Force recreation
+                            else:
+                                logger.error("❌ Failed to delete old wallet files")
+                                logger.info("="*60)
+                                return False, None
                         else:
-                            logger.error("❌ Failed to delete old wallet files")
+                            logger.error("❌ Failed to backup wallet")
                             logger.info("="*60)
                             return False, None
-                    else:
-                        logger.error("❌ Failed to backup wallet")
-                        logger.info("="*60)
-                        return False, None
         
         # If wallet exists and is healthy, use it
         if wallet_exists:
