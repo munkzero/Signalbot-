@@ -372,7 +372,12 @@ class OrderManager:
         
         # Send notification to customer
         try:
-            signal_handler.send_shipping_notification(order.customer_signal_id, tracking_number)
+            signal_handler.send_shipping_notification(
+                order.customer_signal_id, 
+                order.order_id,
+                tracking_number,
+                order.shipped_at
+            )
         except Exception as e:
             # Raise custom exception for better error handling in GUI
             raise ShippingNotificationError(f"Order marked as shipped but notification failed: {str(e)}")
@@ -458,7 +463,12 @@ class OrderManager:
         
         # Send notification
         try:
-            signal_handler.send_shipping_notification(order.customer_signal_id, order.tracking_number)
+            signal_handler.send_shipping_notification(
+                order.customer_signal_id, 
+                order.order_id,
+                order.tracking_number,
+                order.shipped_at
+            )
             logger.info(f"Resent tracking notification for order {order_id} to {order.customer_signal_id}")
         except Exception as e:
             logger.error(f"Failed to resend tracking notification: {str(e)}")

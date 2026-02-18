@@ -91,6 +91,17 @@ class BuyerHandler:
         
         # Add product cache
         self.product_cache = ProductCache(product_manager, cache_duration=300)
+        
+        # Conversation state tracking for order flow
+        # Format: {buyer_signal_id: {
+        #     'state': 'awaiting_name'|'awaiting_address',
+        #     'product_id': str,
+        #     'quantity': int,
+        #     'recipient_identity': str,
+        #     'name': str (only after name collected),
+        #     'address': str (only after address collected)
+        # }}
+        self.conversation_states = {}
     
     @staticmethod
     def _format_product_id(product_id: Optional[str]) -> str:
@@ -245,6 +256,11 @@ class BuyerHandler:
         
         print(f"DEBUG: Processing buyer command: {message_text[:50]}")
         
+        # Check if user is in a conversation flow (collecting shipping info)
+        if buyer_signal_id in self.conversation_states:
+            self._handle_conversation_state(buyer_signal_id, message_text, recipient_identity)
+            return
+        
         # Command: "catalog" or "show products" - improved matching to avoid false positives
         # Match specific keywords or common phrases
         catalog_keywords = ['catalog', 'catalogue', 'menu']
@@ -268,8 +284,8 @@ class BuyerHandler:
         order_match = self._parse_order_command(message_text)
         if order_match:
             product_id, quantity = order_match
-            print(f"DEBUG: Creating order for product {product_id} qty {quantity}")
-            self.create_order(buyer_signal_id, product_id, quantity, recipient_identity)
+            print(f"DEBUG: Initiating order conversation for product {product_id} qty {quantity}")
+            self._initiate_order_conversation(buyer_signal_id, product_id, quantity, recipient_identity)
             return
         
         # Command: "help"
@@ -277,6 +293,98 @@ class BuyerHandler:
             print(f"DEBUG: Sending help to {buyer_signal_id}")
             self.send_help(buyer_signal_id, recipient_identity)
             return
+    
+    def _initiate_order_conversation(self, buyer_signal_id: str, product_id: str, quantity: int, recipient_identity: Optional[str] = None):
+        """
+        Start the order conversation flow by asking for customer name
+        
+        Args:
+            buyer_signal_id: Buyer's Signal ID
+            product_id: Product ID to order
+            quantity: Quantity to order
+            recipient_identity: Identity that received the message
+        """
+        # Store conversation state
+        self.conversation_states[buyer_signal_id] = {
+            'state': 'awaiting_name',
+            'product_id': product_id,
+            'quantity': quantity,
+            'recipient_identity': recipient_identity
+        }
+        
+        # Ask for name
+        self.signal_handler.send_message(
+            recipient=buyer_signal_id,
+            message="📝 What's your name?",
+            sender_identity=recipient_identity
+        )
+        print(f"DEBUG: Waiting for name from {buyer_signal_id}")
+    
+    def _handle_conversation_state(self, buyer_signal_id: str, message_text: str, recipient_identity: Optional[str] = None):
+        """
+        Handle conversation state for collecting shipping information
+        
+        Args:
+            buyer_signal_id: Buyer's Signal ID
+            message_text: Message content
+            recipient_identity: Identity that received the message
+        """
+        state_info = self.conversation_states[buyer_signal_id]
+        current_state = state_info['state']
+        
+        if current_state == 'awaiting_name':
+            # Store the name and ask for address
+            state_info['name'] = message_text.strip()
+            state_info['state'] = 'awaiting_address'
+            
+            self.signal_handler.send_message(
+                recipient=buyer_signal_id,
+                message="📍 What's your shipping address?\n(Please include street, city, and postal code)",
+                sender_identity=state_info.get('recipient_identity', recipient_identity)
+            )
+            print(f"DEBUG: Received name, waiting for address from {buyer_signal_id}")
+        
+        elif current_state == 'awaiting_address':
+            # Store the address and create the order
+            state_info['address'] = message_text.strip()
+            
+            # Create the order with shipping info
+            self._create_order_with_shipping_info(
+                buyer_signal_id,
+                state_info['product_id'],
+                state_info['quantity'],
+                state_info['name'],
+                state_info['address'],
+                state_info.get('recipient_identity', recipient_identity)
+            )
+            
+            # Clear conversation state
+            del self.conversation_states[buyer_signal_id]
+            print(f"DEBUG: Order creation completed for {buyer_signal_id}")
+    
+    def _create_order_with_shipping_info(self, buyer_signal_id: str, product_id: str, quantity: int, 
+                                         name: str, address: str, recipient_identity: Optional[str] = None):
+        """
+        Create order with collected shipping information
+        
+        Args:
+            buyer_signal_id: Buyer's Signal ID
+            product_id: Product ID
+            quantity: Quantity
+            name: Customer name
+            address: Shipping address
+            recipient_identity: Identity that received the message
+        """
+        import json
+        
+        # Create shipping info as JSON
+        shipping_info = json.dumps({
+            'name': name,
+            'address': address
+        })
+        
+        # Call the existing create_order but with shipping_info parameter
+        self.create_order(buyer_signal_id, product_id, quantity, recipient_identity, shipping_info=shipping_info)
     
     def _parse_order_command(self, message: str) -> Optional[Tuple[str, int]]:
         """
@@ -493,7 +601,7 @@ To order: "order {product_id_str} qty [amount]"
         
         print(f"{'='*60}\n")
     
-    def create_order(self, buyer_signal_id: str, product_id: str, quantity: int, recipient_identity: Optional[str] = None):
+    def create_order(self, buyer_signal_id: str, product_id: str, quantity: int, recipient_identity: Optional[str] = None, shipping_info: Optional[str] = None):
         """
         Create order with stock validation and payment info
         
@@ -502,6 +610,7 @@ To order: "order {product_id_str} qty [amount]"
             product_id: Product ID to order
             quantity: Quantity to order
             recipient_identity: Identity to send from (phone or username)
+            shipping_info: JSON string with shipping information (name, address)
         """
         try:
             print(f"DEBUG: Creating order for {buyer_signal_id}, product {product_id}, qty {quantity}")
@@ -616,6 +725,7 @@ We apologize for the inconvenience and appreciate your patience.
                 order_status='processing',
                 commission_amount=commission * total_xmr / total,  # Commission in XMR
                 seller_amount=subtotal * total_xmr / total,  # Seller amount in XMR
+                shipping_info=shipping_info,  # Add shipping info
                 expires_at=datetime.utcnow() + timedelta(minutes=ORDER_EXPIRATION_MINUTES)
             )
             

@@ -540,15 +540,44 @@ Thank you for your purchase!
         
         self.send_message(recipient, message)
     
-    def send_shipping_notification(self, recipient: str, tracking_number: str):
+    def send_shipping_notification(self, recipient: str, order_id: str, tracking_number: str, shipped_at):
         """
         Send shipping notification to customer
         
         Args:
             recipient: Buyer's phone number
+            order_id: Order ID
             tracking_number: Shipping tracking number
+            shipped_at: DateTime when order was shipped
         """
-        message = f"🚚 Your order has been shipped!\nTracking: {tracking_number}"
+        from datetime import datetime
+        
+        # Format shipped date
+        if shipped_at:
+            shipped_date = shipped_at.strftime("%B %d, %Y")
+        else:
+            shipped_date = datetime.utcnow().strftime("%B %d, %Y")
+        
+        # Build base message
+        message_parts = [
+            f"🚚 Your order #{order_id} has been shipped!",
+            "",
+        ]
+        
+        # Add tracking number if provided
+        if tracking_number and tracking_number.strip():
+            message_parts.append(f"Tracking Number: {tracking_number}")
+        
+        # Add shipped date and footer
+        message_parts.extend([
+            f"Shipped: {shipped_date}",
+            "",
+            "Your package is on its way! 📦",
+            "",
+            "Thanks for your order!"
+        ])
+        
+        message = "\n".join(message_parts)
         self.send_message(recipient, message)
     
     def send_group_redirect(self, group_id: str, member: str):

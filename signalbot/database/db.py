@@ -157,9 +157,37 @@ class DatabaseManager:
         """
         self.master_password = master_password
         self.engine = create_engine(f'sqlite:///{DATABASE_FILE}')
+        
+        # Log database file location
+        print(f"📁 Database file: {DATABASE_FILE}")
+        
+        # Create all tables from Base metadata
+        print(f"🔨 Creating database tables...")
+        print(f"   Tables to create: {list(Base.metadata.tables.keys())}")
         Base.metadata.create_all(self.engine)
+        print(f"✓ Database tables created successfully")
+        
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
+        
+        # Verify tables were created
+        try:
+            from sqlalchemy import inspect
+            inspector = inspect(self.engine)
+            actual_tables = inspector.get_table_names()
+            print(f"✓ Verified tables in database: {actual_tables}")
+            
+            # Check if all expected tables exist
+            expected_tables = set(Base.metadata.tables.keys())
+            actual_tables_set = set(actual_tables)
+            missing_tables = expected_tables - actual_tables_set
+            
+            if missing_tables:
+                print(f"⚠️  WARNING: Some tables are missing: {missing_tables}")
+            else:
+                print(f"✓ All {len(expected_tables)} tables verified")
+        except Exception as e:
+            print(f"⚠️  Could not verify tables: {e}")
         
         # Create performance indexes
         self._create_indexes()
