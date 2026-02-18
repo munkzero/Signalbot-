@@ -54,14 +54,17 @@ def test_trust_caching_implemented():
         from signalbot.core.signal_handler import SignalHandler
         import inspect
         
+        # Get the source code of __init__ to check for initialization
+        init_source = inspect.getsource(SignalHandler.__init__)
+        
         # Get the source code of auto_trust_contact
-        source = inspect.getsource(SignalHandler.auto_trust_contact)
+        trust_source = inspect.getsource(SignalHandler.auto_trust_contact)
         
         # Check for cache implementation
         checks = {
-            '_trust_attempted set creation': '_trust_attempted' in source and 'set()' in source,
-            'Cache check before trust': 'in self._trust_attempted' in source,
-            'Add to cache after trust': 'add(contact_number)' in source
+            '_trust_attempted initialized in __init__': '_trust_attempted = set()' in init_source,
+            'Cache check before trust': 'in self._trust_attempted' in trust_source or 'in _trust_attempted' in trust_source,
+            'Add to cache after check': 'add(contact_number)' in trust_source
         }
         
         all_passed = True

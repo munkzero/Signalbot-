@@ -46,6 +46,7 @@ class SignalHandler:
         self.listening = False
         self.listen_thread = None
         self.trusted_contacts = set()  # Track already-trusted contacts to avoid redundant calls
+        self._trust_attempted = set()  # Cache of contacts we've attempted to trust
         
         print(f"DEBUG: SignalHandler initialized with phone_number={self.phone_number}")
         
@@ -93,8 +94,6 @@ class SignalHandler:
             return True
         
         # Check cache to avoid re-trusting
-        if not hasattr(self, '_trust_attempted'):
-            self._trust_attempted = set()
         if contact_number in self._trust_attempted:
             return True
         self._trust_attempted.add(contact_number)
