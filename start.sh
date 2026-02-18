@@ -181,7 +181,16 @@ if [ -n "$CONFIG_FILE" ] && command -v jq &> /dev/null; then
     if [ "$TRUST_MODE" = "ALWAYS" ]; then
         echo "✓ Auto-trust enabled (all message requests accepted automatically)"
     else
-        echo "⚠ Auto-trust config: $TRUST_MODE (falling back to code-level auto-trust)"
+        echo "⚠ Auto-trust config: $TRUST_MODE"
+        echo "   Attempting to fix..."
+        
+        # Try to enable it
+        if signal-cli -u "$PHONE_NUMBER" updateConfiguration --trust-new-identities always 2>/dev/null; then
+            echo "   ✓ Auto-trust enabled via signal-cli command"
+        else
+            echo "   ⚠ Could not enable via command, using code-level fallback"
+            echo "   💡 Run: ./check-trust.sh to verify and fix"
+        fi
     fi
 else
     echo "✓ Auto-trust configured via code (cannot verify config file)"

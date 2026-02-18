@@ -48,6 +48,9 @@ class SignalHandler:
         self.trusted_contacts = set()  # Track already-trusted contacts to avoid redundant calls
         
         print(f"DEBUG: SignalHandler initialized with phone_number={self.phone_number}")
+        
+        # Verify auto-trust is working
+        self._verify_auto_trust_config()
     
     def link_device(self) -> str:
         """
@@ -549,3 +552,38 @@ Thank you for your purchase!
         except Exception as e:
             print(f"Failed to list groups: {e}")
             return []
+    
+    def _verify_auto_trust_config(self):
+        """Verify that auto-trust configuration is active"""
+        try:
+            import urllib.parse
+            
+            # Check signal-cli config file
+            encoded_number = urllib.parse.quote(self.phone_number, safe='')
+            config_paths = [
+                f"{os.path.expanduser('~')}/.local/share/signal-cli/data/{self.phone_number}",
+                f"{os.path.expanduser('~')}/.local/share/signal-cli/data/{encoded_number}"
+            ]
+            
+            for path in config_paths:
+                if os.path.exists(path):
+                    with open(path, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                        trust_mode = config.get('trustNewIdentities', 'NOT_SET')
+                        
+                        if trust_mode == 'ALWAYS':
+                            print(f"✓ Signal auto-trust verified: {trust_mode}")
+                            return True
+                        else:
+                            print(f"⚠ Signal auto-trust not optimal: {trust_mode}")
+                            print(f"   Run: ./check-trust.sh to fix")
+                            # Still return True - code-level auto-trust will work
+                            return True
+            
+            print("ℹ Signal config file not found - using code-level auto-trust")
+            return True
+            
+        except Exception as e:
+            print(f"DEBUG: Could not verify signal auto-trust config: {e}")
+            print("       Code-level auto-trust will still work")
+            return True

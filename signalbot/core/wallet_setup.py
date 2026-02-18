@@ -942,11 +942,19 @@ class WalletSetupManager:
         url = f"http://127.0.0.1:{self.rpc_port}/json_rpc"
         start_time = time.time()
         attempt = 0
+        last_log_time = start_time
         
         logger.info(f"⏳ Waiting for RPC to be ready (timeout: {timeout}s)...")
+        logger.info("   ℹ RPC needs to refresh wallet before accepting connections")
         
         while time.time() - start_time < timeout:
             attempt += 1
+            elapsed = time.time() - start_time
+            
+            # Log progress every 15 seconds
+            if time.time() - last_log_time >= 15:
+                logger.info(f"   Still waiting... ({elapsed:.0f}s elapsed, {timeout - elapsed:.0f}s remaining)")
+                last_log_time = time.time()
             
             # Check if process is still alive
             if self.rpc_process and self.rpc_process.poll() is not None:
@@ -1011,6 +1019,23 @@ class WalletSetupManager:
         daemon_addr = daemon_address or self.daemon_address
         daemon_port_to_use = daemon_port or self.daemon_port
         
+        # Test daemon connectivity first
+        logger.info(f"🔍 Testing daemon connectivity: {daemon_addr}:{daemon_port_to_use}")
+        try:
+            response = requests.post(
+                f'http://{daemon_addr}:{daemon_port_to_use}/json_rpc',
+                json={"jsonrpc":"2.0","id":"0","method":"get_info"},
+                timeout=10
+            )
+            if response.status_code == 200:
+                logger.info("✓ Daemon is reachable")
+            else:
+                logger.warning(f"⚠ Daemon returned status {response.status_code}")
+        except Exception as e:
+            logger.error(f"❌ Cannot reach daemon: {e}")
+            logger.error("   RPC may take longer to start or fail completely")
+            # Don't abort - let RPC try and handle its own retries
+        
         # Create PID file path
         self.rpc_pid_file = os.path.join(
             os.path.dirname(str(self.wallet_path)),
@@ -1054,8 +1079,11 @@ class WalletSetupManager:
             
             logger.info(f"✓ RPC process started (PID: {self.rpc_process.pid})")
             
+            # Increase timeout - wallet refresh can take 3-5 minutes when daemon is slow
             # Wait for RPC to be ready
-            timeout = 180 if is_new_wallet else 60
+            timeout = 300 if is_new_wallet else 180  # 5 minutes for new, 3 minutes for existing
+            logger.info(f"⏳ Waiting for RPC to be ready (timeout: {timeout}s)...")
+            logger.info("   Note: First startup may take 2-3 minutes while wallet refreshes")
             if not self._wait_for_rpc_ready(timeout):
                 logger.error("❌ RPC failed to become ready")
                 self._stop_rpc()
