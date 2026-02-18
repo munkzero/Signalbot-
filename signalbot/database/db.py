@@ -171,7 +171,6 @@ class DatabaseManager:
         self.session = Session()
         
         # Verify tables were created
-        inspector = None
         try:
             from sqlalchemy import inspect
             inspector = inspect(self.engine)

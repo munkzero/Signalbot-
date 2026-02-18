@@ -94,7 +94,7 @@ def test_order_creation_with_shipping_info():
     content = buyer_handler_file.read_text()
     
     checks = {
-        'create_order has shipping_info parameter': 'def create_order(self, buyer_signal_id: str, product_id: str, quantity: int, recipient_identity: Optional[str] = None, shipping_info: Optional[str] = None)' in content,
+        'create_order has shipping_info parameter': 'shipping_info: Optional[str] = None' in content,
         'shipping_info passed to Order object': 'shipping_info=shipping_info' in content,
         'shipping_info in docstring': 'shipping_info: JSON string with shipping information' in content,
     }

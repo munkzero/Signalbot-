@@ -558,25 +558,26 @@ Thank you for your purchase!
         else:
             shipped_date = datetime.utcnow().strftime("%B %d, %Y")
         
-        if tracking_number and tracking_number.strip():
-            message = f"""🚚 Your order #{order_id} has been shipped!
-
-Tracking Number: {tracking_number}
-Shipped: {shipped_date}
-
-Your package is on its way! 📦
-
-Thanks for your order!"""
-        else:
-            # No tracking number provided
-            message = f"""🚚 Your order #{order_id} has been shipped!
-
-Shipped: {shipped_date}
-
-Your package is on its way! 📦
-
-Thanks for your order!"""
+        # Build base message
+        message_parts = [
+            f"🚚 Your order #{order_id} has been shipped!",
+            "",
+        ]
         
+        # Add tracking number if provided
+        if tracking_number and tracking_number.strip():
+            message_parts.append(f"Tracking Number: {tracking_number}")
+        
+        # Add shipped date and footer
+        message_parts.extend([
+            f"Shipped: {shipped_date}",
+            "",
+            "Your package is on its way! 📦",
+            "",
+            "Thanks for your order!"
+        ])
+        
+        message = "\n".join(message_parts)
         self.send_message(recipient, message)
     
     def send_group_redirect(self, group_id: str, member: str):

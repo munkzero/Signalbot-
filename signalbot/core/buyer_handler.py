@@ -93,7 +93,14 @@ class BuyerHandler:
         self.product_cache = ProductCache(product_manager, cache_duration=300)
         
         # Conversation state tracking for order flow
-        # Format: {buyer_signal_id: {'state': 'awaiting_name'|'awaiting_address', 'product_id': str, 'quantity': int}}
+        # Format: {buyer_signal_id: {
+        #     'state': 'awaiting_name'|'awaiting_address',
+        #     'product_id': str,
+        #     'quantity': int,
+        #     'recipient_identity': str,
+        #     'name': str (only after name collected),
+        #     'address': str (only after address collected)
+        # }}
         self.conversation_states = {}
     
     @staticmethod
