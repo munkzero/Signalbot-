@@ -75,18 +75,19 @@ def test_recipient_type_detection():
         errors.append("❌ Phone number detection not found")
         print("  ✗ Phone number detection not found")
     
-    # Check for UUID detection (36 character string with dashes)
-    if "len(source) == 36" in source or "len(recipient) == 36" in source:
-        print("  ✓ UUID detection present (checking length)")
+    # Check for UUID detection using _is_uuid method
+    if "self._is_uuid(source)" in source:
+        print("  ✓ UUID detection using _is_uuid method")
     else:
-        errors.append("❌ UUID length check not found")
-        print("  ✗ UUID length check not found")
+        errors.append("❌ UUID detection not using _is_uuid method")
+        print("  ✗ UUID detection not using _is_uuid method")
     
-    if "'-' in source" in source or "'-' in recipient" in source:
-        print("  ✓ UUID detection present (checking for dashes)")
+    # Check for _is_uuid method existence
+    if "_is_uuid" in source:
+        print("  ✓ _is_uuid helper method exists")
     else:
-        errors.append("❌ UUID dash check not found")
-        print("  ✗ UUID dash check not found")
+        errors.append("❌ _is_uuid helper method not found")
+        print("  ✗ _is_uuid helper method not found")
     
     # Check for logging of recipient types
     if "Message from UUID (privacy enabled)" in source:
@@ -129,21 +130,19 @@ def test_uuid_send_handling():
     
     errors = []
     
-    # Check that UUID handling is present
-    if "elif '-' in recipient and len(recipient) == 36:" in source:
-        print("  ✓ UUID detection in _send_direct")
+    # Check that UUID handling uses _is_uuid method
+    if "self._is_uuid(recipient)" in source:
+        print("  ✓ UUID detection using proper _is_uuid method")
     else:
-        errors.append("❌ UUID detection not found in _send_direct")
-        print("  ✗ UUID detection not found in _send_direct")
+        errors.append("❌ UUID detection not using _is_uuid method")
+        print("  ✗ UUID detection not using _is_uuid method")
     
-    # Verify UUIDs are sent directly (not with --username flag)
-    # Count the number of times we build the cmd without --username
-    # Should be 2: once for phone numbers, once for UUIDs
-    direct_send_count = source.count("recipient\n                ]")
-    if direct_send_count >= 2:
-        print(f"  ✓ UUIDs sent directly without --username flag")
+    # Verify UUIDs and phone numbers are both handled the same way (direct send)
+    if "recipient.startswith('+') or self._is_uuid(recipient)" in source:
+        print(f"  ✓ UUIDs and phone numbers both sent directly (combined logic)")
     else:
-        print(f"  ⚠ Warning: Direct send count is {direct_send_count}, expected 2")
+        errors.append("❌ Phone numbers and UUIDs not combined")
+        print(f"  ✗ Phone numbers and UUIDs not combined")
     
     # Verify usernames still use --username flag
     if "'--username', recipient" in source or '"--username", recipient' in source:
@@ -169,27 +168,34 @@ def test_uuid_send_handling():
 
 
 def test_uuid_format_validation():
-    """Test UUID format detection logic"""
+    """Test UUID format detection logic using the actual _is_uuid method"""
     print("\n=== Testing UUID Format Validation ===")
+    
+    from signalbot.core.signal_handler import SignalHandler
     
     # Test UUIDs
     test_cases = [
-        ("cd47b3be-f7c0-43f3-80a9-e4baa1e750ff", True, "Standard UUID"),
+        ("cd47b3be-f7c0-43f3-80a9-e4baa1e750ff", True, "Standard UUID (lowercase)"),
+        ("CD47B3BE-F7C0-43F3-80A9-E4BAA1E750FF", True, "Standard UUID (uppercase)"),
+        ("12345678-1234-1234-1234-123456789012", True, "Numeric UUID"),
         ("+64274757293", False, "Phone number"),
         ("randomuser.01", False, "Username"),
         ("not-a-uuid-too-short", False, "Too short"),
         ("not-a-valid-uuid-format-really-long-string", False, "Too long"),
-        ("12345678-1234-1234-1234-123456789012", True, "Another valid UUID"),
+        ("a-bcdefghijklmnopqrstuvwxyz123456789", False, "36 chars with dash but invalid format"),
+        ("12345678-1234-1234-1234-12345678901", False, "Wrong segment lengths"),
+        ("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx", False, "Invalid hex characters"),
+        ("", False, "Empty string"),
     ]
     
     errors = []
     for test_value, should_be_uuid, description in test_cases:
-        is_uuid = '-' in test_value and len(test_value) == 36
+        is_uuid = SignalHandler._is_uuid(test_value)
         if is_uuid == should_be_uuid:
-            print(f"  ✓ {description}: '{test_value}' -> UUID={is_uuid}")
+            print(f"  ✓ {description}: '{test_value[:36]}' -> UUID={is_uuid}")
         else:
             errors.append(f"❌ {description}: '{test_value}' -> Expected UUID={should_be_uuid}, got {is_uuid}")
-            print(f"  ✗ {description}: '{test_value}' -> Expected UUID={should_be_uuid}, got {is_uuid}")
+            print(f"  ✗ {description}: '{test_value[:36]}' -> Expected UUID={should_be_uuid}, got {is_uuid}")
     
     if errors:
         print("\n❌ UUID format validation test FAILED")

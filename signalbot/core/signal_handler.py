@@ -9,6 +9,7 @@ import json
 import threading
 import time
 import os
+import re
 
 
 class SignalHandler:
@@ -52,6 +53,23 @@ class SignalHandler:
         
         # Verify auto-trust is working
         self._verify_auto_trust_config()
+    
+    @staticmethod
+    def _is_uuid(identifier: str) -> bool:
+        """
+        Check if a string is a valid UUID format
+        
+        Args:
+            identifier: String to check
+            
+        Returns:
+            True if the string matches UUID format (8-4-4-4-12 hex digits)
+        """
+        uuid_pattern = re.compile(
+            r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+            re.IGNORECASE
+        )
+        return bool(uuid_pattern.match(identifier))
     
     def link_device(self) -> str:
         """
@@ -180,17 +198,10 @@ class SignalHandler:
                 sender = self.phone_number
             
             # Determine recipient type and build command accordingly
-            if recipient.startswith('+'):
-                # Phone number
-                cmd = [
-                    'signal-cli',
-                    '-u', sender,
-                    'send',
-                    '-m', message,
-                    recipient
-                ]
-            elif '-' in recipient and len(recipient) == 36:
-                # UUID (format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+            # Phone numbers and UUIDs use direct addressing
+            # Usernames require the --username flag
+            if recipient.startswith('+') or self._is_uuid(recipient):
+                # Phone number or UUID - send directly
                 cmd = [
                     'signal-cli',
                     '-u', sender,
@@ -199,7 +210,7 @@ class SignalHandler:
                     recipient
                 ]
             else:
-                # Username
+                # Username - requires --username flag
                 cmd = [
                     'signal-cli',
                     '-u', sender,
@@ -381,7 +392,7 @@ class SignalHandler:
         if source:
             if source.startswith('+'):
                 print(f"DEBUG: Message from phone number: {source[:8]}...")
-            elif '-' in source and len(source) == 36:
+            elif self._is_uuid(source):
                 print(f"DEBUG: Message from UUID (privacy enabled): {source[:8]}...")
             else:
                 print(f"DEBUG: Message from username: {source}")
