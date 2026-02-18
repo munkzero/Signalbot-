@@ -391,9 +391,9 @@ class SignalHandler:
         # Log recipient type for debugging
         if source:
             if source.startswith('+'):
-                print(f"DEBUG: Message from phone number: {source[:8]}...")
+                print(f"DEBUG: Message from phone number (length: {len(source)})")
             elif self._is_uuid(source):
-                print(f"DEBUG: Message from UUID (privacy enabled): {source[:8]}...")
+                print(f"DEBUG: Message from UUID (privacy enabled)")
             else:
                 print(f"DEBUG: Message from username: {source}")
         
