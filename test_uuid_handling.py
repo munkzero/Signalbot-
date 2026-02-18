@@ -191,11 +191,13 @@ def test_uuid_format_validation():
     errors = []
     for test_value, should_be_uuid, description in test_cases:
         is_uuid = SignalHandler._is_uuid(test_value)
+        # Truncate long test values for display
+        display_value = test_value if len(test_value) <= 40 else test_value[:37] + "..."
         if is_uuid == should_be_uuid:
-            print(f"  ✓ {description}: '{test_value[:36]}' -> UUID={is_uuid}")
+            print(f"  ✓ {description}: '{display_value}' -> UUID={is_uuid}")
         else:
             errors.append(f"❌ {description}: '{test_value}' -> Expected UUID={should_be_uuid}, got {is_uuid}")
-            print(f"  ✗ {description}: '{test_value[:36]}' -> Expected UUID={should_be_uuid}, got {is_uuid}")
+            print(f"  ✗ {description}: '{display_value}' -> Expected UUID={should_be_uuid}, got {is_uuid}")
     
     if errors:
         print("\n❌ UUID format validation test FAILED")
