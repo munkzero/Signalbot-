@@ -166,7 +166,7 @@ class SignalHandler:
         Send message directly via signal-cli
         
         Args:
-            recipient: Recipient phone number or username
+            recipient: Recipient phone number, username, or UUID
             message: Message text
             attachments: Optional list of file paths
             sender: Sender identity (phone or username). If not provided, uses self.phone_number
@@ -179,9 +179,18 @@ class SignalHandler:
             if not sender:
                 sender = self.phone_number
             
-            # Check if recipient is a username or phone number
+            # Determine recipient type and build command accordingly
             if recipient.startswith('+'):
                 # Phone number
+                cmd = [
+                    'signal-cli',
+                    '-u', sender,
+                    'send',
+                    '-m', message,
+                    recipient
+                ]
+            elif '-' in recipient and len(recipient) == 36:
+                # UUID (format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
                 cmd = [
                     'signal-cli',
                     '-u', sender,
@@ -344,7 +353,7 @@ class SignalHandler:
         
         if sent_message:
             # This is a message we sent to ourselves or others
-            source = envelope.get('source') or envelope.get('sourceNumber', '')
+            source = envelope.get('sourceNumber') or envelope.get('source', '')
             timestamp = sent_message.get('timestamp', 0)
             message_text = sent_message.get('message', '')
             destination = sent_message.get('destination') or sent_message.get('destinationNumber', '')
@@ -359,7 +368,7 @@ class SignalHandler:
             print(f"DEBUG: Received syncMessage from {source}: {message_text[:50] if message_text else '(no text)'}")
         else:
             # Regular incoming message from someone else
-            source = envelope.get('source') or envelope.get('sourceNumber', '')
+            source = envelope.get('sourceNumber') or envelope.get('source', '')
             timestamp = envelope.get('timestamp', 0)
             
             data_message = envelope.get('dataMessage', {})
@@ -367,6 +376,15 @@ class SignalHandler:
             group_info = data_message.get('groupInfo')
             
             print(f"DEBUG: Received dataMessage from {source}: {message_text[:50] if message_text else '(no text)'}")
+        
+        # Log recipient type for debugging
+        if source:
+            if source.startswith('+'):
+                print(f"DEBUG: Message from phone number: {source[:8]}...")
+            elif '-' in source and len(source) == 36:
+                print(f"DEBUG: Message from UUID (privacy enabled): {source[:8]}...")
+            else:
+                print(f"DEBUG: Message from username: {source}")
         
         # Auto-trust all message senders to handle message requests
         # This ensures message requests are accepted automatically for every sender
