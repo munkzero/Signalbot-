@@ -135,13 +135,14 @@ After running the fix, verify:
 
 ### Check 1: Correct Username?
 ```bash
-# Get your actual username
-# Note: Username can be verified in Signal app Settings → Profile
+# Verify your username in Signal app
+# Go to: Settings → Profile → Username
 
-# Get sharable link
-signal-cli -u +64274757293 getUsernameLink
+# Get sharable link (also in Signal app)
+# Go to: Settings → Profile → Username → Share Link
+# Or scan QR code in the app
 
-# Share this link with users
+# Share the username or link with users
 ```
 
 ### Check 2: User Side - Clear Cache

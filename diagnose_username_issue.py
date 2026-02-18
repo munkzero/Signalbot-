@@ -233,10 +233,10 @@ This is likely the cause of your issue!
    - They can ONLY message your phone number
 
 💡 Solution:
-   1. Set a username with this command:
-      signal-cli -u {PHONE} setUsername {DESIRED_USERNAME}
+   1. Set a username with this command (replace <PHONE> and <USERNAME>):
+      signal-cli -a <YOUR_PHONE_NUMBER> updateAccount -u <DESIRED_USERNAME>
    
-   2. Example:
+   2. Example with actual values:
       signal-cli -a +64274757293 updateAccount -u shopbot.223
    
    3. Then re-run this diagnostic to verify
