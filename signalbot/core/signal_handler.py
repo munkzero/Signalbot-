@@ -549,3 +549,118 @@ Thank you for your purchase!
         except Exception as e:
             print(f"Failed to list groups: {e}")
             return []
+    
+    def get_username(self) -> Optional[str]:
+        """
+        Get the Signal username for this account
+        
+        Returns:
+            Username string if set, None otherwise
+        """
+        if not self.phone_number:
+            raise RuntimeError("Signal not configured")
+        
+        try:
+            # Try to get account info which includes username
+            result = subprocess.run(
+                ['signal-cli', '-u', self.phone_number, 'getUserStatus'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0 and result.stdout:
+                # Parse output for username
+                # Format might vary, so we'll try to extract it
+                for line in result.stdout.strip().split('\n'):
+                    if 'username' in line.lower():
+                        # Extract username from line
+                        parts = line.split(':')
+                        if len(parts) >= 2:
+                            return parts[1].strip()
+            
+            return None
+        except Exception as e:
+            print(f"Failed to get username: {e}")
+            return None
+    
+    def set_username(self, username: str) -> bool:
+        """
+        Set Signal username for this account
+        
+        Args:
+            username: Desired username (without @ prefix)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.phone_number:
+            raise RuntimeError("Signal not configured")
+        
+        try:
+            result = subprocess.run(
+                ['signal-cli', '-u', self.phone_number, 'setUsername', username],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0:
+                print(f"✅ Username set to: {username}")
+                return True
+            else:
+                print(f"❌ Failed to set username: {result.stderr}")
+                return False
+        except Exception as e:
+            print(f"❌ Error setting username: {e}")
+            return False
+    
+    def get_username_link(self) -> Optional[str]:
+        """
+        Get sharable username link
+        
+        Returns:
+            Username link if available, None otherwise
+        """
+        if not self.phone_number:
+            raise RuntimeError("Signal not configured")
+        
+        try:
+            result = subprocess.run(
+                ['signal-cli', '-u', self.phone_number, 'getUsernameLink'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0 and result.stdout:
+                return result.stdout.strip()
+            
+            return None
+        except Exception as e:
+            print(f"Failed to get username link: {e}")
+            return None
+    
+    def check_account_status(self) -> Dict:
+        """
+        Check account status including username configuration
+        
+        Returns:
+            Dictionary with account status information
+        """
+        if not self.phone_number:
+            return {
+                'phone_number': None,
+                'username': None,
+                'username_link': None,
+                'status': 'not_configured'
+            }
+        
+        status = {
+            'phone_number': self.phone_number,
+            'username': self.get_username(),
+            'username_link': self.get_username_link(),
+            'status': 'configured'
+        }
+        
+        return status
