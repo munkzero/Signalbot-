@@ -246,15 +246,15 @@ def test_message_flow_integration():
     try:
         from signalbot.core.signal_handler import SignalHandler
         
-        # Create handler
-        handler = SignalHandler(phone_number="+64274757293")
+        # Create handler with placeholder phone number
+        handler = SignalHandler(phone_number="+15555550100")
         
         # Simulate receiving a message to a specific account (username)
-        test_username = "shopbot.223"
+        test_username = "testbot.123"
         message_data = {
             "envelope": {
-                "source": "+64274268090",
-                "sourceNumber": "+64274268090",
+                "source": "+15555550200",
+                "sourceNumber": "+15555550200",
                 "timestamp": 1234567890,
                 "dataMessage": {
                     "message": "catalog",
@@ -307,8 +307,8 @@ def test_trust_cache_behavior():
         from signalbot.core.signal_handler import SignalHandler
         from unittest.mock import patch, MagicMock
         
-        # Create handler
-        handler = SignalHandler(phone_number="+64274757293")
+        # Create handler with placeholder phone number
+        handler = SignalHandler(phone_number="+15555550100")
         
         # Mock subprocess.run to track calls
         call_count = 0
@@ -324,11 +324,11 @@ def test_trust_cache_behavior():
         
         with patch('subprocess.run', side_effect=mock_run):
             # First call - should execute
-            handler.auto_trust_contact("+64274268090")
+            handler.auto_trust_contact("+15555550200")
             first_call_count = call_count
             
             # Second call - should be cached
-            handler.auto_trust_contact("+64274268090")
+            handler.auto_trust_contact("+15555550200")
             second_call_count = call_count
             
             if first_call_count == 1 and second_call_count == 1:
