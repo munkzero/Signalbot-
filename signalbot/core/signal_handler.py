@@ -46,6 +46,7 @@ class SignalHandler:
         self.listening = False
         self.listen_thread = None
         self.trusted_contacts = set()  # Track already-trusted contacts to avoid redundant calls
+        self._trust_attempted = set()  # Cache of contacts we've attempted to trust
         
         print(f"DEBUG: SignalHandler initialized with phone_number={self.phone_number}")
         
@@ -92,23 +93,31 @@ class SignalHandler:
         if contact_number == self.phone_number:
             return True
         
+        # Check cache to avoid re-trusting
+        if contact_number in self._trust_attempted:
+            return True
+        
         try:
             # First, try to trust the contact
             result = subprocess.run(
                 ['signal-cli', '-u', self.phone_number, 'trust', contact_number, '-a'],
                 capture_output=True,
-                timeout=10,
+                timeout=1,
                 text=True
             )
             
             if result.returncode == 0:
                 print(f"✓ Auto-trusted contact {contact_number}")
+                # Add to cache only after successful trust
+                self._trust_attempted.add(contact_number)
                 return True
             else:
                 # Check if already trusted or other non-critical error
                 stderr = result.stderr.lower()
                 if 'already' in stderr or 'trusted' in stderr:
                     print(f"DEBUG: {contact_number} already trusted")
+                    # Already trusted, add to cache
+                    self._trust_attempted.add(contact_number)
                     return True
                 elif 'not registered' in stderr:
                     # They haven't messaged us yet, will trust when they do
@@ -129,7 +138,8 @@ class SignalHandler:
         self,
         recipient: str,
         message: str,
-        attachments: Optional[List[str]] = None
+        attachments: Optional[List[str]] = None,
+        sender_identity: Optional[str] = None
     ) -> bool:
         """
         Send message via Signal using direct mode
@@ -138,6 +148,7 @@ class SignalHandler:
             recipient: Recipient phone number (e.g., "+15555550123") or username (e.g., "randomuser.01")
             message: Message text
             attachments: Optional list of file paths to attach
+            sender_identity: Identity to send from (phone or username). If not provided, uses default phone number
             
         Returns:
             True if message sent successfully
@@ -145,9 +156,12 @@ class SignalHandler:
         if not self.phone_number:
             raise RuntimeError("Signal not configured")
         
-        return self._send_direct(recipient, message, attachments)
+        # Use sender_identity if provided, otherwise use default phone_number
+        sender = sender_identity if sender_identity else self.phone_number
+        
+        return self._send_direct(recipient, message, attachments, sender)
     
-    def _send_direct(self, recipient: str, message: str, attachments: Optional[List[str]] = None) -> bool:
+    def _send_direct(self, recipient: str, message: str, attachments: Optional[List[str]] = None, sender: Optional[str] = None) -> bool:
         """
         Send message directly via signal-cli
         
@@ -155,17 +169,22 @@ class SignalHandler:
             recipient: Recipient phone number or username
             message: Message text
             attachments: Optional list of file paths
+            sender: Sender identity (phone or username). If not provided, uses self.phone_number
             
         Returns:
             True if sent successfully
         """
         try:
+            # Use provided sender or default to phone_number
+            if not sender:
+                sender = self.phone_number
+            
             # Check if recipient is a username or phone number
             if recipient.startswith('+'):
                 # Phone number
                 cmd = [
                     'signal-cli',
-                    '-u', self.phone_number,
+                    '-u', sender,
                     'send',
                     '-m', message,
                     recipient
@@ -174,7 +193,7 @@ class SignalHandler:
                 # Username
                 cmd = [
                     'signal-cli',
-                    '-u', self.phone_number,
+                    '-u', sender,
                     'send',
                     '-m', message,
                     '--username', recipient
@@ -316,6 +335,9 @@ class SignalHandler:
         # Extract message info
         envelope = message_data.get('envelope', {})
         
+        # Extract recipient identity (which account/identity received this message)
+        recipient_identity = message_data.get('account', self.phone_number)
+        
         # Check if this is a sync message (self-sent) or regular message
         sync_message = envelope.get('syncMessage', {})
         sent_message = sync_message.get('sentMessage', {})
@@ -359,14 +381,15 @@ class SignalHandler:
             'text': message_text,
             'timestamp': timestamp,
             'is_group': group_info is not None,
-            'group_id': group_info.get('groupId') if group_info else None
+            'group_id': group_info.get('groupId') if group_info else None,
+            'recipient_identity': recipient_identity  # Track which identity received this
         }
         
         # If buyer handler exists, process buyer commands
         if self.buyer_handler and message_text:
             try:
-                print(f"DEBUG: Processing message from {source}")
-                self.buyer_handler.handle_buyer_message(source, message_text)
+                print(f"DEBUG: Processing message from {source} to {recipient_identity}")
+                self.buyer_handler.handle_buyer_message(source, message_text, recipient_identity)
             except Exception as e:
                 print(f"ERROR: Error in buyer handler: {e}")
         

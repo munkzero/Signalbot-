@@ -225,16 +225,21 @@ class BuyerHandler:
             print(f"     Using original image")
             return image_path
     
-    def handle_buyer_message(self, buyer_signal_id: str, message_text: str):
+    def handle_buyer_message(self, buyer_signal_id: str, message_text: str, recipient_identity: Optional[str] = None):
         """
         Parse buyer commands and execute actions
         
         Args:
             buyer_signal_id: Buyer's Signal ID
             message_text: Message content
+            recipient_identity: Identity that received the message (phone or username)
         """
         if not message_text:
             return
+        
+        # Use seller_signal_id as fallback if no recipient_identity provided
+        if not recipient_identity:
+            recipient_identity = self.seller_signal_id
         
         message_lower = message_text.lower().strip()
         
@@ -256,7 +261,7 @@ class BuyerHandler:
         
         if is_catalog_request:
             print(f"DEBUG: Sending catalog to {buyer_signal_id}")
-            self.send_catalog(buyer_signal_id)
+            self.send_catalog(buyer_signal_id, recipient_identity)
             return
         
         # Command: "order #1 qty 5" or "buy #2 qty 3"
@@ -264,13 +269,13 @@ class BuyerHandler:
         if order_match:
             product_id, quantity = order_match
             print(f"DEBUG: Creating order for product {product_id} qty {quantity}")
-            self.create_order(buyer_signal_id, product_id, quantity)
+            self.create_order(buyer_signal_id, product_id, quantity, recipient_identity)
             return
         
         # Command: "help"
         if 'help' in message_lower:
             print(f"DEBUG: Sending help to {buyer_signal_id}")
-            self.send_help(buyer_signal_id)
+            self.send_help(buyer_signal_id, recipient_identity)
             return
     
     def _parse_order_command(self, message: str) -> Optional[Tuple[str, int]]:
@@ -310,12 +315,13 @@ class BuyerHandler:
         
         return None
     
-    def send_catalog(self, buyer_signal_id: str):
+    def send_catalog(self, buyer_signal_id: str, recipient_identity: Optional[str] = None):
         """
         Send catalog to buyer with robust error handling
         
         Args:
             buyer_signal_id: Buyer's Signal ID
+            recipient_identity: Identity to send from (phone or username)
         """
         
         products = self.product_cache.get_products(active_only=True)
@@ -323,7 +329,8 @@ class BuyerHandler:
         if not products:
             self.signal_handler.send_message(
                 recipient=buyer_signal_id,
-                message="Sorry, no products are currently available."
+                message="Sorry, no products are currently available.",
+                sender_identity=recipient_identity
             )
             return
         
@@ -337,7 +344,8 @@ class BuyerHandler:
         try:
             self.signal_handler.send_message(
                 recipient=buyer_signal_id,
-                message=header
+                message=header,
+                sender_identity=recipient_identity
             )
             print(f"✓ Catalog header sent\n")
         except Exception as e:
@@ -391,7 +399,8 @@ To order: "order {product_id_str} qty [amount]"
                     result = self.signal_handler.send_message(
                         recipient=buyer_signal_id,
                         message=message.strip(),
-                        attachments=attachments if attachments else None
+                        attachments=attachments if attachments else None,
+                        sender_identity=recipient_identity
                     )
                     
                     if result:
@@ -428,7 +437,8 @@ To order: "order {product_id_str} qty [amount]"
                         result = self.signal_handler.send_message(
                             recipient=buyer_signal_id,
                             message=message.strip(),
-                            attachments=None  # No image
+                            attachments=None,  # No image
+                            sender_identity=recipient_identity
                         )
                         if result:
                             print(f"  ✅ Text-only version sent successfully")
@@ -460,7 +470,8 @@ To order: "order {product_id_str} qty [amount]"
         try:
             self.signal_handler.send_message(
                 recipient=buyer_signal_id,
-                message=footer
+                message=footer,
+                sender_identity=recipient_identity
             )
             print(f"✓ Footer sent\n")
         except Exception as e:
@@ -482,7 +493,7 @@ To order: "order {product_id_str} qty [amount]"
         
         print(f"{'='*60}\n")
     
-    def create_order(self, buyer_signal_id: str, product_id: str, quantity: int):
+    def create_order(self, buyer_signal_id: str, product_id: str, quantity: int, recipient_identity: Optional[str] = None):
         """
         Create order with stock validation and payment info
         
@@ -490,6 +501,7 @@ To order: "order {product_id_str} qty [amount]"
             buyer_signal_id: Buyer's Signal ID
             product_id: Product ID to order
             quantity: Quantity to order
+            recipient_identity: Identity to send from (phone or username)
         """
         try:
             print(f"DEBUG: Creating order for {buyer_signal_id}, product {product_id}, qty {quantity}")
@@ -501,7 +513,8 @@ To order: "order {product_id_str} qty [amount]"
                 print(f"DEBUG: Product {product_id} not found")
                 self.signal_handler.send_message(
                     recipient=buyer_signal_id,
-                    message=f"❌ Product {product_id} not found. Type 'catalog' to see available products."
+                    message=f"❌ Product {product_id} not found. Type 'catalog' to see available products.",
+                    sender_identity=recipient_identity
                 )
                 return
             
@@ -511,7 +524,8 @@ To order: "order {product_id_str} qty [amount]"
                     print(f"DEBUG: Product {product.name} out of stock")
                     self.signal_handler.send_message(
                         recipient=buyer_signal_id,
-                        message=f"❌ {product.name} is OUT OF STOCK"
+                        message=f"❌ {product.name} is OUT OF STOCK",
+                        sender_identity=recipient_identity
                     )
                 else:
                     print(f"DEBUG: Insufficient stock: requested {quantity}, available {product.stock}")
@@ -524,7 +538,8 @@ Available: {product.stock} units
 
 Would you like to order {product.stock} instead?
 Reply "order {product_id} qty {product.stock}" to proceed.
-"""
+""",
+                        sender_identity=recipient_identity
                     )
                 return
             
@@ -578,7 +593,8 @@ We're unable to process orders right now due to a technical issue with our excha
 Please try again in 10-15 minutes.
 
 We apologize for the inconvenience and appreciate your patience.
-"""
+""",
+                    sender_identity=recipient_identity
                 )
                 
                 return  # Do not create order
@@ -611,7 +627,7 @@ We apologize for the inconvenience and appreciate your patience.
             self.product_manager.update_product(product)
             
             # Send order confirmation with payment info
-            self.send_order_confirmation(buyer_signal_id, created_order, product, payment_address)
+            self.send_order_confirmation(buyer_signal_id, created_order, product, payment_address, recipient_identity)
             
         except Exception as e:
             print(f"ERROR: Failed to create order: {e}")
@@ -619,10 +635,11 @@ We apologize for the inconvenience and appreciate your patience.
             traceback.print_exc()
             self.signal_handler.send_message(
                 recipient=buyer_signal_id,
-                message="❌ Failed to create order. Please try again or contact support."
+                message="❌ Failed to create order. Please try again or contact support.",
+                sender_identity=recipient_identity
             )
     
-    def send_order_confirmation(self, buyer_signal_id: str, order: Order, product, payment_address: str):
+    def send_order_confirmation(self, buyer_signal_id: str, order: Order, product, payment_address: str, recipient_identity: Optional[str] = None):
         """
         Send order summary with payment QR code
         
@@ -631,6 +648,7 @@ We apologize for the inconvenience and appreciate your patience.
             order: Order object
             product: Product object
             payment_address: Monero payment address
+            recipient_identity: Identity to send from (phone or username)
         """
         try:
             print(f"DEBUG: Sending order confirmation to {buyer_signal_id} for order #{order.order_id}")
@@ -670,20 +688,23 @@ Order #{order.order_id}
                 self.signal_handler.send_message(
                     recipient=buyer_signal_id,
                     message=message.strip(),
-                    attachments=[qr_path]
+                    attachments=[qr_path],
+                    sender_identity=recipient_identity
                 )
             except Exception as e:
                 print(f"ERROR: Error generating QR code: {e}")
                 # Send without QR code
                 self.signal_handler.send_message(
                     recipient=buyer_signal_id,
-                    message=message.strip()
+                    message=message.strip(),
+                    sender_identity=recipient_identity
                 )
         except Exception as e:
             print(f"ERROR: Failed to send order confirmation: {e}")
             self.signal_handler.send_message(
                 recipient=buyer_signal_id,
-                message="❌ Order created but failed to send confirmation. Check your orders in the dashboard."
+                message="❌ Order created but failed to send confirmation. Check your orders in the dashboard.",
+                sender_identity=recipient_identity
             )
     
     def _generate_payment_address(self, product_id: int, buyer_signal_id: str) -> str:
@@ -704,12 +725,13 @@ Order #{order.order_id}
         hash_hex = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
         return f"4{hash_hex}WQHqFEXuCep9YkqJ6ZB7WCnnJiemkAn8UvSpAe71Hr..."
     
-    def send_help(self, buyer_signal_id: str):
+    def send_help(self, buyer_signal_id: str, recipient_identity: Optional[str] = None):
         """
         Send help message to buyer
         
         Args:
             buyer_signal_id: Buyer's Signal ID
+            recipient_identity: Identity to send from (phone or username)
         """
         help_message = """🤖 BUYER COMMANDS
 
@@ -735,5 +757,6 @@ After placing an order, you'll receive:
         
         self.signal_handler.send_message(
             recipient=buyer_signal_id,
-            message=help_message.strip()
+            message=help_message.strip(),
+            sender_identity=recipient_identity
         )
