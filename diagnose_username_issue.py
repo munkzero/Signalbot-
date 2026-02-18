@@ -136,7 +136,7 @@ def check_username_status(phone):
         else:
             print(f"⚠️  Username: Not set")
             print(f"   Messages to username will NOT work without a username!")
-            print(f"   To set username, use: signal-cli -u {phone} setUsername YOUR_USERNAME")
+            print(f"   To set username, use: signal-cli -a {phone} updateAccount -u YOUR_USERNAME")
         
         return status['username']
         
@@ -237,7 +237,7 @@ This is likely the cause of your issue!
       signal-cli -u {PHONE} setUsername {DESIRED_USERNAME}
    
    2. Example:
-      signal-cli -u +64274757293 setUsername shopbot.223
+      signal-cli -a +64274757293 updateAccount -u shopbot.223
    
    3. Then re-run this diagnostic to verify
 

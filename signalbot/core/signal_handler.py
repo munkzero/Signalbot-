@@ -554,31 +554,22 @@ Thank you for your purchase!
         """
         Get the Signal username for this account
         
+        Note: signal-cli doesn't have a direct command to retrieve username.
+        This method attempts to check via JSON-RPC or profile data if available.
+        
         Returns:
-            Username string if set, None otherwise
+            Username string if set, None otherwise (or if not retrievable)
         """
         if not self.phone_number:
             raise RuntimeError("Signal not configured")
         
         try:
-            # Try to get account info which includes username
-            result = subprocess.run(
-                ['signal-cli', '-u', self.phone_number, 'getUserStatus'],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode == 0 and result.stdout:
-                # Parse output for username
-                # Format might vary, so we'll try to extract it
-                for line in result.stdout.strip().split('\n'):
-                    if 'username' in line.lower():
-                        # Extract username from line
-                        parts = line.split(':')
-                        if len(parts) >= 2:
-                            return parts[1].strip()
-            
+            # Unfortunately, signal-cli doesn't have a direct getUserStatus command
+            # Username might be visible in account data or via JSON-RPC
+            # For now, return None and let user verify manually
+            # TODO: Implement via JSON-RPC if daemon mode is available
+            print(f"Note: signal-cli doesn't provide a direct command to get username")
+            print(f"      Verify username manually in Signal app: Settings → Profile")
             return None
         except Exception as e:
             print(f"Failed to get username: {e}")
@@ -589,7 +580,8 @@ Thank you for your purchase!
         Set Signal username for this account
         
         Args:
-            username: Desired username (without @ prefix)
+            username: Desired username (e.g., "shopbot" or "shopbot.223")
+                     Note: Server may assign a discriminator if not provided
             
         Returns:
             True if successful, False otherwise
@@ -598,8 +590,9 @@ Thank you for your purchase!
             raise RuntimeError("Signal not configured")
         
         try:
+            # Correct signal-cli command for setting username
             result = subprocess.run(
-                ['signal-cli', '-u', self.phone_number, 'setUsername', username],
+                ['signal-cli', '-a', self.phone_number, 'updateAccount', '-u', username],
                 capture_output=True,
                 text=True,
                 timeout=10
@@ -607,6 +600,8 @@ Thank you for your purchase!
             
             if result.returncode == 0:
                 print(f"✅ Username set to: {username}")
+                print(f"   Note: Server may have assigned a discriminator (e.g., {username}.123)")
+                print(f"   Verify in Signal app: Settings → Profile → Username")
                 return True
             else:
                 print(f"❌ Failed to set username: {result.stderr}")
@@ -619,23 +614,21 @@ Thank you for your purchase!
         """
         Get sharable username link
         
+        Note: signal-cli doesn't have a direct command to get username link.
+        The link can be found in Signal app: Settings → Profile → Username → Share Link
+        
         Returns:
-            Username link if available, None otherwise
+            Username link if available, None otherwise (or if not retrievable)
         """
         if not self.phone_number:
             raise RuntimeError("Signal not configured")
         
         try:
-            result = subprocess.run(
-                ['signal-cli', '-u', self.phone_number, 'getUsernameLink'],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode == 0 and result.stdout:
-                return result.stdout.strip()
-            
+            # signal-cli doesn't have a getUsernameLink command
+            # Link is typically: https://signal.me/#p/<base64_encoded_data>
+            # Can be found in Signal app
+            print(f"Note: signal-cli doesn't provide username link directly")
+            print(f"      Find link in Signal app: Settings → Profile → Username → Share Link")
             return None
         except Exception as e:
             print(f"Failed to get username link: {e}")

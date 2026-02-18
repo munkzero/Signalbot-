@@ -43,10 +43,10 @@ If users are seeing "two conversations", the root cause is usually:
 ### Cause 1: Username Not Set (MOST COMMON)
 ```bash
 # Check if username is set
-signal-cli -u +64274757293 getUserStatus
+# Note: Username can be verified in Signal app Settings → Profile
 
 # If no username, set one
-signal-cli -u +64274757293 setUsername shopbot.223
+signal-cli -a +64274757293 updateAccount -u shopbot.223
 ```
 
 **What happens when username is NOT set:**
@@ -87,10 +87,10 @@ This will check:
 
 ```bash
 # Set your username
-signal-cli -u +64274757293 setUsername shopbot.223
+signal-cli -a +64274757293 updateAccount -u shopbot.223
 
 # Get sharable link
-signal-cli -u +64274757293 getUsernameLink
+# Note: Username link can be found in Signal app Settings → Profile → Username
 ```
 
 ### Step 3: Verify in Signal App
@@ -226,7 +226,7 @@ Ask a user to:
 
 **A**: No, one username per Signal account. But you can change it:
 ```bash
-signal-cli -u +PHONE setUsername new_username
+signal-cli -a +PHONE updateAccount -u new_username
 ```
 
 ### Q: Do I need to receive differently for username vs phone?
@@ -283,14 +283,14 @@ python diagnose_username_issue.py
 
 **Fix**:
 ```bash
-signal-cli -u +64274757293 setUsername shopbot.223
+signal-cli -a +64274757293 updateAccount -u shopbot.223
 ```
 
 ### Issue: "Users see two conversations"
 
 **Diagnosis**: Check which username they're using
 ```bash
-signal-cli -u +64274757293 getUsernameLink
+# Note: Username link can be found in Signal app Settings → Profile → Username
 ```
 
 **Fix**: 

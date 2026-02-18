@@ -15,7 +15,7 @@ If the diagnostic shows "Username: Not set", run:
 
 ```bash
 # Set your username (replace shopbot.223 with your desired username)
-signal-cli -u +64274757293 setUsername shopbot.223
+signal-cli -a +64274757293 updateAccount -u shopbot.223
 
 # Verify it worked
 python diagnose_username_issue.py
@@ -86,13 +86,13 @@ Expected output if username NOT set:
 This is likely the cause of your issue!
 
 💡 Solution:
-   signal-cli -u +64274757293 setUsername shopbot.223
+   signal-cli -a +64274757293 updateAccount -u shopbot.223
 ```
 
 ### Step 2: Set Username (if needed)
 ```bash
 # Use your own desired username
-signal-cli -u +64274757293 setUsername shopbot.223
+signal-cli -a +64274757293 updateAccount -u shopbot.223
 
 # Expected output:
 # ✅ Username set to: shopbot.223
@@ -136,7 +136,7 @@ After running the fix, verify:
 ### Check 1: Correct Username?
 ```bash
 # Get your actual username
-signal-cli -u +64274757293 getUserStatus
+# Note: Username can be verified in Signal app Settings → Profile
 
 # Get sharable link
 signal-cli -u +64274757293 getUsernameLink
