@@ -136,7 +136,8 @@ def check_username_status(phone):
         else:
             print(f"⚠️  Username: Not set")
             print(f"   Messages to username will NOT work without a username!")
-            print(f"   To set username, use: signal-cli -a {phone} updateAccount -u YOUR_USERNAME")
+            print(f"   To set username, use: signal-cli -a <YOUR_PHONE_NUMBER> updateAccount -u <YOUR_USERNAME>")
+            print(f"   Example: signal-cli -a +64274757293 updateAccount -u shopbot")
         
         return status['username']
         

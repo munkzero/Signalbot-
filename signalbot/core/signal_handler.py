@@ -555,7 +555,9 @@ Thank you for your purchase!
         Get the Signal username for this account
         
         Note: signal-cli doesn't have a direct command to retrieve username.
-        This method attempts to check via JSON-RPC or profile data if available.
+        This is a known limitation of signal-cli. Users should verify username
+        via the Signal mobile app (Settings → Profile → Username) as the
+        definitive source.
         
         Returns:
             Username string if set, None otherwise (or if not retrievable)
@@ -569,7 +571,7 @@ Thank you for your purchase!
             # For now, return None and let user verify manually
             # TODO: Implement via JSON-RPC if daemon mode is available
             print(f"Note: signal-cli doesn't provide a direct command to get username")
-            print(f"      Verify username manually in Signal app: Settings → Profile")
+            print(f"      Verify username manually in Signal app: Settings → Profile → Username")
             return None
         except Exception as e:
             print(f"Failed to get username: {e}")
