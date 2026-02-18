@@ -406,13 +406,13 @@ def check_wallet_health(wallet_path: str) -> Tuple[bool, Optional[str]]:
             if b'restore_height' in data:
                 # Find position of restore_height
                 pos = data.find(b'restore_height')
-                # Check if followed by zeros indicating height 0
-                # This is a heuristic check - exact format may vary
-                remaining = data[pos:pos+50]  # Check next 50 bytes
+                # Check bytes AFTER the 'restore_height' string for zeros
+                # Skip past the string itself (14 bytes)
+                after_marker = data[pos + 14:pos + 64]  # Check 50 bytes after marker
                 
                 # Count consecutive zeros after restore_height marker
                 consecutive_zeros = 0
-                for byte in remaining:
+                for byte in after_marker:
                     if byte == 0:
                         consecutive_zeros += 1
                     else:
