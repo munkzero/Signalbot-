@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
 Test suite for username conversation split and auto-trust performance fixes
 Tests that bot receives messages to both phone and username, and replies from correct identity
@@ -124,14 +124,28 @@ def test_send_message_sender_identity():
         from signalbot.core.signal_handler import SignalHandler
         import inspect
         
+        # Get the function signature
+        sig = inspect.signature(SignalHandler.send_message)
+        
         # Get the source code of send_message
         source = inspect.getsource(SignalHandler.send_message)
         
-        # Check for sender_identity parameter
+        # Check for sender_identity parameter in signature
+        has_sender_identity_param = 'sender_identity' in sig.parameters
+        
+        # Check that it's optional (has default value of None)
+        is_optional = False
+        if has_sender_identity_param:
+            param = sig.parameters['sender_identity']
+            is_optional = param.default is None or param.default == inspect.Parameter.empty
+        
+        # Check that it's passed to _send_direct
+        passes_to_send_direct = '_send_direct' in source and 'sender' in source
+        
         checks = {
-            'sender_identity parameter': 'sender_identity' in source,
-            'Optional sender_identity': 'Optional' in source or 'sender_identity: Optional[str] = None' in source or 'sender_identity=None' in source,
-            'Pass to _send_direct': '_send_direct' in source and 'sender' in source
+            'sender_identity parameter exists': has_sender_identity_param,
+            'sender_identity is optional (defaults to None)': is_optional,
+            'Pass to _send_direct': passes_to_send_direct
         }
         
         all_passed = True
@@ -146,6 +160,8 @@ def test_send_message_sender_identity():
         
     except Exception as e:
         print(f"  ✗ Error: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 

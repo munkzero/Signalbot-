@@ -96,7 +96,6 @@ class SignalHandler:
         # Check cache to avoid re-trusting
         if contact_number in self._trust_attempted:
             return True
-        self._trust_attempted.add(contact_number)
         
         try:
             # First, try to trust the contact
@@ -109,12 +108,16 @@ class SignalHandler:
             
             if result.returncode == 0:
                 print(f"✓ Auto-trusted contact {contact_number}")
+                # Add to cache only after successful trust
+                self._trust_attempted.add(contact_number)
                 return True
             else:
                 # Check if already trusted or other non-critical error
                 stderr = result.stderr.lower()
                 if 'already' in stderr or 'trusted' in stderr:
                     print(f"DEBUG: {contact_number} already trusted")
+                    # Already trusted, add to cache
+                    self._trust_attempted.add(contact_number)
                     return True
                 elif 'not registered' in stderr:
                     # They haven't messaged us yet, will trust when they do

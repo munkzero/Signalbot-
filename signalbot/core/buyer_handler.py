@@ -237,7 +237,7 @@ class BuyerHandler:
         if not message_text:
             return
         
-        # Store recipient identity for this conversation
+        # Use seller_signal_id as fallback if no recipient_identity provided
         if not recipient_identity:
             recipient_identity = self.seller_signal_id
         
