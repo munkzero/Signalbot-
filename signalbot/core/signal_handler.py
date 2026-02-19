@@ -327,12 +327,12 @@ class SignalHandler:
         try:
             while self.listening:
                 try:
-                    print("DEBUG: Polling for messages... (signal-cli timeout: 5s, subprocess timeout: 20s)")
+                    print("DEBUG: Polling for messages... (signal-cli timeout: 30s, subprocess timeout: 45s)")
                     result = subprocess.run(
-                        ['signal-cli', '--output', 'json', '-u', self.phone_number, 'receive', '--timeout', '5'],
+                        ['signal-cli', '--output', 'json', '-u', self.phone_number, 'receive', '--timeout', '30'],
                         capture_output=True,
                         text=True,
-                        timeout=20  # Increased from 15 for better reliability
+                        timeout=45  # Allow for username message delivery delays (21+ seconds observed)
                     )
                     
                     if result.returncode != 0 and result.stderr:
@@ -362,7 +362,7 @@ class SignalHandler:
                         current_sleep = idle_sleep
                     
                 except subprocess.TimeoutExpired:
-                    print(f"WARNING: signal-cli receive command timed out after 20 seconds")
+                    print(f"WARNING: signal-cli receive command timed out after 45 seconds")
                 except Exception as e:
                     print(f"ERROR: Error receiving messages: {e}")
                 
@@ -418,6 +418,14 @@ class SignalHandler:
             data_message = envelope.get('dataMessage', {})
             message_text = data_message.get('message', '')
             group_info = data_message.get('groupInfo')
+            
+            if timestamp:
+                current_time_ms = int(time.time() * 1000)
+                delivery_delay_seconds = max(0, (current_time_ms - timestamp) / 1000)
+                if delivery_delay_seconds > 15:
+                    print(f"⚠ High delivery delay: {delivery_delay_seconds:.1f}s (username messages often delayed)")
+                else:
+                    print(f"✓ Normal delivery delay: {delivery_delay_seconds:.1f}s")
             
             print(f"DEBUG: Received dataMessage from {source}: {message_text[:50] if message_text else '(no text)'}")
         
