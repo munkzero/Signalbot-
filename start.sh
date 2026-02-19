@@ -199,6 +199,33 @@ fi
 echo ""
 
 echo "========================================="
+echo "Checking Monero Wallet Locks"
+echo "========================================="
+
+# Kill any orphaned RPC processes
+if pgrep -x "monero-wallet-rpc" > /dev/null; then
+    echo "⚠ Found running monero-wallet-rpc process, killing..."
+    pkill -9 monero-wallet-rpc
+    sleep 2
+    echo "✓ Cleaned up RPC process"
+fi
+
+# Remove stale lock files
+WALLET_DIR="$SCRIPT_DIR/data/wallet"
+if [ -d "$WALLET_DIR" ]; then
+    LOCK_FILES=$(find "$WALLET_DIR" -name "*.keys.lock" 2>/dev/null)
+    if [ -n "$LOCK_FILES" ]; then
+        echo "⚠ Found stale wallet lock files:"
+        echo "$LOCK_FILES"
+        find "$WALLET_DIR" -name "*.keys.lock" -delete
+        echo "✓ Removed stale locks"
+    else
+        echo "✓ No stale wallet locks found"
+    fi
+fi
+echo ""
+
+echo "========================================="
 
 # Change to project directory
 cd "$SCRIPT_DIR" || exit 1

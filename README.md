@@ -132,6 +132,46 @@ The setup wizard will guide you through:
 
 > **Note on Disk Space:** Signal-cli extracts ~127MB of native libraries to temp directories on each startup. If the application crashes, these files may not be cleaned up automatically. The `start.sh` script manages this by using a project-local temp directory and cleaning up orphaned files. See [TEMP_DIRECTORY_MANAGEMENT.md](TEMP_DIRECTORY_MANAGEMENT.md) for details.
 
+### Setting Up Signal Username (Optional but Recommended)
+
+By default, your bot uses your phone number (e.g., +64274757293). You can register a username so customers can message @yourusername instead.
+
+#### Steps:
+
+1. **Register your username on Signal servers:**
+   ```bash
+   signal-cli -u +YOUR_PHONE_NUMBER updateAccount --username your.username
+   ```
+   Example: `signal-cli -u +64274757293 updateAccount --username crimebot.23`
+
+2. **Get your shareable link:**
+   ```bash
+   signal-cli -u +YOUR_PHONE_NUMBER getUserStatus your.username
+   ```
+   This will output a link like: `https://signal.me/#eu/...`
+
+3. **Share with customers:**
+   - Share the signal.me link
+   - Or tell them to search: `@your.username` in Signal app
+
+4. **Benefits:**
+   - ✅ More professional (@shopname vs phone number)
+   - ✅ Customers can find you by username
+   - ✅ Single conversation (not two separate threads)
+   - ✅ Phone number stays private
+
+#### Troubleshooting:
+
+**"Username already taken"** - Try a different one or add numbers (e.g., crimebot.23)
+
+**"Two conversations showing up"** - Once username is registered, both conversations will merge. Have customers message the username link.
+
+**Check if username is registered:**
+```bash
+signal-cli -u +YOUR_PHONE_NUMBER listContacts | grep "Username:"
+```
+You should see your username listed.
+
 ## Configuration
 
 ### Changing Your Phone Number
