@@ -10,6 +10,7 @@ import threading
 import time
 import os
 import re
+import fcntl
 
 
 class SignalHandler:
@@ -297,53 +298,85 @@ class SignalHandler:
         
         print(f"DEBUG: Listen loop active for {self.phone_number}")
         
+        # Process lock file path (unique per phone number to support multiple accounts)
+        safe_number = self.phone_number.replace('+', '').replace('/', '_')
+        lock_path = os.path.join(os.path.expanduser('~'), f'.signalbot_{safe_number}.lock')
+        
+        # Acquire an exclusive process lock to prevent multiple bot instances
+        # from competing for the same Signal messages
+        lock_fd = None
+        try:
+            lock_fd = open(lock_path, 'w')
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_fd.write(str(os.getpid()))
+            lock_fd.flush()
+            print(f"DEBUG: Acquired process lock: {lock_path}")
+        except (IOError, OSError):
+            if lock_fd is not None:
+                lock_fd.close()
+            print(f"WARNING: Another bot instance is already running for {self.phone_number}.")
+            print(f"         Only one instance can receive messages at a time.")
+            print(f"         Lock file: {lock_path}")
+            return
+        
         # Adaptive polling: longer sleep when idle, shorter when active
         idle_sleep = 5  # 5 seconds when no messages
         active_sleep = 2  # 2 seconds after receiving messages
         current_sleep = idle_sleep
         
-        while self.listening:
+        try:
+            while self.listening:
+                try:
+                    print("DEBUG: Polling for messages... (signal-cli timeout: 5s, subprocess timeout: 20s)")
+                    result = subprocess.run(
+                        ['signal-cli', '--output', 'json', '-u', self.phone_number, 'receive', '--timeout', '5'],
+                        capture_output=True,
+                        text=True,
+                        timeout=20  # Increased from 15 for better reliability
+                    )
+                    
+                    if result.returncode != 0 and result.stderr:
+                        print(f"DEBUG: signal-cli receive error: {result.stderr}")
+                    
+                    messages_received = False
+                    
+                    if result.returncode == 0 and result.stdout:
+                        print(f"DEBUG: Received data from signal-cli")
+                        # Parse JSON messages
+                        for line in result.stdout.strip().split('\n'):
+                            if line:
+                                try:
+                                    message_data = json.loads(line)
+                                    self._handle_message(message_data)
+                                    messages_received = True
+                                except json.JSONDecodeError:
+                                    print(f"DEBUG: Failed to parse JSON: {line[:100]}")
+                    else:
+                        print(f"DEBUG: No messages (will retry in {idle_sleep}s)")
+                    
+                    # Adaptive sleep: poll faster when active, slower when idle
+                    if messages_received:
+                        current_sleep = active_sleep
+                        print(f"DEBUG: Active mode - next check in {active_sleep}s")
+                    else:
+                        current_sleep = idle_sleep
+                    
+                except subprocess.TimeoutExpired:
+                    print(f"WARNING: signal-cli receive command timed out after 20 seconds")
+                except Exception as e:
+                    print(f"ERROR: Error receiving messages: {e}")
+                
+                time.sleep(current_sleep)
+        finally:
+            # Always release the process lock when the loop exits
+            if lock_fd is not None:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
             try:
-                print("DEBUG: Polling for messages... (signal-cli timeout: 5s, subprocess timeout: 20s)")
-                result = subprocess.run(
-                    ['signal-cli', '--output', 'json', '-u', self.phone_number, 'receive', '--timeout', '5'],
-                    capture_output=True,
-                    text=True,
-                    timeout=20  # Increased from 15 for better reliability
-                )
-                
-                if result.returncode != 0 and result.stderr:
-                    print(f"DEBUG: signal-cli receive error: {result.stderr}")
-                
-                messages_received = False
-                
-                if result.returncode == 0 and result.stdout:
-                    print(f"DEBUG: Received data from signal-cli")
-                    # Parse JSON messages
-                    for line in result.stdout.strip().split('\n'):
-                        if line:
-                            try:
-                                message_data = json.loads(line)
-                                self._handle_message(message_data)
-                                messages_received = True
-                            except json.JSONDecodeError:
-                                print(f"DEBUG: Failed to parse JSON: {line[:100]}")
-                else:
-                    print(f"DEBUG: No messages (will retry in {idle_sleep}s)")
-                
-                # Adaptive sleep: poll faster when active, slower when idle
-                if messages_received:
-                    current_sleep = active_sleep
-                    print(f"DEBUG: Active mode - next check in {active_sleep}s")
-                else:
-                    current_sleep = idle_sleep
-                
-            except subprocess.TimeoutExpired:
-                print(f"WARNING: signal-cli receive command timed out after 20 seconds")
-            except Exception as e:
-                print(f"ERROR: Error receiving messages: {e}")
-            
-            time.sleep(current_sleep)
+                os.unlink(lock_path)
+            except OSError:
+                pass
+            print(f"DEBUG: Released process lock: {lock_path}")
     
     def _handle_message(self, message_data: Dict):
         """

@@ -2643,14 +2643,11 @@ class OrdersTab(QWidget):
             date_str = order.created_at.strftime("%Y-%m-%d %H:%M") if order.created_at else "N/A"
             self.table.setItem(row, 7, QTableWidgetItem(date_str))
             
-            # Actions column: Delete button (only for deletable statuses)
-            if order.payment_status in ('expired', 'cancelled', 'failed'):
-                delete_btn = QPushButton("🗑️ Delete")
-                delete_btn.setStyleSheet("color: red;")
-                delete_btn.clicked.connect(lambda checked, oid=order.order_id: self.delete_order(oid))
-                self.table.setCellWidget(row, 8, delete_btn)
-            else:
-                self.table.setCellWidget(row, 8, None)
+            # Actions column: Delete button for all orders
+            delete_btn = QPushButton("🗑️ Delete")
+            delete_btn.setStyleSheet("color: red;")
+            delete_btn.clicked.connect(lambda checked, oid=order.order_id: self.delete_order(oid))
+            self.table.setCellWidget(row, 8, delete_btn)
     
     def delete_order(self, order_id: str):
         """Delete a single order after confirmation"""

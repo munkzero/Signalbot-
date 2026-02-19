@@ -536,20 +536,15 @@ class OrderManager:
     def delete_order(self, order_id: str) -> bool:
         """
         Delete a single order by order ID.
-        Only orders with status 'expired', 'cancelled', or 'failed' can be deleted.
         
         Args:
             order_id: Order ID to delete
             
         Returns:
-            True if deleted, False if not found or status not deletable
+            True if deleted, False if not found
         """
         db_order = self.db.session.query(OrderModel).filter_by(order_id=order_id).first()
         if not db_order:
-            return False
-        
-        deletable_statuses = ('expired', 'cancelled', 'failed')
-        if db_order.payment_status not in deletable_statuses:
             return False
         
         self.db.session.delete(db_order)
