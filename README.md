@@ -253,7 +253,53 @@ Or enter your Signal phone number directly.
 
 This bot is configured to **automatically accept all message requests** from new contacts.
 
-### Why Auto-Trust is Required
+## signal-cli Daemon Mode
+
+The bot communicates with Signal via the **signal-cli daemon** using JSON-RPC over TCP.
+
+### Why Daemon Mode?
+
+Earlier versions used `signal-cli receive` as a subprocess (polled repeatedly).  This
+caused intermittent hangs on stdout pipes.  Daemon mode eliminates these issues:
+
+| Approach | Hangs? | Config locks? | Performance |
+|---|---|---|---|
+| `subprocess.Popen()` (old) | ✗ Yes | ✗ Yes | ✗ Polling |
+| daemon + JSON-RPC (new) | ✓ No | ✓ No | ✓ Push |
+
+### How It Works
+
+On startup the bot:
+
+1. Checks whether a daemon is already listening on `localhost:7583`.
+2. If not, launches `signal-cli -u <number> daemon --tcp --send-read-receipts`.
+3. Connects a JSON-RPC client over TCP.
+4. Incoming messages arrive as unsolicited JSON-RPC notifications (no polling).
+5. Outgoing messages are sent as JSON-RPC requests.
+
+### Configuration
+
+```bash
+# Optional – set in .env or environment
+SIGNAL_DAEMON_PORT=7583            # TCP port (default: 7583)
+SIGNAL_DAEMON_STARTUP_TIMEOUT=30   # seconds to wait for daemon (default: 30)
+```
+
+### Verify Daemon is Running
+
+```bash
+ps aux | grep "signal-cli.*daemon"
+# or
+nc -z localhost 7583 && echo "daemon is up"
+```
+
+### Manual Daemon Start (for debugging)
+
+```bash
+signal-cli -u +64YOURNUMBER daemon --tcp --send-read-receipts
+```
+
+
 
 Signal treats first-time messages as "Message Requests" that need manual approval. For a business bot, this would mean:
 - ❌ Manually approving every customer

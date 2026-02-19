@@ -75,6 +75,10 @@ NODE_SYNC_TIMEOUT = 120  # seconds
 SIGNAL_DATA_DIR = DATA_DIR / "signal"
 SIGNAL_DATA_DIR.mkdir(exist_ok=True)
 
+# Signal daemon settings (JSON-RPC over TCP)
+SIGNAL_DAEMON_PORT = int(os.getenv("SIGNAL_DAEMON_PORT", "7583"))
+SIGNAL_DAEMON_STARTUP_TIMEOUT = int(os.getenv("SIGNAL_DAEMON_STARTUP_TIMEOUT", "30"))
+
 # Image settings
 MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB
 ALLOWED_IMAGE_FORMATS = ["JPEG", "PNG", "JPG"]

@@ -4,76 +4,83 @@ Manages Signal messaging integration for buyer-seller communication
 """
 
 from typing import Optional, Callable, Dict, List
-import subprocess
 import json
 import threading
 import time
 import os
 import re
-import fcntl
-import psutil
+
+from signalbot.core.jsonrpc_client import JsonRpcClient, JsonRpcError
+from signalbot.core.signal_daemon import SignalDaemon
+from signalbot.config.settings import SIGNAL_DAEMON_PORT, SIGNAL_DAEMON_STARTUP_TIMEOUT
 
 
 class SignalHandler:
     """
-    Handles Signal messaging for the shop bot
-    Note: Requires signal-cli to be installed and configured
+    Handles Signal messaging for the shop bot via the signal-cli JSON-RPC daemon.
+    Requires signal-cli to be installed and configured.
     """
-    
-    # Maximum characters to log from envelope JSON for diagnostics
+
+    # Keepalive/health-check interval (seconds between daemon connection checks).
+    _KEEPALIVE_INTERVAL_SECONDS = 30
+    # Maximum characters to log from envelope JSON for diagnostics.
     _MAX_ENVELOPE_LOG_LENGTH = 500
-    # Timeout (seconds) for startup username-linkage verification
-    _USERNAME_VERIFICATION_TIMEOUT_SECONDS = 1
-    # Number of consecutive empty responses before emitting a warning
-    _CONSECUTIVE_FAILURE_WARN_THRESHOLD = 5
-    
+
     def __init__(self, phone_number: Optional[str] = None):
         """
-        Initialize Signal handler
-        
+        Initialize Signal handler.
+
         Args:
-            phone_number: Seller's Signal phone number (if not provided, reads from environment)
+            phone_number: Seller's Signal phone number (if not provided, reads from environment).
         """
         # Get phone number from parameter or environment
         self.phone_number = phone_number or os.getenv('PHONE_NUMBER') or os.getenv('SIGNAL_USERNAME')
-        
+
         if not self.phone_number:
             raise ValueError(
                 "Phone number not configured! "
                 "Run './setup.sh' to configure your Signal number, "
                 "or set PHONE_NUMBER in .env file."
             )
-        
+
         # Validate format
         if not self.phone_number.startswith('+'):
             raise ValueError(
                 f"Invalid phone number format: {self.phone_number}\n"
                 "Must start with '+' (e.g., +64274757293)"
             )
-        
+
         self.message_callbacks = []
         self.buyer_handler = None  # Will be set by dashboard
         self.listening = False
         self.listen_thread = None
         self.trusted_contacts = set()  # Track already-trusted contacts to avoid redundant calls
         self._trust_attempted = set()  # Cache of contacts we've attempted to trust
-        
+
+        # Daemon and JSON-RPC client
+        self._daemon = SignalDaemon(
+            phone_number=self.phone_number,
+            port=SIGNAL_DAEMON_PORT,
+            startup_timeout=SIGNAL_DAEMON_STARTUP_TIMEOUT,
+        )
+        self._rpc: Optional[JsonRpcClient] = None
+
         print(f"DEBUG: SignalHandler initialized with phone_number={self.phone_number}")
-        
+
+        # Start daemon and connect RPC client
+        self._start_daemon()
+
         # Verify auto-trust is working
         self._verify_auto_trust_config()
-        
-        # Verify username is linked (if applicable) so messages to @username are received
-        self._verify_username_linked()
     
     @staticmethod
     def _is_uuid(identifier: str) -> bool:
         """
         Check if a string is a valid UUID format
-        
+
         Args:
             identifier: String to check
-            
+
         Returns:
             True if the string matches UUID format (8-4-4-4-12 hex digits)
         """
@@ -82,86 +89,96 @@ class SignalHandler:
             re.IGNORECASE
         )
         return bool(uuid_pattern.match(identifier))
-    
+
+    def _start_daemon(self):
+        """Start the signal-cli daemon and connect the JSON-RPC client."""
+        if not self._daemon.start():
+            print("WARNING: signal-cli daemon could not be started. "
+                  "Messaging will be unavailable until the daemon is running.")
+            return
+
+        self._rpc = JsonRpcClient(
+            host="localhost",
+            port=SIGNAL_DAEMON_PORT,
+            notification_callback=self._on_notification,
+        )
+        if not self._rpc.connect():
+            print("WARNING: Could not connect to signal-cli daemon RPC socket.")
+            self._rpc = None
+
+    def stop(self):
+        """Stop listening and shut down the daemon (if we started it)."""
+        self.stop_listening()
+        if self._rpc is not None:
+            self._rpc.disconnect()
+            self._rpc = None
+        self._daemon.stop()
+
     def link_device(self) -> str:
         """
-        Generate linking URI for Signal account
-        
+        Generate linking URI for Signal account.
+
         Returns:
-            Device linking URI (can be converted to QR code)
+            Device linking URI (can be converted to QR code).
         """
+        import subprocess
         try:
-            # This would use signal-cli to generate linking info
-            # Placeholder for actual implementation
             result = subprocess.run(
                 ['signal-cli', 'link', '-n', 'ShopBot'],
                 capture_output=True,
                 text=True,
                 timeout=10
             )
-            
+
             if result.returncode == 0:
-                # Extract URI from output
                 return result.stdout.strip()
             else:
                 raise RuntimeError(f"Failed to generate link: {result.stderr}")
         except Exception as e:
             raise RuntimeError(f"Signal linking failed: {e}")
-    
+
     def auto_trust_contact(self, contact_number: str) -> bool:
         """
-        Automatically trust a contact's identity.
-        Called when receiving message from any contact.
-        
+        Automatically trust a contact's identity via the JSON-RPC daemon.
+        Called when receiving a message from any contact.
+
         Args:
-            contact_number: Phone number to trust
-            
+            contact_number: Phone number to trust.
+
         Returns:
-            True if successful, False otherwise
+            True if successful (or already trusted), False otherwise.
         """
         # Don't trust self
         if contact_number == self.phone_number:
             return True
-        
+
         # Check cache to avoid re-trusting
         if contact_number in self._trust_attempted:
             return True
-        
+
+        if self._rpc is None:
+            print(f"WARNING: Cannot trust {contact_number} - RPC not connected")
+            return False
+
         try:
-            # First, try to trust the contact
-            result = subprocess.run(
-                ['signal-cli', '-u', self.phone_number, 'trust', contact_number, '-a'],
-                capture_output=True,
-                timeout=1,
-                text=True
-            )
-            
-            if result.returncode == 0:
-                print(f"✓ Auto-trusted contact {contact_number}")
-                # Add to cache only after successful trust
+            self._rpc.trust_identity(contact_number)
+            print(f"✓ Auto-trusted contact {contact_number}")
+            self._trust_attempted.add(contact_number)
+            return True
+        except JsonRpcError as exc:
+            msg = str(exc).lower()
+            if 'already' in msg or 'trusted' in msg:
+                print(f"DEBUG: {contact_number} already trusted")
                 self._trust_attempted.add(contact_number)
                 return True
+            elif 'not registered' in msg:
+                print(f"DEBUG: {contact_number} will be trusted when they message")
+                return False
             else:
-                # Check if already trusted or other non-critical error
-                stderr = result.stderr.lower()
-                if 'already' in stderr or 'trusted' in stderr:
-                    print(f"DEBUG: {contact_number} already trusted")
-                    # Already trusted, add to cache
-                    self._trust_attempted.add(contact_number)
-                    return True
-                elif 'not registered' in stderr:
-                    # They haven't messaged us yet, will trust when they do
-                    print(f"DEBUG: {contact_number} will be trusted when they message")
-                    return False
-                else:
-                    print(f"DEBUG: Trust command for {contact_number}: {result.stderr.strip()}")
-                    return False
-                
-        except subprocess.TimeoutExpired:
-            print(f"WARNING: Trust command timed out for {contact_number}")
-            return False
-        except Exception as e:
-            print(f"WARNING: Could not auto-trust {contact_number}: {e}")
+                print(f"DEBUG: Trust command for {contact_number}: {exc}")
+                return False
+        except Exception as exc:
+            print(f"WARNING: Could not auto-trust {contact_number}: {exc}")
             return False
     
     def send_message(
@@ -193,320 +210,152 @@ class SignalHandler:
     
     def _send_direct(self, recipient: str, message: str, attachments: Optional[List[str]] = None, sender: Optional[str] = None) -> bool:
         """
-        Send message directly via signal-cli
-        
+        Send message via the JSON-RPC daemon.
+
         Args:
-            recipient: Recipient phone number, username, or UUID
-            message: Message text
-            attachments: Optional list of file paths
-            sender: Sender identity (phone or username). If not provided, uses self.phone_number
-            
+            recipient: Recipient phone number, username, or UUID.
+            message: Message text.
+            attachments: Optional list of file paths.
+            sender: Retained for API compatibility; the daemon always uses the
+                    configured account so this parameter has no effect.
+
         Returns:
-            True if sent successfully
+            True if sent successfully.
         """
-        try:
-            # Use provided sender or default to phone_number
-            if not sender:
-                sender = self.phone_number
-            
-            # Determine recipient type and build command accordingly
-            # Phone numbers and UUIDs use direct addressing
-            # Usernames require the --username flag
-            if recipient.startswith('+') or self._is_uuid(recipient):
-                # Phone number or UUID - send directly
-                cmd = [
-                    'signal-cli',
-                    '-u', sender,
-                    'send',
-                    '-m', message,
-                    recipient
-                ]
-            else:
-                # Username - requires --username flag
-                cmd = [
-                    'signal-cli',
-                    '-u', sender,
-                    'send',
-                    '-m', message,
-                    '--username', recipient
-                ]
-            
-            if attachments:
-                for attachment in attachments:
-                    cmd.extend(['-a', attachment])
-            
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=60  # Increased for slow network (600-700ms latency to Signal servers)
-            )
-            
-            if result.returncode == 0:
-                print(f"DEBUG: Message sent successfully to {recipient}")
-                return True
-            else:
-                print(f"ERROR: Failed to send message to {recipient}: {result.stderr}")
-                return False
-        except subprocess.TimeoutExpired:
-            print(f"ERROR: Timeout sending message to {recipient}")
-            print(f"  Timeout was set to 60 seconds - connection may be unstable")
-            print(f"  Consider checking network or using smaller images")
+        if self._rpc is None:
+            print(f"ERROR: Cannot send message - RPC not connected")
             return False
-        except Exception as e:
-            print(f"ERROR: Failed to send Signal message: {e}")
+
+        try:
+            params: Dict = {"recipient": [recipient], "message": message}
+            if attachments:
+                params["attachment"] = attachments
+            self._rpc.send_request("send", params)
+            print(f"DEBUG: Message sent successfully to {recipient}")
+            return True
+        except TimeoutError:
+            print(f"ERROR: Timeout sending message to {recipient}")
+            return False
+        except JsonRpcError as exc:
+            print(f"ERROR: Failed to send message to {recipient}: {exc}")
+            return False
+        except Exception as exc:
+            print(f"ERROR: Failed to send Signal message: {exc}")
             print(f"  Recipient: {recipient}")
             print(f"  Attachments: {len(attachments) if attachments else 0}")
             return False
-    
+
     def send_image(self, recipient: str, image_path: str, caption: Optional[str] = None) -> bool:
         """
-        Send image via Signal
-        
+        Send image via Signal.
+
         Args:
-            recipient: Recipient phone number
-            image_path: Path to image file
-            caption: Optional caption
-            
+            recipient: Recipient phone number.
+            image_path: Path to image file.
+            caption: Optional caption.
+
         Returns:
-            True if sent successfully
+            True if sent successfully.
         """
         message = caption if caption else ""
         return self.send_message(recipient, message, attachments=[image_path])
-    
-    def _cleanup_orphaned_signal_cli_processes(self):
-        """Kill any orphaned signal-cli receive processes to prevent config file lock conflicts"""
-        try:
-            result = subprocess.run(
-                ['pkill', '-9', '-f', 'signal-cli.*receive'],
-                capture_output=True,
-                timeout=5
-            )
-            if result.returncode == 0:
-                print("DEBUG: Killed orphaned signal-cli receive process(es)")
-                time.sleep(1)
-        except FileNotFoundError:
-            pass  # pkill not available on this platform
-        except subprocess.TimeoutExpired:
-            print("WARNING: Timed out waiting for pkill to finish")
-        except Exception as e:
-            print(f"DEBUG: Could not clean up orphaned signal-cli processes: {e}")
 
     def start_listening(self):
-        """Start listening for incoming messages"""
+        """
+        Start receiving incoming messages via the daemon notification channel.
+
+        The JSON-RPC client's background reader dispatches incoming Signal
+        message notifications to ``_on_notification`` which in turn calls
+        ``_handle_message``.  The ``listening`` flag and ``listen_thread``
+        are retained for compatibility with code that calls ``is_listening()``.
+        """
         if self.listening:
             print("DEBUG: start_listening() called but already listening")
             return
-        
+
         print(f"DEBUG: start_listening() called for {self.phone_number}")
-        # Kill orphaned signal-cli processes before starting to avoid config file lock conflicts
-        self._cleanup_orphaned_signal_cli_processes()
+
+        if self._rpc is None or not self._rpc.is_connected():
+            print("WARNING: RPC not connected; attempting to reconnect before listening…")
+            self._start_daemon()
+
+        if self._rpc is None or not self._rpc.is_connected():
+            print("ERROR: Cannot start listening - daemon RPC not available")
+            return
+
         self.listening = True
-        self.listen_thread = threading.Thread(target=self._listen_loop, daemon=True)
+        # Start a lightweight keepalive / health-check thread so that
+        # is_listening() continues to return True while the daemon is running,
+        # and reconnects if the daemon crashes.
+        self.listen_thread = threading.Thread(
+            target=self._keepalive_loop, daemon=True, name="signal-keepalive"
+        )
         self.listen_thread.start()
-        print("DEBUG: Listen thread started successfully")
+        print("DEBUG: Listening via daemon notifications (JSON-RPC mode)")
     
     def stop_listening(self):
-        """Stop listening for messages"""
+        """Stop the keepalive loop and mark handler as not listening."""
         self.listening = False
         if self.listen_thread:
             self.listen_thread.join(timeout=5)
-    
+
     def is_listening(self):
         """
-        Check if message listener is running
-        
+        Check if message listener is running.
+
         Returns:
-            bool: True if listening for messages
+            bool: True if listening for messages.
         """
         return self.listening
-    
-    def _listen_loop(self):
-        """Background loop to receive messages with adaptive polling"""
-        if not self.phone_number:
-            print("DEBUG: _listen_loop cannot start - no phone number configured")
+
+    def _keepalive_loop(self):
+        """
+        Lightweight thread that periodically verifies the daemon is healthy
+        and attempts to reconnect if it has crashed.
+        """
+        while self.listening:
+            time.sleep(self._KEEPALIVE_INTERVAL_SECONDS)
+            if not self.listening:
+                break
+
+            if self._rpc is None or not self._rpc.is_connected():
+                print("WARNING: signal-cli daemon connection lost; reconnecting…")
+                if self._rpc is not None:
+                    self._rpc.disconnect()
+                    self._rpc = None
+                self._start_daemon()
+                if self._rpc is not None and self._rpc.is_connected():
+                    print("✓ Reconnected to signal-cli daemon")
+                else:
+                    print("ERROR: Could not reconnect to signal-cli daemon")
+
+    def _on_notification(self, frame: Dict):
+        """
+        Called by the JSON-RPC reader thread for every unsolicited notification
+        (i.e. incoming Signal messages / receipts pushed by the daemon).
+
+        The daemon wraps incoming messages in a ``receive`` notification whose
+        ``params`` field contains the same envelope structure that
+        ``signal-cli receive --output json`` would print.
+        """
+        # The daemon may send notifications in one of two shapes:
+        #   {"jsonrpc":"2.0","method":"receive","params":{...envelope...}}
+        # or (older builds) just the envelope dict at the top level.
+        params = frame.get("params")
+        if params is not None:
+            message_data = params
+        else:
+            message_data = frame
+
+        envelope = message_data.get("envelope")
+        if envelope is None:
+            # Not a message notification we recognise; ignore.
             return
-        
-        print(f"DEBUG: Listen loop active for {self.phone_number}")
-        
-        # Process lock file path (unique per phone number to support multiple accounts)
-        safe_number = self.phone_number.replace('+', '').replace('/', '_')
-        lock_path = os.path.join(os.path.expanduser('~'), f'.signalbot_{safe_number}.lock')
-        
-        # Acquire an exclusive process lock to prevent multiple bot instances
-        # from competing for the same Signal messages
-        lock_fd = None
-        try:
-            lock_fd = open(lock_path, 'w')
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            lock_fd.write(str(os.getpid()))
-            lock_fd.flush()
-            print(f"DEBUG: Acquired process lock: {lock_path}")
-        except (IOError, OSError):
-            if lock_fd is not None:
-                lock_fd.close()
-            print(f"WARNING: Another bot instance is already running for {self.phone_number}.")
-            print(f"         Only one instance can receive messages at a time.")
-            print(f"         Lock file: {lock_path}")
-            return
-        
-        # Check for competing signal-cli processes before starting the loop
-        signal_cli_procs = [
-            p for p in psutil.process_iter(['pid', 'name', 'cmdline'])
-            if 'signal-cli' in str(p.info.get('cmdline', []))
-        ]
-        if len(signal_cli_procs) > 1:
-            print(f"⚠ WARNING: Multiple signal-cli processes detected:")
-            for p in signal_cli_procs:
-                print(f"   PID {p.info['pid']}: {p.info['cmdline']}")
-        
-        # Adaptive polling: longer sleep when idle, shorter when active
-        idle_sleep = 5  # 5 seconds when no messages
-        active_sleep = 2  # 2 seconds after receiving messages
-        current_sleep = idle_sleep
-        consecutive_failures = 0
-        
-        try:
-            while self.listening:
-                try:
-                    cmd = ['signal-cli', '--output', 'json', '-u', self.phone_number,
-                           'receive', '--send-read-receipts', '--timeout', '30']
-                    print(f"DEBUG: Running command: {' '.join(cmd)}")
-                    
-                    # Use Popen with isolation flags to prevent subprocess hanging:
-                    # - start_new_session=True: detaches from parent process group so
-                    #   inherited signal handlers / TTY / session don't block signal-cli
-                    # - close_fds=True: closes all inherited file descriptors except
-                    #   stdout/stderr pipes, preventing signal-cli from blocking on
-                    #   any fd left open by the Python process
-                    # - stdin=subprocess.DEVNULL: ensures signal-cli gets EOF on stdin
-                    #   immediately rather than inheriting the parent's stdin
-                    process = subprocess.Popen(
-                        cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        stdin=subprocess.DEVNULL,
-                        text=True,
-                        bufsize=1,           # Line-buffered in text mode (bufsize=1 with text=True)
-                        close_fds=True,      # Don't inherit parent file descriptors
-                        start_new_session=True,  # Detach from parent session/TTY
-                        env={**os.environ},  # Explicit environment copy
-                    )
-                    
-                    # Watchdog timer: force-kill the process if it exceeds the deadline.
-                    # This guards against signal-cli hanging indefinitely even with the
-                    # isolation flags above (e.g. JVM deadlock or network issue).
-                    hard_timeout = 45
-                    watchdog_fired = threading.Event()
 
-                    def _watchdog(proc, event):
-                        """Kill a hung signal-cli process after the hard timeout."""
-                        if not event.wait(timeout=hard_timeout):
-                            # Timeout reached - process is still running
-                            print(f"WARNING: signal-cli watchdog fired after {hard_timeout}s, killing PID {proc.pid}")
-                            try:
-                                proc.kill()
-                            except OSError:
-                                pass  # Already dead
+        print(f"🔔 Daemon notification received")
+        self._handle_message(message_data)
 
-                    watchdog_thread = threading.Thread(
-                        target=_watchdog,
-                        args=(process, watchdog_fired),
-                        daemon=True,
-                    )
-                    watchdog_thread.start()
 
-                    try:
-                        stdout, stderr = process.communicate(timeout=hard_timeout)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait()
-                        print("WARNING: signal-cli receive command timed out, retrying...")
-                        time.sleep(current_sleep)
-                        continue
-                    finally:
-                        watchdog_fired.set()  # Cancel the watchdog
-                    
-                    print(f"DEBUG: subprocess returncode={process.returncode}, stdout_length={len(stdout)}, stderr={stderr!r}")
-                    
-                    if stderr and stderr.strip():
-                        print(f"DEBUG: signal-cli stderr: {stderr}")
-                    
-                    if process.returncode != 0 and stderr:
-                        print(f"DEBUG: signal-cli receive error: {stderr}")
-                    
-                    # Handle config file lock: kill orphaned processes and retry
-                    if stderr and "Config file is in use" in stderr:
-                        print("⚠ Config file locked, killing orphaned signal-cli processes...")
-                        self._cleanup_orphaned_signal_cli_processes()
-                        consecutive_failures += 1
-                        time.sleep(2)
-                        continue
-                    
-                    messages_received = False
-                    
-                    if stdout:
-                        print(f"🔍 RAW JSON RECEIVED ({len(stdout)} chars):")
-                        print(stdout)
-                    else:
-                        consecutive_failures += 1
-                        if consecutive_failures > self._CONSECUTIVE_FAILURE_WARN_THRESHOLD:
-                            print(f"⚠ {consecutive_failures} consecutive empty responses, checking signal-cli...")
-                        else:
-                            print("DEBUG: No stdout from signal-cli (empty response)")
-                    
-                    if process.returncode == 0 and stdout:
-                        lines = stdout.strip().split('\n')
-                        print(f"DEBUG: Received {len(lines)} JSON line(s)")
-                        # Parse JSON messages
-                        for line_num, line in enumerate(lines):
-                            if line:
-                                print(f"DEBUG: Processing line {line_num + 1}: {line[:100]}...")
-                                try:
-                                    parsed = json.loads(line)
-                                    envelope = parsed.get('envelope', {})
-                                    has_data_msg = 'dataMessage' in envelope
-                                    has_typing = 'typingMessage' in envelope
-                                    source = envelope.get('sourceNumber') or envelope.get('source', 'UNKNOWN')
-                                    source_uuid = envelope.get('sourceUuid', 'UNKNOWN')
-                                    print(f"   → Source: {source} / UUID: {source_uuid}")
-                                    print(f"   → Has dataMessage: {has_data_msg}")
-                                    print(f"   → Has typingMessage: {has_typing}")
-                                    if has_data_msg:
-                                        msg_text = envelope['dataMessage'].get('message', '')
-                                        print(f"   → Message text: '{msg_text}'")
-                                        print(f"   → Calling _handle_message()...")
-                                    self._handle_message(parsed)
-                                    messages_received = True
-                                except json.JSONDecodeError:
-                                    print(f"DEBUG: Failed to parse JSON: {line[:100]}")
-                        # Got messages, reset failure counter
-                        consecutive_failures = 0
-                    else:
-                        print(f"DEBUG: No messages (will retry in {idle_sleep}s)")
-                    
-                    # Adaptive sleep: poll faster when active, slower when idle
-                    if messages_received:
-                        current_sleep = active_sleep
-                        print(f"DEBUG: Active mode - next check in {active_sleep}s")
-                    else:
-                        current_sleep = idle_sleep
-                    
-                except Exception as e:
-                    print(f"ERROR: Error receiving messages: {e}")
-                
-                time.sleep(current_sleep)
-        finally:
-            # Always release the process lock when the loop exits
-            if lock_fd is not None:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                lock_fd.close()
-            try:
-                os.unlink(lock_path)
-            except OSError:
-                pass
-            print(f"DEBUG: Released process lock: {lock_path}")
-    
     def _handle_message(self, message_data: Dict):
         """
         Handle received message
@@ -767,106 +616,63 @@ Thank you for your purchase!
     
     def list_groups(self) -> List[Dict]:
         """
-        List all Signal groups
-        
+        List all Signal groups via the JSON-RPC daemon.
+
         Returns:
-            List of group dictionaries with 'id', 'name', and 'members'
+            List of group dictionaries with 'id', 'name', and 'members'.
         """
         if not self.phone_number:
             raise RuntimeError("Signal not configured")
-        
-        try:
-            result = subprocess.run(
-                ['signal-cli', '-u', self.phone_number, 'listGroups', '--detailed'],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            groups = []
-            if result.returncode == 0 and result.stdout:
-                # Parse group information
-                # Note: Actual parsing would depend on signal-cli output format
-                for line in result.stdout.strip().split('\n'):
-                    if line:
-                        try:
-                            # Example parsing - adjust based on actual format
-                            parts = line.split()
-                            if len(parts) >= 2:
-                                groups.append({
-                                    'id': parts[0],
-                                    'name': ' '.join(parts[1:]),
-                                    'members': []
-                                })
-                        except:
-                            pass
-            
-            return groups
-        except Exception as e:
-            print(f"Failed to list groups: {e}")
+
+        if self._rpc is None:
+            print("WARNING: Cannot list groups - RPC not connected")
             return []
-    
+
+        try:
+            result = self._rpc.send_request("listGroups")
+            if isinstance(result, list):
+                return [
+                    {
+                        'id': g.get('id', ''),
+                        'name': g.get('name', ''),
+                        'members': g.get('members', []),
+                    }
+                    for g in result
+                ]
+            return []
+        except Exception as exc:
+            print(f"Failed to list groups: {exc}")
+            return []
+
     def _verify_auto_trust_config(self):
-        """Verify that auto-trust configuration is active"""
+        """Verify that auto-trust configuration is active (reads local config file)."""
         try:
             import urllib.parse
-            
-            # Check signal-cli config file
+
             encoded_number = urllib.parse.quote(self.phone_number, safe='')
             config_paths = [
                 f"{os.path.expanduser('~')}/.local/share/signal-cli/data/{self.phone_number}",
                 f"{os.path.expanduser('~')}/.local/share/signal-cli/data/{encoded_number}"
             ]
-            
+
             for path in config_paths:
                 if os.path.exists(path):
                     with open(path, 'r', encoding='utf-8') as f:
                         config = json.load(f)
                         trust_mode = config.get('trustNewIdentities', 'NOT_SET')
-                        
+
                         if trust_mode == 'ALWAYS':
                             print(f"✓ Signal auto-trust verified: {trust_mode}")
                             return True
                         else:
                             print(f"⚠ Signal auto-trust not optimal: {trust_mode}")
                             print(f"   Run: ./check-trust.sh to fix")
-                            # Still return True - code-level auto-trust will work
                             return True
-            
+
             print("ℹ Signal config file not found - using code-level auto-trust")
             return True
-            
-        except Exception as e:
-            print(f"DEBUG: Could not verify signal auto-trust config: {e}")
+
+        except Exception as exc:
+            print(f"DEBUG: Could not verify signal auto-trust config: {exc}")
             print("       Code-level auto-trust will still work")
             return True
-    
-    def _verify_username_linked(self):
-        """
-        Verify that the Signal username is linked to this account so that
-        messages addressed to @username are delivered to this bot.
-        """
-        print(f"Checking if username is linked to account {self.phone_number}...")
-        try:
-            result = subprocess.run(
-                ['signal-cli', '--output', 'json', '-u', self.phone_number, 'receive',
-                 '--timeout', str(self._USERNAME_VERIFICATION_TIMEOUT_SECONDS)],
-                capture_output=True,
-                text=True,
-                stdin=subprocess.DEVNULL,
-                close_fds=True,
-                start_new_session=True,
-                timeout=self._USERNAME_VERIFICATION_TIMEOUT_SECONDS + 4
-            )
-            print(f"DEBUG: Username verification - returncode={result.returncode}, "
-                  f"stdout_length={len(result.stdout)}, stderr={result.stderr!r}")
-            if result.returncode == 0:
-                print(f"✓ Signal account reachable; username delivery should be active")
-            else:
-                print(f"⚠ signal-cli returned non-zero during username check: {result.stderr.strip()}")
-        except subprocess.TimeoutExpired:
-            print(f"WARNING: Username verification timed out - signal-cli may not be installed")
-        except FileNotFoundError:
-            print(f"WARNING: signal-cli not found - cannot verify username linkage")
-        except Exception as e:
-            print(f"DEBUG: Username verification error: {e}")
