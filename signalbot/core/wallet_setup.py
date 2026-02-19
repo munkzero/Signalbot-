@@ -11,6 +11,7 @@ import socket
 import threading
 import shutil
 import signal
+import glob
 from pathlib import Path
 from typing import Optional, Tuple, List
 from datetime import datetime
@@ -668,11 +669,44 @@ class WalletSetupManager:
         self.password = password
         self.rpc_process = None
         self.rpc_pid_file = None
+        self.rpc_log_file = None
+        self._rpc_log_fd = None
         
     def wallet_exists(self) -> bool:
         """Check if wallet files exist"""
         keys_file = Path(str(self.wallet_path) + ".keys")
         return keys_file.exists()
+    
+    def _cleanup_wallet_locks(self):
+        """Remove stale wallet lock files and kill orphaned RPC processes"""
+        try:
+            lock_files = list(self.wallet_path.parent.glob("*.keys.lock"))
+            
+            if lock_files:
+                logger.warning(f"⚠ Found {len(lock_files)} stale wallet lock file(s)")
+                for lock_file in lock_files:
+                    try:
+                        lock_file.unlink()
+                        logger.info(f"  ✓ Removed: {lock_file.name}")
+                    except Exception as e:
+                        logger.warning(f"  ✗ Failed to remove {lock_file}: {e}")
+            
+            # Kill orphaned RPC processes
+            try:
+                result = subprocess.run(
+                    ['pgrep', '-x', 'monero-wallet-rpc'],
+                    capture_output=True, text=True
+                )
+                if result.returncode == 0:
+                    logger.warning("⚠ Found running monero-wallet-rpc process, killing...")
+                    subprocess.run(['pkill', '-9', 'monero-wallet-rpc'])
+                    time.sleep(2)
+                    logger.info("  ✓ Killed orphaned RPC process")
+            except Exception as e:
+                logger.warning(f"  ⚠ Could not check for orphaned processes: {e}")
+                
+        except Exception as e:
+            logger.warning(f"⚠ Wallet lock cleanup failed: {e}")
     
     def create_wallet(self) -> Tuple[bool, Optional[str], Optional[str]]:
         """
@@ -1102,6 +1136,10 @@ class WalletSetupManager:
             os.path.dirname(str(self.wallet_path)),
             '.rpc.pid'
         )
+        self.rpc_log_file = os.path.join(
+            os.path.dirname(str(self.wallet_path)),
+            '.rpc.log'
+        )
         
         logger.info(f"🚀 Starting wallet RPC on port {self.rpc_port}...")
         logger.info(f"  Daemon: {daemon_addr}:{daemon_port_to_use}")
@@ -1123,13 +1161,12 @@ class WalletSetupManager:
                 '--log-level', '1'
             ]
             
-            # Start process
-            # Note: Using DEVNULL for stdout/stderr to avoid pipe buffer blocking
-            # RPC logs to its own file, so we don't need to capture output
+            # Redirect stderr to log file so we can diagnose startup failures
+            self._rpc_log_fd = open(self.rpc_log_file, 'w')
             self.rpc_process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=self._rpc_log_fd,
+                stderr=self._rpc_log_fd,
                 stdin=subprocess.DEVNULL,  # Prevents interactive prompts
                 start_new_session=True
             )
@@ -1147,6 +1184,22 @@ class WalletSetupManager:
             logger.info("   Note: First startup may take 2-3 minutes while wallet refreshes")
             if not self._wait_for_rpc_ready(timeout):
                 logger.error("❌ RPC failed to become ready")
+                # Check log for lock-file errors
+                exit_code = self.rpc_process.poll()
+                if exit_code is not None:
+                    logger.error(f"❌ RPC process died (exit code: {exit_code})")
+                    try:
+                        if os.path.exists(self.rpc_log_file):
+                            with open(self.rpc_log_file, 'r') as f:
+                                log_content = f.read()
+                            if ("is opened by another wallet program" in log_content or
+                                    "Resource temporarily unavailable" in log_content):
+                                logger.error("💡 ERROR: Wallet is locked by another process")
+                                logger.error("   This usually means monero-wallet-rpc didn't shut down properly")
+                                logger.error("   The bot will attempt to clean this up on next restart")
+                                logger.error("   Or manually run: pkill -9 monero-wallet-rpc")
+                    except Exception:
+                        pass
                 self._stop_rpc()
                 return False
             
@@ -1279,6 +1332,14 @@ class WalletSetupManager:
             
             self.rpc_process = None
         
+        # Close RPC log file descriptor if open
+        if self._rpc_log_fd:
+            try:
+                self._rpc_log_fd.close()
+            except Exception:
+                pass
+            self._rpc_log_fd = None
+        
         # Clean up PID file (handle race condition with try-except)
         if self.rpc_pid_file:
             try:
@@ -1397,6 +1458,9 @@ class WalletSetupManager:
         
         wallet_path_str = str(self.wallet_path)
         logger.info(f"Wallet path: {wallet_path_str}")
+        
+        # Clean up any stale locks BEFORE attempting to start RPC
+        self._cleanup_wallet_locks()
         
         # Cleanup orphaned files
         wallet_dir = str(self.wallet_path.parent)

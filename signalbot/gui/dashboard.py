@@ -2642,6 +2642,31 @@ class OrdersTab(QWidget):
             # Date
             date_str = order.created_at.strftime("%Y-%m-%d %H:%M") if order.created_at else "N/A"
             self.table.setItem(row, 7, QTableWidgetItem(date_str))
+            
+            # Actions column: Delete button (only for deletable statuses)
+            if order.payment_status in ('expired', 'cancelled', 'failed'):
+                delete_btn = QPushButton("🗑️ Delete")
+                delete_btn.setStyleSheet("color: red;")
+                delete_btn.clicked.connect(lambda checked, oid=order.order_id: self.delete_order(oid))
+                self.table.setCellWidget(row, 8, delete_btn)
+            else:
+                self.table.setCellWidget(row, 8, None)
+    
+    def delete_order(self, order_id: str):
+        """Delete a single order after confirmation"""
+        reply = QMessageBox.question(
+            self,
+            "Confirm Delete",
+            f"Are you sure you want to delete order #{order_id}?\n\nThis action cannot be undone!",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            if self.order_manager.delete_order(order_id):
+                QMessageBox.information(self, "Deleted", f"Order {order_id} has been deleted.")
+                self.load_orders()
+            else:
+                QMessageBox.warning(self, "Error", f"Could not delete order {order_id}.")
     
     def delete_old_orders(self):
         """Open dialog to delete old orders"""
