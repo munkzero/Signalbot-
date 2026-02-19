@@ -348,7 +348,7 @@ class SignalHandler:
                 try:
                     print("DEBUG: Polling for messages... (signal-cli timeout: 30s, subprocess timeout: 45s)")
                     result = subprocess.run(
-                        ['signal-cli', '--output', 'json', '-u', self.phone_number, 'receive', '--timeout', '30'],
+                        ['signal-cli', '--output', 'json', '-u', self.phone_number, 'receive', '--send-read-receipts', '--timeout', '30'],
                         capture_output=True,
                         text=True,
                         timeout=45  # Allow for username message delivery delays (21+ seconds observed)
