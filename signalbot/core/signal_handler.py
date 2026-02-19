@@ -373,23 +373,59 @@ class SignalHandler:
                            'receive', '--send-read-receipts', '--timeout', '30']
                     print(f"DEBUG: Running command: {' '.join(cmd)}")
                     
-                    # Use Popen for better control over stdout buffering and process lifecycle
+                    # Use Popen with isolation flags to prevent subprocess hanging:
+                    # - start_new_session=True: detaches from parent process group so
+                    #   inherited signal handlers / TTY / session don't block signal-cli
+                    # - close_fds=True: closes all inherited file descriptors except
+                    #   stdout/stderr pipes, preventing signal-cli from blocking on
+                    #   any fd left open by the Python process
+                    # - stdin=subprocess.DEVNULL: ensures signal-cli gets EOF on stdin
+                    #   immediately rather than inheriting the parent's stdin
                     process = subprocess.Popen(
                         cmd,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
+                        stdin=subprocess.DEVNULL,
                         text=True,
-                        bufsize=-1  # System default; communicate() reads all output at once
+                        bufsize=1,           # Line-buffered in text mode (bufsize=1 with text=True)
+                        close_fds=True,      # Don't inherit parent file descriptors
+                        start_new_session=True,  # Detach from parent session/TTY
+                        env={**os.environ},  # Explicit environment copy
                     )
                     
+                    # Watchdog timer: force-kill the process if it exceeds the deadline.
+                    # This guards against signal-cli hanging indefinitely even with the
+                    # isolation flags above (e.g. JVM deadlock or network issue).
+                    hard_timeout = 45
+                    watchdog_fired = threading.Event()
+
+                    def _watchdog(proc, event):
+                        """Kill a hung signal-cli process after the hard timeout."""
+                        if not event.wait(timeout=hard_timeout):
+                            # Timeout reached - process is still running
+                            print(f"WARNING: signal-cli watchdog fired after {hard_timeout}s, killing PID {proc.pid}")
+                            try:
+                                proc.kill()
+                            except OSError:
+                                pass  # Already dead
+
+                    watchdog_thread = threading.Thread(
+                        target=_watchdog,
+                        args=(process, watchdog_fired),
+                        daemon=True,
+                    )
+                    watchdog_thread.start()
+
                     try:
-                        stdout, stderr = process.communicate(timeout=45)
+                        stdout, stderr = process.communicate(timeout=hard_timeout)
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait()
                         print("WARNING: signal-cli receive command timed out, retrying...")
                         time.sleep(current_sleep)
                         continue
+                    finally:
+                        watchdog_fired.set()  # Cancel the watchdog
                     
                     print(f"DEBUG: subprocess returncode={process.returncode}, stdout_length={len(stdout)}, stderr={stderr!r}")
                     
@@ -817,6 +853,9 @@ Thank you for your purchase!
                  '--timeout', str(self._USERNAME_VERIFICATION_TIMEOUT_SECONDS)],
                 capture_output=True,
                 text=True,
+                stdin=subprocess.DEVNULL,
+                close_fds=True,
+                start_new_session=True,
                 timeout=self._USERNAME_VERIFICATION_TIMEOUT_SECONDS + 4
             )
             print(f"DEBUG: Username verification - returncode={result.returncode}, "
