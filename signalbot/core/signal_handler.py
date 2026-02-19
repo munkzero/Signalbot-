@@ -24,6 +24,8 @@ class SignalHandler:
     _MAX_ENVELOPE_LOG_LENGTH = 500
     # Timeout (seconds) for startup username-linkage verification
     _USERNAME_VERIFICATION_TIMEOUT_SECONDS = 1
+    # Number of consecutive empty responses before emitting a warning
+    _CONSECUTIVE_FAILURE_WARN_THRESHOLD = 5
     
     def __init__(self, phone_number: Optional[str] = None):
         """
@@ -272,6 +274,24 @@ class SignalHandler:
         message = caption if caption else ""
         return self.send_message(recipient, message, attachments=[image_path])
     
+    def _cleanup_orphaned_signal_cli_processes(self):
+        """Kill any orphaned signal-cli receive processes to prevent config file lock conflicts"""
+        try:
+            result = subprocess.run(
+                ['pkill', '-9', '-f', 'signal-cli.*receive'],
+                capture_output=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                print("DEBUG: Killed orphaned signal-cli receive process(es)")
+                time.sleep(1)
+        except FileNotFoundError:
+            pass  # pkill not available on this platform
+        except subprocess.TimeoutExpired:
+            print("WARNING: Timed out waiting for pkill to finish")
+        except Exception as e:
+            print(f"DEBUG: Could not clean up orphaned signal-cli processes: {e}")
+
     def start_listening(self):
         """Start listening for incoming messages"""
         if self.listening:
@@ -279,6 +299,8 @@ class SignalHandler:
             return
         
         print(f"DEBUG: start_listening() called for {self.phone_number}")
+        # Kill orphaned signal-cli processes before starting to avoid config file lock conflicts
+        self._cleanup_orphaned_signal_cli_processes()
         self.listening = True
         self.listen_thread = threading.Thread(target=self._listen_loop, daemon=True)
         self.listen_thread.start()
@@ -342,33 +364,63 @@ class SignalHandler:
         idle_sleep = 5  # 5 seconds when no messages
         active_sleep = 2  # 2 seconds after receiving messages
         current_sleep = idle_sleep
+        consecutive_failures = 0
         
         try:
             while self.listening:
                 try:
-                    print("DEBUG: Polling for messages... (signal-cli timeout: 30s, subprocess timeout: 45s)")
-                    result = subprocess.run(
-                        ['signal-cli', '--output', 'json', '-u', self.phone_number, 'receive', '--send-read-receipts', '--timeout', '30'],
-                        capture_output=True,
+                    cmd = ['signal-cli', '--output', 'json', '-u', self.phone_number,
+                           'receive', '--send-read-receipts', '--timeout', '30']
+                    print(f"DEBUG: Running command: {' '.join(cmd)}")
+                    
+                    # Use Popen for better control over stdout buffering and process lifecycle
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
                         text=True,
-                        timeout=45  # Allow for username message delivery delays (21+ seconds observed)
+                        bufsize=-1  # System default; communicate() reads all output at once
                     )
                     
-                    print(f"DEBUG: subprocess returncode={result.returncode}, stdout_length={len(result.stdout)}, stderr={result.stderr!r}")
+                    try:
+                        stdout, stderr = process.communicate(timeout=45)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                        print("WARNING: signal-cli receive command timed out, retrying...")
+                        time.sleep(current_sleep)
+                        continue
                     
-                    if result.returncode != 0 and result.stderr:
-                        print(f"DEBUG: signal-cli receive error: {result.stderr}")
+                    print(f"DEBUG: subprocess returncode={process.returncode}, stdout_length={len(stdout)}, stderr={stderr!r}")
+                    
+                    if stderr and stderr.strip():
+                        print(f"DEBUG: signal-cli stderr: {stderr}")
+                    
+                    if process.returncode != 0 and stderr:
+                        print(f"DEBUG: signal-cli receive error: {stderr}")
+                    
+                    # Handle config file lock: kill orphaned processes and retry
+                    if stderr and "Config file is in use" in stderr:
+                        print("⚠ Config file locked, killing orphaned signal-cli processes...")
+                        self._cleanup_orphaned_signal_cli_processes()
+                        consecutive_failures += 1
+                        time.sleep(2)
+                        continue
                     
                     messages_received = False
                     
-                    if result.stdout:
-                        print(f"🔍 RAW JSON RECEIVED ({len(result.stdout)} chars):")
-                        print(result.stdout)
+                    if stdout:
+                        print(f"🔍 RAW JSON RECEIVED ({len(stdout)} chars):")
+                        print(stdout)
                     else:
-                        print("DEBUG: No stdout from signal-cli (empty response)")
+                        consecutive_failures += 1
+                        if consecutive_failures > self._CONSECUTIVE_FAILURE_WARN_THRESHOLD:
+                            print(f"⚠ {consecutive_failures} consecutive empty responses, checking signal-cli...")
+                        else:
+                            print("DEBUG: No stdout from signal-cli (empty response)")
                     
-                    if result.returncode == 0 and result.stdout:
-                        lines = result.stdout.strip().split('\n')
+                    if process.returncode == 0 and stdout:
+                        lines = stdout.strip().split('\n')
                         print(f"DEBUG: Received {len(lines)} JSON line(s)")
                         # Parse JSON messages
                         for line_num, line in enumerate(lines):
@@ -392,6 +444,8 @@ class SignalHandler:
                                     messages_received = True
                                 except json.JSONDecodeError:
                                     print(f"DEBUG: Failed to parse JSON: {line[:100]}")
+                        # Got messages, reset failure counter
+                        consecutive_failures = 0
                     else:
                         print(f"DEBUG: No messages (will retry in {idle_sleep}s)")
                     
@@ -402,8 +456,6 @@ class SignalHandler:
                     else:
                         current_sleep = idle_sleep
                     
-                except subprocess.TimeoutExpired:
-                    print(f"WARNING: signal-cli receive command timed out after 45 seconds")
                 except Exception as e:
                     print(f"ERROR: Error receiving messages: {e}")
                 
