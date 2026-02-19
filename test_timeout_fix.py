@@ -23,18 +23,18 @@ def test_timeout_fix():
     errors = []
     
     # Check for --timeout flag in receive command
-    if "'--timeout', '5'" in source or '"--timeout", "5"' in source:
-        print("  ✓ signal-cli receive includes --timeout 5 flag")
+    if "'--timeout', '30'" in source or '"--timeout", "30"' in source:
+        print("  ✓ signal-cli receive includes --timeout 30 flag")
     else:
-        errors.append("❌ signal-cli receive missing --timeout 5 flag")
-        print("  ✗ signal-cli receive missing --timeout 5 flag")
+        errors.append("❌ signal-cli receive missing --timeout 30 flag")
+        print("  ✗ signal-cli receive missing --timeout 30 flag")
     
     # Check for increased subprocess timeout
-    if "timeout=15" in source:
-        print("  ✓ subprocess timeout increased to 15 seconds")
+    if "timeout=45" in source:
+        print("  ✓ subprocess timeout increased to 45 seconds")
     else:
-        errors.append("❌ subprocess timeout not increased to 15 seconds")
-        print("  ✗ subprocess timeout not increased to 15 seconds")
+        errors.append("❌ subprocess timeout not increased to 45 seconds")
+        print("  ✗ subprocess timeout not increased to 45 seconds")
     
     # Check for separate TimeoutExpired exception handling
     if "except subprocess.TimeoutExpired:" in source:
@@ -85,7 +85,7 @@ def test_command_structure():
     # Check the command array structure - verify components appear in correct order
     has_receive = "'receive'" in source or '"receive"' in source
     has_timeout_flag = "'--timeout'" in source or '"--timeout"' in source
-    has_timeout_value = "'5'" in source or '"5"' in source
+    has_timeout_value = "'30'" in source or '"30"' in source
     
     # Find the receive command section
     receive_pos = source.find("'receive'") if "'receive'" in source else source.find('"receive"')
