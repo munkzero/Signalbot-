@@ -11,6 +11,7 @@ import time
 import os
 import re
 import fcntl
+import psutil
 
 
 class SignalHandler:
@@ -18,6 +19,11 @@ class SignalHandler:
     Handles Signal messaging for the shop bot
     Note: Requires signal-cli to be installed and configured
     """
+    
+    # Maximum characters to log from envelope JSON for diagnostics
+    _MAX_ENVELOPE_LOG_LENGTH = 500
+    # Timeout (seconds) for startup username-linkage verification
+    _USERNAME_VERIFICATION_TIMEOUT_SECONDS = 1
     
     def __init__(self, phone_number: Optional[str] = None):
         """
@@ -54,6 +60,9 @@ class SignalHandler:
         
         # Verify auto-trust is working
         self._verify_auto_trust_config()
+        
+        # Verify username is linked (if applicable) so messages to @username are received
+        self._verify_username_linked()
     
     @staticmethod
     def _is_uuid(identifier: str) -> bool:
@@ -319,6 +328,16 @@ class SignalHandler:
             print(f"         Lock file: {lock_path}")
             return
         
+        # Check for competing signal-cli processes before starting the loop
+        signal_cli_procs = [
+            p for p in psutil.process_iter(['pid', 'name', 'cmdline'])
+            if 'signal-cli' in str(p.info.get('cmdline', []))
+        ]
+        if len(signal_cli_procs) > 1:
+            print(f"⚠ WARNING: Multiple signal-cli processes detected:")
+            for p in signal_cli_procs:
+                print(f"   PID {p.info['pid']}: {p.info['cmdline']}")
+        
         # Adaptive polling: longer sleep when idle, shorter when active
         idle_sleep = 5  # 5 seconds when no messages
         active_sleep = 2  # 2 seconds after receiving messages
@@ -335,19 +354,41 @@ class SignalHandler:
                         timeout=45  # Allow for username message delivery delays (21+ seconds observed)
                     )
                     
+                    print(f"DEBUG: subprocess returncode={result.returncode}, stdout_length={len(result.stdout)}, stderr={result.stderr!r}")
+                    
                     if result.returncode != 0 and result.stderr:
                         print(f"DEBUG: signal-cli receive error: {result.stderr}")
                     
                     messages_received = False
                     
+                    if result.stdout:
+                        print(f"🔍 RAW JSON RECEIVED ({len(result.stdout)} chars):")
+                        print(result.stdout)
+                    else:
+                        print("DEBUG: No stdout from signal-cli (empty response)")
+                    
                     if result.returncode == 0 and result.stdout:
-                        print(f"DEBUG: Received data from signal-cli")
+                        lines = result.stdout.strip().split('\n')
+                        print(f"DEBUG: Received {len(lines)} JSON line(s)")
                         # Parse JSON messages
-                        for line in result.stdout.strip().split('\n'):
+                        for line_num, line in enumerate(lines):
                             if line:
+                                print(f"DEBUG: Processing line {line_num + 1}: {line[:100]}...")
                                 try:
-                                    message_data = json.loads(line)
-                                    self._handle_message(message_data)
+                                    parsed = json.loads(line)
+                                    envelope = parsed.get('envelope', {})
+                                    has_data_msg = 'dataMessage' in envelope
+                                    has_typing = 'typingMessage' in envelope
+                                    source = envelope.get('sourceNumber') or envelope.get('source', 'UNKNOWN')
+                                    source_uuid = envelope.get('sourceUuid', 'UNKNOWN')
+                                    print(f"   → Source: {source} / UUID: {source_uuid}")
+                                    print(f"   → Has dataMessage: {has_data_msg}")
+                                    print(f"   → Has typingMessage: {has_typing}")
+                                    if has_data_msg:
+                                        msg_text = envelope['dataMessage'].get('message', '')
+                                        print(f"   → Message text: '{msg_text}'")
+                                        print(f"   → Calling _handle_message()...")
+                                    self._handle_message(parsed)
                                     messages_received = True
                                 except json.JSONDecodeError:
                                     print(f"DEBUG: Failed to parse JSON: {line[:100]}")
@@ -385,8 +426,10 @@ class SignalHandler:
         Args:
             message_data: Message data from signal-cli
         """
-        # Extract message info
+        print(f"🔔 _handle_message() CALLED")
         envelope = message_data.get('envelope', {})
+        print(f"   Full envelope keys: {list(envelope.keys())}")
+        print(f"   Envelope: {json.dumps(envelope, indent=2)[:self._MAX_ENVELOPE_LOG_LENGTH]}")
         
         # Extract recipient identity (which account/identity received this message)
         recipient_identity = message_data.get('account', self.phone_number)
@@ -709,3 +752,30 @@ Thank you for your purchase!
             print(f"DEBUG: Could not verify signal auto-trust config: {e}")
             print("       Code-level auto-trust will still work")
             return True
+    
+    def _verify_username_linked(self):
+        """
+        Verify that the Signal username is linked to this account so that
+        messages addressed to @username are delivered to this bot.
+        """
+        print(f"Checking if username is linked to account {self.phone_number}...")
+        try:
+            result = subprocess.run(
+                ['signal-cli', '--output', 'json', '-u', self.phone_number, 'receive',
+                 '--timeout', str(self._USERNAME_VERIFICATION_TIMEOUT_SECONDS)],
+                capture_output=True,
+                text=True,
+                timeout=self._USERNAME_VERIFICATION_TIMEOUT_SECONDS + 4
+            )
+            print(f"DEBUG: Username verification - returncode={result.returncode}, "
+                  f"stdout_length={len(result.stdout)}, stderr={result.stderr!r}")
+            if result.returncode == 0:
+                print(f"✓ Signal account reachable; username delivery should be active")
+            else:
+                print(f"⚠ signal-cli returned non-zero during username check: {result.stderr.strip()}")
+        except subprocess.TimeoutExpired:
+            print(f"WARNING: Username verification timed out - signal-cli may not be installed")
+        except FileNotFoundError:
+            print(f"WARNING: signal-cli not found - cannot verify username linkage")
+        except Exception as e:
+            print(f"DEBUG: Username verification error: {e}")

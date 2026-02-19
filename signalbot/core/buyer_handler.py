@@ -245,6 +245,7 @@ class BuyerHandler:
             message_text: Message content
             recipient_identity: Identity that received the message (phone or username)
         """
+        print(f"BUYER_HANDLER: Received message from {buyer_signal_id}")
         if not message_text:
             return
         
