@@ -230,11 +230,20 @@ class SignalHandler:
             params: Dict = {"recipient": [recipient], "message": message}
             if attachments:
                 params["attachment"] = attachments
-            self._rpc.send_request("send", params)
+            # Use a longer timeout when sending attachments: image uploads to
+            # Signal servers can take longer than the default 60 s window.
+            timeout = (
+                JsonRpcClient.SEND_WITH_ATTACHMENT_TIMEOUT
+                if attachments
+                else JsonRpcClient.DEFAULT_REQUEST_TIMEOUT
+            )
+            self._rpc.send_request("send", params, timeout=timeout)
             print(f"DEBUG: Message sent successfully to {recipient}")
             return True
         except TimeoutError:
             print(f"ERROR: Timeout sending message to {recipient}")
+            print(f"  Note: Message may have been sent despite timeout")
+            print(f"  Timeout occurred waiting for RPC response after {timeout}s")
             return False
         except JsonRpcError as exc:
             print(f"ERROR: Failed to send message to {recipient}: {exc}")
