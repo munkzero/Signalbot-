@@ -136,7 +136,7 @@ fi
 # Check if registered with signal-cli
 echo "Verifying Signal account: $PHONE_NUMBER"
 
-if signal-cli -u "$PHONE_NUMBER" listIdentities &>/dev/null; then
+if signal-cli -a "$PHONE_NUMBER" listIdentities &>/dev/null 2>&1 || signal-cli -u "$PHONE_NUMBER" listIdentities &>/dev/null 2>&1; then
     echo "✓ $PHONE_NUMBER is registered"
 else
     echo "✗ $PHONE_NUMBER not registered with signal-cli!"
@@ -162,15 +162,35 @@ echo "Checking auto-trust configuration..."
 # Parse PHONE_NUMBER correctly
 PHONE_NUMBER_PARSED=$(grep -v '^#' "$SCRIPT_DIR/.env" 2>/dev/null | grep -v '^$' | grep '^PHONE_NUMBER=' | cut -d '=' -f2 | tr -d ' ' || echo "")
 
-# Find config file (might be URL-encoded)
+# Find config file - check plain number, URL-encoded, and numeric account IDs (new signal-cli format)
 CONFIG_FILE=""
 POSSIBLE_PATHS=(
     "$HOME/.local/share/signal-cli/data/$PHONE_NUMBER"
     "$HOME/.local/share/signal-cli/data/$(echo $PHONE_NUMBER | sed 's/+/%2B/g')"
 )
 
+# Also check numeric account directories (signal-cli 0.12+ stores accounts with numeric IDs)
+SIGNAL_DATA_DIR="$HOME/.local/share/signal-cli/data"
+if [ -d "$SIGNAL_DATA_DIR" ]; then
+    for num_file in "$SIGNAL_DATA_DIR"/[0-9]*; do
+        if [ -f "$num_file" ]; then
+            POSSIBLE_PATHS+=("$num_file")
+        fi
+    done
+fi
+
 for path in "${POSSIBLE_PATHS[@]}"; do
-    if [ -f "$path" ]; then
+    if [ -f "$path" ] && command -v jq &> /dev/null; then
+        # For numeric account files, verify it matches our phone number
+        if [[ "$path" =~ /[0-9]+$ ]]; then
+            stored_number=$(jq -r '.number // .username // ""' "$path" 2>/dev/null)
+            if [ "$stored_number" != "$PHONE_NUMBER" ]; then
+                continue
+            fi
+        fi
+        CONFIG_FILE="$path"
+        break
+    elif [ -f "$path" ]; then
         CONFIG_FILE="$path"
         break
     fi
@@ -184,8 +204,9 @@ if [ -n "$CONFIG_FILE" ] && command -v jq &> /dev/null; then
         echo "⚠ Auto-trust config: $TRUST_MODE"
         echo "   Attempting to fix..."
         
-        # Try to enable it
-        if signal-cli -u "$PHONE_NUMBER" updateConfiguration --trust-new-identities always 2>/dev/null; then
+        # Try to enable it (try newer -a flag first, then legacy -u)
+        if signal-cli -a "$PHONE_NUMBER" updateConfiguration --trust-new-identities always 2>/dev/null || \
+           signal-cli -u "$PHONE_NUMBER" updateConfiguration --trust-new-identities always 2>/dev/null; then
             echo "   ✓ Auto-trust enabled via signal-cli command"
         else
             echo "   ⚠ Could not enable via command, using code-level fallback"
