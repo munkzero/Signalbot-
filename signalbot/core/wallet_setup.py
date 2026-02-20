@@ -1098,6 +1098,10 @@ class WalletSetupManager:
             logger.debug(f"RPC already running under our control (PID: {self.rpc_process.pid})")
             return True
         
+        # Check if port is already in use before attempting cleanup/start.
+        if self.is_rpc_running():
+            logger.info(f"ℹ Port {self.rpc_port} is already in use - attempting cleanup first")
+        
         # Clean up any processes on our port (orphans from previous runs or dead processes)
         # This ensures we always get a fresh start with proper process tracking
         self._cleanup_orphaned_rpc()
@@ -1105,11 +1109,15 @@ class WalletSetupManager:
         # Double-check that cleanup worked - port should be free now
         if self.is_rpc_running():
             logger.error(f"❌ Port {self.rpc_port} still in use after cleanup!")
+            self._log_port_diagnostic()
             return False
         
         if not self.wallet_exists():
             logger.error("❌ Cannot start RPC: wallet file doesn't exist")
             return False
+
+        # Check for stale wallet lock files before starting.
+        self._cleanup_wallet_locks()
         
         daemon_addr = daemon_address or self.daemon_address
         daemon_port_to_use = daemon_port or self.daemon_port
@@ -1184,22 +1192,8 @@ class WalletSetupManager:
             logger.info("   Note: First startup may take 2-3 minutes while wallet refreshes")
             if not self._wait_for_rpc_ready(timeout):
                 logger.error("❌ RPC failed to become ready")
-                # Check log for lock-file errors
-                exit_code = self.rpc_process.poll()
-                if exit_code is not None:
-                    logger.error(f"❌ RPC process died (exit code: {exit_code})")
-                    try:
-                        if os.path.exists(self.rpc_log_file):
-                            with open(self.rpc_log_file, 'r') as f:
-                                log_content = f.read()
-                            if ("is opened by another wallet program" in log_content or
-                                    "Resource temporarily unavailable" in log_content):
-                                logger.error("💡 ERROR: Wallet is locked by another process")
-                                logger.error("   This usually means monero-wallet-rpc didn't shut down properly")
-                                logger.error("   The bot will attempt to clean this up on next restart")
-                                logger.error("   Or manually run: pkill -9 monero-wallet-rpc")
-                    except Exception:
-                        pass
+                # Log diagnostic information regardless of whether process died.
+                self._log_rpc_failure_diagnostics()
                 self._stop_rpc()
                 return False
             
@@ -1214,6 +1208,62 @@ class WalletSetupManager:
             logger.error(f"❌ Failed to start RPC: {e}")
             return False
     
+    def _log_port_diagnostic(self):
+        """Log diagnostic information about what is occupying the RPC port."""
+        try:
+            result = subprocess.run(
+                ["ss", "-tlnp", f"sport = :{self.rpc_port}"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.stdout.strip():
+                logger.error(f"💡 Port {self.rpc_port} is occupied by:\n{result.stdout.strip()}")
+        except Exception:
+            try:
+                result = subprocess.run(
+                    ["netstat", "-tlnp"],
+                    capture_output=True, text=True, timeout=5
+                )
+                for line in result.stdout.splitlines():
+                    if f":{self.rpc_port}" in line:
+                        logger.error(f"💡 Port {self.rpc_port} entry: {line.strip()}")
+            except Exception:
+                pass
+
+    def _log_rpc_failure_diagnostics(self):
+        """Log comprehensive diagnostics when RPC fails to become ready."""
+        # Check if process is still alive.
+        exit_code = self.rpc_process.poll() if self.rpc_process else None
+        if exit_code is not None:
+            logger.error(f"❌ RPC process died (exit code: {exit_code})")
+        else:
+            pid = self.rpc_process.pid if self.rpc_process else "N/A"
+            logger.error(f"❌ RPC process (PID {pid}) is running but not responding")
+            self._log_port_diagnostic()
+
+        # Show last lines of the RPC log file for actionable error messages.
+        if self.rpc_log_file and os.path.exists(self.rpc_log_file):
+            try:
+                with open(self.rpc_log_file, 'r') as f:
+                    log_content = f.read()
+                if log_content.strip():
+                    tail = "\n".join(log_content.strip().splitlines()[-30:])
+                    logger.error(f"📋 Last lines of RPC log ({self.rpc_log_file}):\n{tail}")
+                    # Give specific hints for common errors.
+                    if "is opened by another wallet program" in log_content or \
+                            "Resource temporarily unavailable" in log_content:
+                        logger.error("💡 Wallet is locked by another process")
+                        logger.error("   Run: pkill -9 monero-wallet-rpc && sleep 2")
+                    if "Error: Wallet file not found" in log_content or \
+                            "Failed to open wallet" in log_content:
+                        logger.error(f"💡 Wallet file not found at: {self.wallet_path}")
+                    if "bind: Address already in use" in log_content:
+                        logger.error(f"💡 Port {self.rpc_port} is already in use")
+                        self._log_port_diagnostic()
+            except Exception as exc:
+                logger.warning(f"Could not read RPC log: {exc}")
+        else:
+            logger.warning("⚠ No RPC log file available for diagnostics")
+
     def stop_rpc(self):
         """Stop monero-wallet-rpc process (public method for backward compatibility)"""
         self._stop_rpc()

@@ -268,6 +268,9 @@ class SignalHandler:
         message notifications to ``_on_notification`` which in turn calls
         ``_handle_message``.  The ``listening`` flag and ``listen_thread``
         are retained for compatibility with code that calls ``is_listening()``.
+
+        If the JSON-RPC daemon is not available, falls back to polling mode
+        (``signal-cli receive``) so the bot still receives messages.
         """
         if self.listening:
             print("DEBUG: start_listening() called but already listening")
@@ -279,19 +282,25 @@ class SignalHandler:
             print("WARNING: RPC not connected; attempting to reconnect before listening…")
             self._start_daemon()
 
-        if self._rpc is None or not self._rpc.is_connected():
-            print("ERROR: Cannot start listening - daemon RPC not available")
-            return
-
-        self.listening = True
-        # Start a lightweight keepalive / health-check thread so that
-        # is_listening() continues to return True while the daemon is running,
-        # and reconnects if the daemon crashes.
-        self.listen_thread = threading.Thread(
-            target=self._keepalive_loop, daemon=True, name="signal-keepalive"
-        )
-        self.listen_thread.start()
-        print("DEBUG: Listening via daemon notifications (JSON-RPC mode)")
+        if self._rpc is not None and self._rpc.is_connected():
+            self.listening = True
+            # Start a lightweight keepalive / health-check thread so that
+            # is_listening() continues to return True while the daemon is running,
+            # and reconnects if the daemon crashes.
+            self.listen_thread = threading.Thread(
+                target=self._keepalive_loop, daemon=True, name="signal-keepalive"
+            )
+            self.listen_thread.start()
+            print("DEBUG: Listening via daemon notifications (JSON-RPC mode)")
+        else:
+            # Daemon not available – fall back to polling mode.
+            print("WARNING: Daemon RPC unavailable; falling back to polling mode")
+            self.listening = True
+            self.listen_thread = threading.Thread(
+                target=self._polling_loop, daemon=True, name="signal-polling"
+            )
+            self.listen_thread.start()
+            print("DEBUG: Listening via polling mode (signal-cli receive)")
     
     def stop_listening(self):
         """Stop the keepalive loop and mark handler as not listening."""
@@ -312,6 +321,7 @@ class SignalHandler:
         """
         Lightweight thread that periodically verifies the daemon is healthy
         and attempts to reconnect if it has crashed.
+        If reconnect fails, switches to polling mode.
         """
         while self.listening:
             time.sleep(self._KEEPALIVE_INTERVAL_SECONDS)
@@ -327,7 +337,74 @@ class SignalHandler:
                 if self._rpc is not None and self._rpc.is_connected():
                     print("✓ Reconnected to signal-cli daemon")
                 else:
-                    print("ERROR: Could not reconnect to signal-cli daemon")
+                    print("WARNING: Could not reconnect to daemon; switching to polling mode")
+                    # Switch the active thread to polling.
+                    self.listen_thread = threading.Thread(
+                        target=self._polling_loop, daemon=True, name="signal-polling"
+                    )
+                    self.listen_thread.start()
+                    return  # Stop this keepalive thread; polling thread takes over.
+
+    def _polling_loop(self):
+        """
+        Fallback polling loop: periodically calls ``signal-cli receive`` to
+        fetch pending messages when the JSON-RPC daemon is not available.
+
+        Uses a 5-second polling interval. Attempts to reconnect to the daemon
+        every ``_KEEPALIVE_INTERVAL_SECONDS`` seconds; if reconnection succeeds
+        this thread exits and the caller should start a keepalive thread instead.
+        """
+        import subprocess as _sp
+        import json as _json
+
+        poll_interval = 5
+        reconnect_check_interval = self._KEEPALIVE_INTERVAL_SECONDS
+        last_reconnect_check = time.monotonic()
+
+        print("DEBUG: Entering polling loop (signal-cli receive mode)")
+
+        while self.listening:
+            # Periodically try to switch back to daemon mode.
+            if time.monotonic() - last_reconnect_check >= reconnect_check_interval:
+                last_reconnect_check = time.monotonic()
+                self._start_daemon()
+                if self._rpc is not None and self._rpc.is_connected():
+                    print("✓ Daemon reconnected; switching from polling to daemon mode")
+                    self.listen_thread = threading.Thread(
+                        target=self._keepalive_loop, daemon=True, name="signal-keepalive"
+                    )
+                    self.listen_thread.start()
+                    return
+
+            try:
+                result = _sp.run(
+                    ["signal-cli", "-a", self.phone_number, "receive", "--output", "json"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    for line in result.stdout.strip().splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            message_data = _json.loads(line)
+                            if message_data.get("envelope"):
+                                self._handle_message(message_data)
+                        except _json.JSONDecodeError:
+                            pass
+                elif result.returncode != 0:
+                    stderr_text = (result.stderr or "").strip()
+                    if stderr_text:
+                        print(f"DEBUG: signal-cli receive error: {stderr_text[:200]}")
+            except FileNotFoundError:
+                print("ERROR: signal-cli not found; polling mode unavailable")
+                break
+            except Exception as exc:
+                print(f"WARNING: Polling error: {exc}")
+
+            time.sleep(poll_interval)
 
     def _on_notification(self, frame: Dict):
         """
@@ -338,10 +415,13 @@ class SignalHandler:
         ``params`` field contains the same envelope structure that
         ``signal-cli receive --output json`` would print.
         """
-        # The daemon may send notifications in one of two shapes:
-        #   {"jsonrpc":"2.0","method":"receive","params":{...envelope...}}
-        # or (older builds) just the envelope dict at the top level.
+        method = frame.get("method", "")
         params = frame.get("params")
+
+        # The daemon sends notifications in one of these shapes:
+        #   1. {"jsonrpc":"2.0","method":"receive","params":{"envelope":{...},"account":"..."}}
+        #   2. Older builds: {"jsonrpc":"2.0","method":"receive","params":{...envelope fields...}}
+        #   3. Envelope directly at frame level (some builds)
         if params is not None:
             message_data = params
         else:
@@ -349,10 +429,18 @@ class SignalHandler:
 
         envelope = message_data.get("envelope")
         if envelope is None:
-            # Not a message notification we recognise; ignore.
-            return
+            # Some builds inline the envelope fields directly in params.
+            # If the frame looks like an envelope itself, treat it as one.
+            _message_keys = {"dataMessage", "syncMessage", "typingMessage"}
+            if _message_keys & message_data.keys():
+                print(f"DEBUG: Notification has inline envelope (method={method!r})")
+                envelope = message_data
+                message_data = {"envelope": envelope, "account": message_data.get("account", self.phone_number)}
+            else:
+                # Not a message notification we recognise; ignore.
+                return
 
-        print(f"🔔 Daemon notification received")
+        print(f"🔔 Daemon notification received (method={method!r})")
         self._handle_message(message_data)
 
 
@@ -648,12 +736,30 @@ Thank you for your purchase!
         """Verify that auto-trust configuration is active (reads local config file)."""
         try:
             import urllib.parse
+            from pathlib import Path
 
             encoded_number = urllib.parse.quote(self.phone_number, safe='')
+            data_dir = Path.home() / ".local" / "share" / "signal-cli" / "data"
+
+            # Candidate paths: plain phone number, URL-encoded, and numeric account IDs.
             config_paths = [
-                f"{os.path.expanduser('~')}/.local/share/signal-cli/data/{self.phone_number}",
-                f"{os.path.expanduser('~')}/.local/share/signal-cli/data/{encoded_number}"
+                str(data_dir / self.phone_number),
+                str(data_dir / encoded_number),
             ]
+
+            # Also look for numeric account directories (new signal-cli format).
+            # Only include numeric files whose stored number matches self.phone_number.
+            if data_dir.exists():
+                for entry in data_dir.iterdir():
+                    if entry.is_file() and entry.name.isdigit():
+                        try:
+                            with open(entry, encoding="utf-8") as f:
+                                acct = json.load(f)
+                            stored = acct.get("number") or acct.get("username", "")
+                            if stored == self.phone_number:
+                                config_paths.append(str(entry))
+                        except Exception:
+                            pass
 
             for path in config_paths:
                 if os.path.exists(path):
