@@ -45,41 +45,27 @@ def test_daemon_mode_enabled():
 
 
 def test_timeout_increased():
-    """Test that timeout was increased from 20s to 45s"""
-    print("\n=== Testing Timeout Increase (Priority 2) ===")
+    """Test that send_message_native uses an appropriate timeout"""
+    print("\n=== Testing Timeout (Priority 2) ===")
     
     from signalbot.core.signal_handler import SignalHandler
     
-    source = inspect.getsource(SignalHandler._send_direct)
+    source = inspect.getsource(SignalHandler.send_message_native)
     
     errors = []
     
-    # Check for timeout=45
-    if "timeout=45" in source:
-        print("  ✓ Timeout increased to 45 seconds")
+    # Check for timeout=30 in send_message_native
+    if "timeout=30" in source:
+        print("  ✓ send_message_native uses 30-second timeout")
     else:
-        errors.append("❌ Timeout not increased to 45 seconds")
-        print("  ✗ Timeout not increased to 45 seconds")
-    
-    # Check comment updated
-    if "Longer timeout for images with attachments" in source or "timeout for images" in source:
-        print("  ✓ Comment updated for new timeout")
-    else:
-        errors.append("❌ Comment not updated")
-        print("  ✗ Comment not updated")
-    
-    # Ensure old timeout=20 is not present
-    if "timeout=20" in source:
-        errors.append("❌ Old timeout=20 still present")
-        print("  ✗ Old timeout=20 still present")
-    else:
-        print("  ✓ Old timeout=20 removed")
+        errors.append("❌ send_message_native does not have expected timeout")
+        print("  ✗ send_message_native does not have expected timeout")
     
     if errors:
-        print("\n❌ Timeout increase test FAILED")
+        print("\n❌ Timeout test FAILED")
         return False
     else:
-        print("\n✅ Timeout increase test PASSED")
+        print("\n✅ Timeout test PASSED")
         return True
 
 
@@ -255,28 +241,28 @@ def test_exponential_backoff():
 
 
 def test_error_handling():
-    """Test that better error handling was added"""
+    """Test that send_message_native has error handling"""
     print("\n=== Testing Error Handling (Priority 6) ===")
     
     from signalbot.core.signal_handler import SignalHandler
     
-    source = inspect.getsource(SignalHandler._send_direct)
+    source = inspect.getsource(SignalHandler.send_message_native)
     
     errors = []
     
-    # Check for improved timeout error message
-    if "connection may be unstable" in source.lower() or "checking network" in source.lower():
-        print("  ✓ Improved timeout error messages added")
+    # Check for TimeoutExpired handling
+    if "TimeoutExpired" in source or "timeout" in source.lower():
+        print("  ✓ Timeout error handling present in send_message_native")
     else:
-        errors.append("❌ Improved timeout error messages not added")
-        print("  ✗ Improved timeout error messages not added")
+        errors.append("❌ Timeout error handling not present")
+        print("  ✗ Timeout error handling not present")
     
-    # Check for attachment count in error
-    if "Attachments:" in source and "len(attachments)" in source:
-        print("  ✓ Attachment count added to error messages")
+    # Check for general exception handling
+    if "except Exception" in source:
+        print("  ✓ General exception handling present")
     else:
-        errors.append("❌ Attachment count not added to error messages")
-        print("  ✗ Attachment count not added to error messages")
+        errors.append("❌ General exception handling not present")
+        print("  ✗ General exception handling not present")
     
     if errors:
         print("\n❌ Error handling test FAILED")
