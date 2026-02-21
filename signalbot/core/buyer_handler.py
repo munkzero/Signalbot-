@@ -462,10 +462,9 @@ class BuyerHandler:
         # Send catalog header
         header = f"🛍️ PRODUCT CATALOG ({total_products} items)\n\n"
         try:
-            self.signal_handler.send_message(
+            self.signal_handler.send_message_fast(
                 recipient=buyer_signal_id,
-                message=header,
-                sender_identity=recipient_identity
+                message=header
             )
             print(f"✓ Catalog header sent\n")
         except Exception as e:
@@ -522,10 +521,9 @@ To order: "order {product_id_str} qty [amount]"
             )
             try:
                 print(f"  📤 Sending text info...")
-                self.signal_handler.send_message(
+                self.signal_handler.send_message_fast(
                     recipient=buyer_signal_id,
-                    message=quick_info,
-                    sender_identity=recipient_identity
+                    message=quick_info
                 )
                 print(f"  ✅ Text info sent instantly!")
             except Exception as e:
@@ -535,12 +533,11 @@ To order: "order {product_id_str} qty [amount]"
             for attempt in range(1, max_retries + 1):
                 try:
                     print(f"  📤 Sending description+image (attempt {attempt}/{max_retries})...")
-                    
-                    result = self.signal_handler.send_message(
+
+                    result = self.signal_handler.send_message_fast(
                         recipient=buyer_signal_id,
                         message=message.strip(),
-                        attachments=attachments if attachments else None,
-                        sender_identity=recipient_identity
+                        attachments=attachments if attachments else None
                     )
                     
                     if result:
@@ -562,11 +559,10 @@ To order: "order {product_id_str} qty [amount]"
                 if attachments:
                     print(f"  📝 Attempting text-only fallback (no image)...")
                     try:
-                        result = self.signal_handler.send_message(
+                        result = self.signal_handler.send_message_fast(
                             recipient=buyer_signal_id,
                             message=message.strip(),
-                            attachments=None,  # No image
-                            sender_identity=recipient_identity
+                            attachments=None  # No image
                         )
                         if result:
                             print(f"  ✅ Text-only version sent successfully")
@@ -596,10 +592,9 @@ To order: "order {product_id_str} qty [amount]"
         
         footer = f"\n✨ End of catalog\n\nTo order, reply with 'ORDER {product_id_str} QTY X'"
         try:
-            self.signal_handler.send_message(
+            self.signal_handler.send_message_fast(
                 recipient=buyer_signal_id,
-                message=footer,
-                sender_identity=recipient_identity
+                message=footer
             )
             print(f"✓ Footer sent\n")
         except Exception as e:
