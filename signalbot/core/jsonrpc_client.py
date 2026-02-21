@@ -34,7 +34,7 @@ class JsonRpcClient:
     """
 
     # How long to wait for a request response before giving up (seconds).
-    DEFAULT_REQUEST_TIMEOUT = 60
+    DEFAULT_REQUEST_TIMEOUT = 120
     # How long to wait for a send-with-attachment RPC response (seconds).
     # Image uploads to Signal servers can take longer than text-only sends.
     SEND_WITH_ATTACHMENT_TIMEOUT = 120

@@ -102,6 +102,17 @@ class BuyerHandler:
         #     'address': str (only after address collected)
         # }}
         self.conversation_states = {}
+        
+        # Pre-optimize all product images at startup for fast delivery
+        print("🔧 Pre-optimizing product images for fast delivery...")
+        from ..utils.image_optimizer import optimize_image
+        products = self.product_cache.get_products(active_only=True)
+        optimized_count = 0
+        for product in products:
+            if product.image_path and os.path.exists(product.image_path):
+                optimize_image(product.image_path)
+                optimized_count += 1
+        print(f"✓ {optimized_count} product images optimized and ready")
     
     @staticmethod
     def _format_product_id(product_id: Optional[str]) -> str:
@@ -492,18 +503,38 @@ To order: "order {product_id_str} qty [amount]"
                 
                 if resolved_path:
                     # Optimize image before sending
-                    optimized_path = self._optimize_image_for_signal(resolved_path)
+                    from ..utils.image_optimizer import optimize_image
+                    optimized_path = optimize_image(resolved_path)
                     attachments.append(optimized_path)
                 else:
                     print(f"  ⚠ No image found (will send text only)")
             
-            # Attempt to send with exponential backoff retry logic
-            max_retries = 5
+            # Send quick text first for instant feedback, then image separately
+            max_retries = 1
             success = False
             
+            # Step 1: Send text info immediately (no image = fast)
+            quick_info = (
+                f"🏷️ {product.name}\n"
+                f"💰 {product.price} {product.currency}\n"
+                f"📦 Product ID: {product_id_str}\n"
+                f"To order: \"order {product_id_str} qty [amount]\""
+            )
+            try:
+                print(f"  📤 Sending text info...")
+                self.signal_handler.send_message(
+                    recipient=buyer_signal_id,
+                    message=quick_info,
+                    sender_identity=recipient_identity
+                )
+                print(f"  ✅ Text info sent instantly!")
+            except Exception as e:
+                print(f"  ✗ Text info send error: {e}")
+            
+            # Step 2: Send description + image (may take longer due to upload)
             for attempt in range(1, max_retries + 1):
                 try:
-                    print(f"  📤 Sending (attempt {attempt}/{max_retries})...")
+                    print(f"  📤 Sending description+image (attempt {attempt}/{max_retries})...")
                     
                     result = self.signal_handler.send_message(
                         recipient=buyer_signal_id,
@@ -519,25 +550,13 @@ To order: "order {product_id_str} qty [amount]"
                         break  # Exit retry loop
                     else:
                         print(f"  ✗ Attempt {attempt} failed")
-                        
-                        if attempt < max_retries:
-                            # Exponential backoff: 3s, 6s, 12s, 24s, 48s (capped at 60s)
-                            retry_delay = min(3 * (2 ** (attempt - 1)), 60)
-                            print(f"  ⏳ Waiting {retry_delay}s before retry...")
-                            time.sleep(retry_delay)
                 
                 except Exception as e:
                     print(f"  ✗ Error on attempt {attempt}: {e}")
-                    
-                    if attempt < max_retries:
-                        # Exponential backoff: 3s, 6s, 12s, 24s, 48s (capped at 60s)
-                        retry_delay = min(3 * (2 ** (attempt - 1)), 60)
-                        print(f"  ⏳ Waiting {retry_delay}s before retry...")
-                        time.sleep(retry_delay)
             
-            # Track failure if all attempts failed
+            # Track failure if attempt failed
             if not success:
-                print(f"  ❌ FAILED after {max_retries} attempts")
+                print(f"  ❌ FAILED after {max_retries} attempt(s)")
                 
                 # Try one final time without image (text-only fallback)
                 if attachments:
@@ -562,9 +581,9 @@ To order: "order {product_id_str} qty [amount]"
                 else:
                     failed_products.append(product.name)
             
-            # Delay between products (avoid rate limiting)
+            # Small delay between products (avoid rate limiting)
             if index < total_products:  # Don't delay after last product
-                delay = 2.5
+                delay = 1.0
                 print(f"  ⏸ Waiting {delay}s before next product...\n")
                 time.sleep(delay)
             else:
