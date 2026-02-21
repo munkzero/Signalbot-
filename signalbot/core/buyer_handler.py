@@ -437,15 +437,21 @@ class BuyerHandler:
     
     def send_catalog(self, buyer_signal_id: str, recipient_identity: Optional[str] = None):
         """
-        Send catalog to buyer with robust error handling
-        
+        Send catalog to buyer using parallel native sends for speed.
+
+        Uses ThreadPoolExecutor to send all product messages concurrently,
+        targeting <10 seconds total for the full catalog. Falls back to a
+        text-only send if the image attachment cannot be sent.
+
         Args:
             buyer_signal_id: Buyer's Signal ID
             recipient_identity: Identity to send from (phone or username)
         """
-        
+        from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
+        from ..utils.image_optimizer import optimize_image
+
         products = self.product_cache.get_products(active_only=True)
-        
+
         if not products:
             self.signal_handler.send_message(
                 recipient=buyer_signal_id,
@@ -453,167 +459,118 @@ class BuyerHandler:
                 sender_identity=recipient_identity
             )
             return
-        
+
         total_products = len(products)
         print(f"\n{'='*60}")
-        print(f"📦 SENDING CATALOG: {total_products} products")
+        print(f"📦 SENDING CATALOG: {total_products} products (PARALLEL MODE)")
         print(f"{'='*60}\n")
-        
-        # Send catalog header
+
+        # Send catalog header immediately
         header = f"🛍️ PRODUCT CATALOG ({total_products} items)\n\n"
         try:
-            self.signal_handler.send_message_fast(
+            self.signal_handler.send_message_native(
                 recipient=buyer_signal_id,
                 message=header
             )
             print(f"✓ Catalog header sent\n")
         except Exception as e:
             print(f"✗ Failed to send header: {e}\n")
-        
-        # Track success/failure
-        sent_count = 0
-        failed_products = []
-        
-        # Send each product with robust error handling
-        for index, product in enumerate(products, 1):
-            product_id_str = self._format_product_id(product.product_id)
-            
-            print(f"{'─'*60}")
-            print(f"📦 Product {index}/{total_products}: {product.name} ({product_id_str})")
-            print(f"{'─'*60}")
-            
-            message = f"""━━━━━━━━━━━━━━━━━
-{product_id_str} - {product.name}
-━━━━━━━━━━━━━━━━━
-{product.description}
 
-💰 Price: {product.price} {product.currency}
-📊 Stock: {product.stock} available
-🏷️ Category: {product.category or 'N/A'}
+        # Prepare and submit all product sends in parallel
+        send_tasks = []
+        product_id_str = None  # track last product_id for footer
+        task_meta = []  # (message, attachments) per task for fallback
 
-To order: "order {product_id_str} qty [amount]"
-"""
-            
-            # Resolve and optimize image
-            attachments = []
-            if product.image_path:
-                print(f"  🔍 Resolving image path...")
-                resolved_path = self._resolve_image_path(product.image_path)
-                
-                if resolved_path:
-                    # Optimize image before sending
-                    from ..utils.image_optimizer import optimize_image
-                    optimized_path = optimize_image(resolved_path)
-                    attachments.append(optimized_path)
-                else:
-                    print(f"  ⚠ No image found (will send text only)")
-            
-            # Send quick text first for instant feedback, then image separately
-            max_retries = 1
-            success = False
-            
-            # Step 1: Send text info immediately (no image = fast)
-            quick_info = (
-                f"🏷️ {product.name}\n"
-                f"💰 {product.price} {product.currency}\n"
-                f"📦 Product ID: {product_id_str}\n"
-                f"To order: \"order {product_id_str} qty [amount]\""
-            )
-            try:
-                print(f"  📤 Sending text info...")
-                self.signal_handler.send_message_fast(
-                    recipient=buyer_signal_id,
-                    message=quick_info
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            for index, product in enumerate(products, 1):
+                product_id_str = self._format_product_id(product.product_id)
+
+                print(f"📦 Queuing product {index}/{total_products}: {product.name} ({product_id_str})")
+
+                # Build full product description
+                full_message = (
+                    f"━━━━━━━━━━━━━━━━━\n"
+                    f"{product_id_str} - {product.name}\n"
+                    f"━━━━━━━━━━━━━━━━━\n"
+                    f"{product.description}\n\n"
+                    f"💰 Price: {product.price} {product.currency}\n"
+                    f"📊 Stock: {product.stock} available\n"
+                    f"🏷️ Category: {product.category or 'N/A'}\n\n"
+                    f"To order: \"order {product_id_str} qty [amount]\""
                 )
-                print(f"  ✅ Text info sent instantly!")
-            except Exception as e:
-                print(f"  ✗ Text info send error: {e}")
-            
-            # Step 2: Send description + image (may take longer due to upload)
-            for attempt in range(1, max_retries + 1):
-                try:
-                    print(f"  📤 Sending description+image (attempt {attempt}/{max_retries})...")
 
-                    result = self.signal_handler.send_message_fast(
-                        recipient=buyer_signal_id,
-                        message=message.strip(),
-                        attachments=attachments if attachments else None
+                # Resolve and optimize image
+                attachments = []
+                if product.image_path:
+                    resolved_path = self._resolve_image_path(product.image_path)
+                    if resolved_path:
+                        optimized_path = optimize_image(resolved_path)
+                        attachments.append(optimized_path)
+
+                send_tasks.append(
+                    executor.submit(
+                        self.signal_handler.send_message_native,
+                        buyer_signal_id,
+                        full_message,
+                        attachments if attachments else None
                     )
-                    
-                    if result:
-                        sent_count += 1
-                        success = True
-                        print(f"  ✅ SUCCESS - Product sent!")
-                        break  # Exit retry loop
-                    else:
-                        print(f"  ✗ Attempt {attempt} failed")
-                
-                except Exception as e:
-                    print(f"  ✗ Error on attempt {attempt}: {e}")
-            
-            # Track failure if attempt failed
-            if not success:
-                print(f"  ❌ FAILED after {max_retries} attempt(s)")
-                
-                # Try one final time without image (text-only fallback)
-                if attachments:
-                    print(f"  📝 Attempting text-only fallback (no image)...")
-                    try:
-                        result = self.signal_handler.send_message_fast(
-                            recipient=buyer_signal_id,
-                            message=message.strip(),
-                            attachments=None  # No image
-                        )
-                        if result:
-                            print(f"  ✅ Text-only version sent successfully")
-                            sent_count += 1
-                            success = True
-                        else:
-                            print(f"  ✗ Text-only fallback also failed")
-                            failed_products.append(product.name)
-                    except Exception as e:
-                        print(f"  ✗ Text-only fallback error: {e}")
-                        failed_products.append(product.name)
-                else:
-                    failed_products.append(product.name)
-            
-            # Small delay between products (avoid rate limiting)
-            if index < total_products:  # Don't delay after last product
-                delay = 1.0
-                print(f"  ⏸ Waiting {delay}s before next product...\n")
-                time.sleep(delay)
+                )
+                task_meta.append((full_message, attachments))
+
+            print(f"\n⚡ Waiting for {len(send_tasks)} parallel sends (max 30s)...")
+            futures_wait(send_tasks, timeout=30)
+
+        # Retry failed tasks as text-only fallback (no image)
+        sent_count = 0
+        for task, (msg, att) in zip(send_tasks, task_meta):
+            succeeded = False
+            if task.done():
+                try:
+                    succeeded = task.result(timeout=0) is True
+                except Exception:
+                    pass
+
+            if succeeded:
+                sent_count += 1
             else:
-                print()  # Just newline for last product
-        
+                # Text-only fallback for products whose send failed (with or without image)
+                print(f"  📝 Attempting text-only fallback (no image)...")
+                try:
+                    result = self.signal_handler.send_message_native(
+                        buyer_signal_id,
+                        msg,
+                        attachments=None
+                    )
+                    if result:
+                        print(f"  ✅ Text-only fallback sent successfully")
+                        sent_count += 1
+                except Exception as e:
+                    print(f"  ✗ Text-only fallback error: {e}")
+
+        failed_count = total_products - sent_count
+
         # Send footer
-        print(f"{'─'*60}")
-        print(f"📋 Sending catalog footer...")
-        print(f"{'─'*60}")
-        
         footer = f"\n✨ End of catalog\n\nTo order, reply with 'ORDER {product_id_str} QTY X'"
         try:
-            self.signal_handler.send_message_fast(
+            self.signal_handler.send_message_native(
                 recipient=buyer_signal_id,
                 message=footer
             )
             print(f"✓ Footer sent\n")
         except Exception as e:
             print(f"✗ Failed to send footer: {e}\n")
-        
+
         # Summary report
         print(f"\n{'='*60}")
-        print(f"📊 CATALOG SEND COMPLETE")
+        print(f"📊 CATALOG SEND COMPLETE (parallel mode)")
         print(f"{'='*60}")
         print(f"✅ Sent: {sent_count}/{total_products} products")
-        
-        if failed_products:
-            print(f"❌ Failed: {len(failed_products)} products")
-            print(f"   Products that failed:")
-            for name in failed_products:
-                print(f"     • {name}")
+
+        if failed_count:
+            print(f"❌ Failed: {failed_count} products")
         else:
             print(f"🎉 All products sent successfully!")
-        
+
         print(f"{'='*60}\n")
     
     def create_order(self, buyer_signal_id: str, product_id: str, quantity: int, recipient_identity: Optional[str] = None, shipping_info: Optional[str] = None):
