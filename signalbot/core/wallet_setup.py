@@ -1185,19 +1185,17 @@ class WalletSetupManager:
             
             logger.info(f"✓ RPC process started (PID: {self.rpc_process.pid})")
             
-            # Increase timeout - wallet refresh can take 3-5 minutes when daemon is slow
-            # Wait for RPC to be ready
+            # Start RPC in background thread (non-blocking)
+            # Wallet refresh can take 3-5 minutes - don't block bot startup
             timeout = 300 if is_new_wallet else 180  # 5 minutes for new, 3 minutes for existing
-            logger.info(f"⏳ Waiting for RPC to be ready (timeout: {timeout}s)...")
-            logger.info("   Note: First startup may take 2-3 minutes while wallet refreshes")
-            if not self._wait_for_rpc_ready(timeout):
-                logger.error("❌ RPC failed to become ready")
-                # Log diagnostic information regardless of whether process died.
-                self._log_rpc_failure_diagnostics()
-                self._stop_rpc()
-                return False
-            
-            logger.info("✓ RPC is ready and accepting connections")
+            logger.info(f"🔧 Starting wallet RPC in background (timeout: {timeout}s)...")
+            threading.Thread(
+                target=self._wait_for_rpc_background,
+                args=(timeout,),
+                daemon=True,
+                name="WalletRPCThread"
+            ).start()
+            logger.info("✓ Wallet RPC starting in background (bot can proceed)")
             return True
             
         except FileNotFoundError:
@@ -1208,6 +1206,17 @@ class WalletSetupManager:
             logger.error(f"❌ Failed to start RPC: {e}")
             return False
     
+    def _wait_for_rpc_background(self, timeout: int):
+        """Wait for RPC to become ready in a background thread (non-blocking startup)."""
+        logger.info(f"⏳ Waiting for wallet RPC to be ready (timeout: {timeout}s)...")
+        logger.info("   Note: First startup may take 2-3 minutes while wallet refreshes")
+        if not self._wait_for_rpc_ready(timeout):
+            logger.warning("⚠️ Wallet RPC didn't become ready (payments disabled)")
+            self._log_rpc_failure_diagnostics()
+            self._stop_rpc()
+        else:
+            logger.info("✓ Wallet RPC is ready and accepting connections")
+
     def _log_port_diagnostic(self):
         """Log diagnostic information about what is occupying the RPC port."""
         try:
@@ -1604,16 +1613,13 @@ class WalletSetupManager:
                 logger.info("="*60)
                 return False, None
             
-            if not rpc_status["responding"]:
-                logger.error("❌ VERIFICATION FAILED: RPC not responding!")
-                logger.error(f"   Error: {rpc_status.get('error', 'Unknown')}")
-                logger.info("="*60)
-                return False, None
-            
             logger.info(f"✅ RPC is running (PID: {rpc_status['pid']})")
-            logger.info(f"✅ RPC is responding on port {rpc_status['port']}")
-            balance = rpc_status.get('balance') or 0
-            logger.info(f"✅ Balance: {balance / 1e12:.12f} XMR")
+            logger.info(f"✅ RPC port: {rpc_status['port']}")
+            if rpc_status.get("responding"):
+                balance = rpc_status.get('balance') or 0
+                logger.info(f"✅ Balance: {balance / 1e12:.12f} XMR")
+            else:
+                logger.info("💡 RPC still starting in background (payments enabled when ready)")
             
             logger.info("="*60)
             logger.info("✅ WALLET INITIALIZATION COMPLETE")
@@ -1674,16 +1680,13 @@ class WalletSetupManager:
                     logger.info("="*60)
                     return False, None
                 
-                if not rpc_status["responding"]:
-                    logger.error("❌ VERIFICATION FAILED: RPC not responding!")
-                    logger.error(f"   Error: {rpc_status.get('error', 'Unknown')}")
-                    logger.info("="*60)
-                    return False, None
-                
                 logger.info(f"✅ RPC is running (PID: {rpc_status['pid']})")
-                logger.info(f"✅ RPC is responding on port {rpc_status['port']}")
-                balance = rpc_status.get('balance') or 0
-                logger.info(f"✅ Balance: {balance / 1e12:.12f} XMR")
+                logger.info(f"✅ RPC port: {rpc_status['port']}")
+                if rpc_status.get("responding"):
+                    balance = rpc_status.get('balance') or 0
+                    logger.info(f"✅ Balance: {balance / 1e12:.12f} XMR")
+                else:
+                    logger.info("💡 RPC still starting in background (payments enabled when ready)")
                 
                 logger.info("="*60)
                 logger.info("✅ WALLET INITIALIZATION COMPLETE")
