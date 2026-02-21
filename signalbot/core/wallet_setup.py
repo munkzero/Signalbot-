@@ -659,7 +659,29 @@ def display_seed_phrase(seed: str):
 
 class WalletSetupManager:
     """Manages Monero wallet creation and RPC lifecycle"""
-    
+
+    @staticmethod
+    def get_wallet_path() -> str:
+        """
+        Get dynamic wallet path based on project root.
+
+        Returns the path to an existing wallet file or generates a new path.
+        Uses the project root (resolved from this file) to avoid hardcoded paths.
+
+        Returns:
+            Absolute path to the wallet file (without extension)
+        """
+        project_root = Path(__file__).parent.parent.parent.resolve()
+        wallet_dir = project_root / "data" / "wallet"
+        wallet_dir.mkdir(parents=True, exist_ok=True)
+
+        wallet_files = list(wallet_dir.glob("shop_wallet_*"))
+        if wallet_files:
+            # Use the most recently modified wallet for consistent selection
+            return str(max(wallet_files, key=lambda p: p.stat().st_mtime))
+
+        return str(wallet_dir / f"shop_wallet_{int(time.time())}")
+
     def __init__(self, wallet_path: str, daemon_address: str, daemon_port: int, 
                  rpc_port: int = 18083, password: str = ""):
         self.wallet_path = Path(wallet_path)
@@ -1176,6 +1198,7 @@ class WalletSetupManager:
                 stdout=self._rpc_log_fd,
                 stderr=self._rpc_log_fd,
                 stdin=subprocess.DEVNULL,  # Prevents interactive prompts
+                cwd=str(self.wallet_path.parent),  # Set working directory to wallet directory
                 start_new_session=True
             )
             

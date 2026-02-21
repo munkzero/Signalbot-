@@ -274,6 +274,51 @@ class SignalHandler:
         message = caption if caption else ""
         return self.send_message(recipient, message, attachments=[image_path])
 
+    def send_message_fast(self, recipient: str, message: str = None, attachments: List[str] = None) -> bool:
+        """
+        Fast direct send using signal-cli command (doesn't wait for daemon JSON-RPC).
+
+        This is much faster than daemon JSON-RPC which can timeout after 120s.
+        Uses subprocess fire-and-forget for instant sends.
+
+        Args:
+            recipient: Phone number to send to
+            message: Text message (optional)
+            attachments: List of file paths to attach (optional)
+
+        Returns:
+            True if the send process was successfully started, False on error
+        """
+        import subprocess
+
+        cmd = ['signal-cli', '-a', self.phone_number, 'send']
+
+        if message:
+            cmd.extend(['-m', message])
+
+        if attachments:
+            for attachment in attachments:
+                if os.path.exists(attachment):
+                    cmd.extend(['--attachment', attachment])
+                else:
+                    print(f"WARNING: Attachment not found: {attachment}")
+
+        cmd.append(recipient)
+
+        try:
+            # Fire and forget (async, doesn't block)
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True  # Detach from parent
+            )
+            print(f"DEBUG: Fast send to {recipient} (direct command, async)")
+            return True
+        except Exception as e:
+            print(f"ERROR: Fast send failed: {e}")
+            return False
+
     def start_listening(self):
         """
         Start receiving incoming messages via the daemon notification channel.
