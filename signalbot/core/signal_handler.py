@@ -384,7 +384,7 @@ class SignalHandler:
         while self.listening:
             try:
                 result = subprocess.run(
-                    ["signal-cli", "-a", self.phone_number, "receive", "--output", "json"],
+                    ["signal-cli", "-a", self.phone_number, "receive", "--json"],
                     capture_output=True,
                     text=True,
                     timeout=30,

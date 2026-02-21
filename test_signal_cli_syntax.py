@@ -21,29 +21,22 @@ def test_signal_cli_syntax():
     # Get the source code of SignalHandler
     source = inspect.getsource(SignalHandler)
     
-    # Check that old syntax is not used
+    # Check that old (invalid) syntax is not used
     errors = []
     
-    # Check for old receive syntax
-    if "receive', '--json'" in source or 'receive", "--json"' in source:
-        errors.append("❌ Old syntax found: 'receive --json'")
-        print("  ✗ Found old receive syntax: 'receive --json'")
-    else:
-        print("  ✓ No old receive syntax found")
-    
-    # Check for old daemon syntax
-    if "daemon', '--json'" in source or 'daemon", "--json"' in source:
-        errors.append("❌ Old syntax found: 'daemon --json'")
-        print("  ✗ Found old daemon syntax: 'daemon --json'")
-    else:
-        print("  ✓ No old daemon syntax found")
-    
-    # Check for new syntax
+    # Check that invalid --output flag is not present
     if "'--output', 'json'" in source or '"--output", "json"' in source:
-        print("  ✓ New syntax found: '--output json'")
+        errors.append("❌ Invalid syntax found: '--output json'")
+        print("  ✗ Found invalid '--output json' syntax")
     else:
-        errors.append("❌ New syntax not found: '--output json'")
-        print("  ✗ New syntax not found: '--output json'")
+        print("  ✓ Invalid '--output json' syntax not found")
+    
+    # Check for correct --json flag in receive command
+    if '"receive", "--json"' in source or "'receive', '--json'" in source:
+        print("  ✓ Correct syntax found: 'receive --json'")
+    else:
+        errors.append("❌ Correct syntax not found: 'receive --json'")
+        print("  ✗ Correct syntax not found: 'receive --json'")
     
     # Check for error logging in receive
     if "signal-cli receive error" in source:
