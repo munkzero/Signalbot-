@@ -188,7 +188,8 @@ class SignalHandler:
             recipient: Recipient phone number (e.g., "+15555550123") or username (e.g., "randomuser.01")
             message: Message text
             attachments: Optional list of file paths to attach
-            sender_identity: Unused (retained for API compatibility)
+            sender_identity: Retained for API compatibility with callers that pass a sender
+                             identity; the native command always uses the configured account.
             
         Returns:
             True if message sent successfully
@@ -356,6 +357,9 @@ class SignalHandler:
         """Stop polling loop."""
         self.listening = False
         if self.listen_thread:
+            # Allow up to 10 seconds for the current poll cycle (subprocess
+            # timeout is 30 s, but the thread checks self.listening between
+            # polls and exits promptly once the flag is cleared).
             self.listen_thread.join(timeout=10)
         print("⏹ Polling stopped")
 
