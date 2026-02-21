@@ -137,6 +137,11 @@ class SignalHandler:
         except Exception as e:
             raise RuntimeError(f"Signal linking failed: {e}")
 
+    def _trust_contact_background(self, source: str):
+        """Trust contact in background thread to avoid blocking message processing."""
+        if self.auto_trust_contact(source):
+            self.trusted_contacts.add(source)
+
     def auto_trust_contact(self, contact_number: str) -> bool:
         """
         Automatically trust a contact's identity via the JSON-RPC daemon.
@@ -518,9 +523,15 @@ class SignalHandler:
         # Auto-trust all message senders to handle message requests
         # This ensures message requests are accepted automatically for every sender
         if source and source != self.phone_number:
-            print(f"DEBUG: Message from {source}, auto-trusting...")
-            if self.auto_trust_contact(source):
-                self.trusted_contacts.add(source)
+            print(f"DEBUG: Message from {source}, auto-trusting in background...")
+            # Run trust in background thread (non-blocking)
+            threading.Thread(
+                target=self._trust_contact_background,
+                args=(source,),
+                daemon=True,
+                name=f"TrustThread-{source}"
+            ).start()
+            # Message processing continues immediately (don't wait for trust)
         
         # Create message object
         message = {
@@ -748,7 +759,7 @@ Thank you for your purchase!
             from pathlib import Path
 
             encoded_number = urllib.parse.quote(self.phone_number, safe='')
-            data_dir = Path.home() / ".local" / "share" / "signal-cli" / "data"
+            data_dir = Path.home() / ".local" / "share" / "signal-cli" / "data"  # signal-cli/data/
 
             # Candidate paths: plain phone number, URL-encoded, and numeric account IDs.
             config_paths = [
