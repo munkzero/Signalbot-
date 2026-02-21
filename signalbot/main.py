@@ -78,11 +78,11 @@ def signal_handler(signum, frame):
     except Exception as e:
         print(f"Error stopping wallet RPC: {e}")
 
-    # Stop signal handler (disconnects RPC and stops daemon if we started it)
+    # Stop signal handler (stops polling loop)
     try:
         signal_bot = getattr(_dashboard_instance, 'signal_handler', None)
         if signal_bot is not None and hasattr(signal_bot, 'stop'):
-            print("Stopping signal-cli daemon…")
+            print("Stopping signal polling…")
             signal_bot.stop()
     except Exception as e:
         print(f"Error stopping signal handler: {e}")
