@@ -3176,14 +3176,13 @@ class LoadConversationsWorker(QThread):
             conversations = self.message_manager.get_all_conversations(self.my_signal_id)
             result = []
             for contact_id, conv_data in conversations.items():
-                if contact_id not in self.contact_cache:
-                    with self.contact_cache_lock:
-                        if contact_id not in self.contact_cache:
-                            contact = self.contact_manager.get_contact_by_signal_id(contact_id)
-                            self.contact_cache[contact_id] = (
-                                contact.name if contact else contact_id
-                            )
-                display_name = self.contact_cache[contact_id]
+                with self.contact_cache_lock:
+                    if contact_id not in self.contact_cache:
+                        contact = self.contact_manager.get_contact_by_signal_id(contact_id)
+                        self.contact_cache[contact_id] = (
+                            contact.name if contact else contact_id
+                        )
+                    display_name = self.contact_cache[contact_id]
                 last_msg = conv_data['last_message'][:30] if conv_data['last_message'] else ''
                 result.append((contact_id, display_name, last_msg))
             self.finished.emit(result)
@@ -3208,14 +3207,13 @@ class LoadConversationWorker(QThread):
 
     def run(self):
         try:
-            if self.recipient not in self.contact_cache:
-                with self.contact_cache_lock:
-                    if self.recipient not in self.contact_cache:
-                        contact = self.contact_manager.get_contact_by_signal_id(self.recipient)
-                        self.contact_cache[self.recipient] = (
-                            contact.name if contact else self.recipient
-                        )
-            display_name = self.contact_cache[self.recipient]
+            with self.contact_cache_lock:
+                if self.recipient not in self.contact_cache:
+                    contact = self.contact_manager.get_contact_by_signal_id(self.recipient)
+                    self.contact_cache[self.recipient] = (
+                        contact.name if contact else self.recipient
+                    )
+                display_name = self.contact_cache[self.recipient]
             messages = self.message_manager.get_conversation(self.recipient, self.my_signal_id)
             self.finished.emit(messages, display_name)
         except Exception as e:
@@ -3440,8 +3438,7 @@ class MessagesTab(QWidget):
         self.current_messages = []  # Store message objects for current conversation
         self._contact_name_cache = {}  # Cache for contact name lookups to reduce DB queries
         self._contact_name_lock = threading.Lock()  # Protects concurrent cache writes
-        self._refresh_after_load = False  # Whether to reload conversations after message load
-        
+
         # Background worker references (kept to allow cleanup and prevent duplicates)
         self._load_conv_worker = None
         self._load_msg_worker = None
@@ -3764,17 +3761,18 @@ class MessagesTab(QWidget):
     def _start_load_msg_worker(self, recipient):
         """Cancel any running message loader and start a new one for ``recipient``."""
         if self._load_msg_worker and self._load_msg_worker.isRunning():
-            # Disconnect only the slots we connected to avoid disturbing unrelated connections
-            for slot in (self._on_conversation_loaded, self._on_conversation_error):
-                try:
-                    self._load_msg_worker.finished.disconnect(slot)
-                    self._load_msg_worker.error.disconnect(slot)
-                except TypeError:
-                    # Signal was not connected to this slot; safe to ignore
-                    pass
+            try:
+                self._load_msg_worker.finished.disconnect(self._on_conversation_loaded)
+            except TypeError:
+                pass
+            try:
+                self._load_msg_worker.error.disconnect(self._on_conversation_error)
+            except TypeError:
+                pass
             self._load_msg_worker.quit()
             if not self._load_msg_worker.wait(_WORKER_STOP_TIMEOUT_MS):
-                print("Warning: previous message-load worker did not stop in time")
+                print("Warning: previous message-load worker did not stop in time; "
+                      "proceeding with new worker anyway")
 
         self._load_msg_worker = LoadConversationWorker(
             self.message_manager, self.contact_manager,
@@ -3811,12 +3809,18 @@ class MessagesTab(QWidget):
         # Auto-scroll to the most recent message (improvement over the original sync version)
         scrollbar = self.message_history.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
-        if self._refresh_after_load:
-            self._refresh_after_load = False
-            self.load_conversations(force_refresh=True)
         if self._load_msg_worker:
             self._load_msg_worker.deleteLater()
             self._load_msg_worker = None
+
+    def _on_conversation_refresh_loaded(self, messages, display_name):
+        """Handle messages reloaded after an in-conversation change (e.g. delete).
+
+        Same as ``_on_conversation_loaded`` but also refreshes the conversation
+        list sidebar so preview text and ordering stay current.
+        """
+        self._on_conversation_loaded(messages, display_name)
+        self.load_conversations(force_refresh=True)
 
     def _on_conversation_error(self, error_msg):
         """Handle error loading conversation messages"""
@@ -4248,11 +4252,9 @@ class MessagesTab(QWidget):
         if not self.current_recipient or not self.my_signal_id:
             return
 
-        # Signal the completion handler to also refresh the conversations list
-        self._refresh_after_load = True
-
         worker = self._start_load_msg_worker(self.current_recipient)
-        worker.finished.connect(self._on_conversation_loaded)
+        # Use the dedicated refresh handler so the conversations sidebar is also updated
+        worker.finished.connect(self._on_conversation_refresh_loaded)
         worker.error.connect(self._on_conversation_error)
         worker.start()
 
