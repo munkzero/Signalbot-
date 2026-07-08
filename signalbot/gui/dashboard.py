@@ -5,6 +5,7 @@ Main seller dashboard GUI
 import sys
 import os
 import time
+import threading
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLabel, QPushButton, QTableWidget,
@@ -52,6 +53,9 @@ COMMON_IMAGE_SEARCH_DIRS = [
 # Catalog/product send timing constants
 _CATALOG_MAX_RETRY_DELAY_SECONDS = 60   # Maximum exponential back-off delay per retry
 _CATALOG_INTER_PRODUCT_DELAY_SECONDS = 2.5  # Pause between sending successive products
+
+# Background worker shutdown timeout
+_WORKER_STOP_TIMEOUT_MS = 500  # Maximum milliseconds to wait for a worker thread to stop
 
 
 def _format_product_id(product_id: Optional[str]) -> str:
@@ -3158,12 +3162,14 @@ class LoadConversationsWorker(QThread):
     finished = pyqtSignal(list)  # list of (contact_id, display_name, last_msg) tuples
     error = pyqtSignal(str)
 
-    def __init__(self, message_manager, contact_manager, my_signal_id, contact_cache):
+    def __init__(self, message_manager, contact_manager, my_signal_id,
+                 contact_cache, contact_cache_lock):
         super().__init__()
         self.message_manager = message_manager
         self.contact_manager = contact_manager
         self.my_signal_id = my_signal_id
         self.contact_cache = contact_cache
+        self.contact_cache_lock = contact_cache_lock
 
     def run(self):
         try:
@@ -3171,8 +3177,12 @@ class LoadConversationsWorker(QThread):
             result = []
             for contact_id, conv_data in conversations.items():
                 if contact_id not in self.contact_cache:
-                    contact = self.contact_manager.get_contact_by_signal_id(contact_id)
-                    self.contact_cache[contact_id] = contact.name if contact else contact_id
+                    with self.contact_cache_lock:
+                        if contact_id not in self.contact_cache:
+                            contact = self.contact_manager.get_contact_by_signal_id(contact_id)
+                            self.contact_cache[contact_id] = (
+                                contact.name if contact else contact_id
+                            )
                 display_name = self.contact_cache[contact_id]
                 last_msg = conv_data['last_message'][:30] if conv_data['last_message'] else ''
                 result.append((contact_id, display_name, last_msg))
@@ -3186,19 +3196,25 @@ class LoadConversationWorker(QThread):
     finished = pyqtSignal(list, str)  # messages list, display_name
     error = pyqtSignal(str)
 
-    def __init__(self, message_manager, contact_manager, recipient, my_signal_id, contact_cache):
+    def __init__(self, message_manager, contact_manager, recipient, my_signal_id,
+                 contact_cache, contact_cache_lock):
         super().__init__()
         self.message_manager = message_manager
         self.contact_manager = contact_manager
         self.recipient = recipient
         self.my_signal_id = my_signal_id
         self.contact_cache = contact_cache
+        self.contact_cache_lock = contact_cache_lock
 
     def run(self):
         try:
             if self.recipient not in self.contact_cache:
-                contact = self.contact_manager.get_contact_by_signal_id(self.recipient)
-                self.contact_cache[self.recipient] = contact.name if contact else self.recipient
+                with self.contact_cache_lock:
+                    if self.recipient not in self.contact_cache:
+                        contact = self.contact_manager.get_contact_by_signal_id(self.recipient)
+                        self.contact_cache[self.recipient] = (
+                            contact.name if contact else self.recipient
+                        )
             display_name = self.contact_cache[self.recipient]
             messages = self.message_manager.get_conversation(self.recipient, self.my_signal_id)
             self.finished.emit(messages, display_name)
@@ -3423,6 +3439,7 @@ class MessagesTab(QWidget):
         self.my_signal_id = None
         self.current_messages = []  # Store message objects for current conversation
         self._contact_name_cache = {}  # Cache for contact name lookups to reduce DB queries
+        self._contact_name_lock = threading.Lock()  # Protects concurrent cache writes
         self._refresh_after_load = False  # Whether to reload conversations after message load
         
         # Background worker references (kept to allow cleanup and prevent duplicates)
@@ -3676,7 +3693,12 @@ class MessagesTab(QWidget):
         return f"[{timestamp}] {sender_name}: {text}\n"
     
     def load_conversations(self, force_refresh=False):
-        """Load conversation list from database using a background thread"""
+        """Load conversation list from database using a background thread.
+
+        The ``force_refresh`` parameter is accepted for API compatibility with
+        existing callers.  The background worker always fetches fresh data from
+        the database, so the flag does not change runtime behaviour.
+        """
         if not self.my_signal_id:
             self.conversations_list.clear()
             item = QListWidgetItem("No Signal ID configured")
@@ -3696,7 +3718,7 @@ class MessagesTab(QWidget):
 
         self._load_conv_worker = LoadConversationsWorker(
             self.message_manager, self.contact_manager,
-            self.my_signal_id, self._contact_name_cache
+            self.my_signal_id, self._contact_name_cache, self._contact_name_lock
         )
         self._load_conv_worker.finished.connect(self._on_conversations_loaded)
         self._load_conv_worker.error.connect(self._on_conversations_error)
@@ -3742,19 +3764,22 @@ class MessagesTab(QWidget):
     def _start_load_msg_worker(self, recipient):
         """Cancel any running message loader and start a new one for ``recipient``."""
         if self._load_msg_worker and self._load_msg_worker.isRunning():
-            try:
-                self._load_msg_worker.finished.disconnect()
-                self._load_msg_worker.error.disconnect()
-            except TypeError:
-                # Signals may already be disconnected; this is safe to ignore
-                pass
+            # Disconnect only the slots we connected to avoid disturbing unrelated connections
+            for slot in (self._on_conversation_loaded, self._on_conversation_error):
+                try:
+                    self._load_msg_worker.finished.disconnect(slot)
+                    self._load_msg_worker.error.disconnect(slot)
+                except TypeError:
+                    # Signal was not connected to this slot; safe to ignore
+                    pass
             self._load_msg_worker.quit()
-            if not self._load_msg_worker.wait(500):
+            if not self._load_msg_worker.wait(_WORKER_STOP_TIMEOUT_MS):
                 print("Warning: previous message-load worker did not stop in time")
 
         self._load_msg_worker = LoadConversationWorker(
             self.message_manager, self.contact_manager,
-            recipient, self.my_signal_id, self._contact_name_cache
+            recipient, self.my_signal_id,
+            self._contact_name_cache, self._contact_name_lock
         )
         return self._load_msg_worker
 
@@ -3783,7 +3808,7 @@ class MessagesTab(QWidget):
         self.current_messages = messages
         for msg in messages:
             self.message_history.append(self._format_message_display(msg, display_name))
-        # Scroll to the most recent message
+        # Auto-scroll to the most recent message (improvement over the original sync version)
         scrollbar = self.message_history.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
         if self._refresh_after_load:
@@ -3820,9 +3845,11 @@ class MessagesTab(QWidget):
             contact = dialog.get_selected_contact()
             if contact:
                 self.current_recipient = contact.signal_id
-                # Pre-populate cache with the known contact name
-                self._contact_name_cache[contact.signal_id] = contact.name
-                self.chat_header.setText(f"Chat with {contact.name}")
+                # Pre-populate cache with the known contact name so the worker
+                # doesn't need a DB round-trip for this contact
+                with self._contact_name_lock:
+                    self._contact_name_cache[contact.signal_id] = contact.name
+                self.chat_header.setText("Loading...")
                 self.message_history.clear()
 
                 worker = self._start_load_msg_worker(contact.signal_id)
@@ -3830,7 +3857,7 @@ class MessagesTab(QWidget):
                 worker.error.connect(self._on_conversation_error)
                 worker.start()
 
-                # Focus on message input immediately while messages load
+                # Focus on message input immediately while messages load in background
                 self.message_input.setFocus()
     
     def send_message(self):
