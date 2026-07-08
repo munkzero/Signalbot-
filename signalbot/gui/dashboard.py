@@ -3563,11 +3563,6 @@ class MessagesTab(QWidget):
         self.attachment_path = None
         self.send_thread = None  # Thread for async message sending
     
-    @staticmethod
-    def _format_product_id(product_id: Optional[str]) -> str:
-        """Format product ID consistently — delegates to the module-level helper."""
-        return _format_product_id(product_id)
-
     def _resolve_image_path(self, image_path: str) -> Optional[str]:
         """
         Resolve image path by checking multiple common locations.
@@ -3689,12 +3684,11 @@ class MessagesTab(QWidget):
         text = msg.message_body or "[Attachment]"
         return f"[{timestamp}] {sender_name}: {text}\n"
     
-    def load_conversations(self, force_refresh=False):
+    def load_conversations(self):
         """Load conversation list from database using a background thread.
 
-        The ``force_refresh`` parameter is accepted for API compatibility with
-        existing callers.  The background worker always fetches fresh data from
-        the database, so the flag does not change runtime behaviour.
+        Each call always fetches fresh data from the database via a background
+        worker so the list is never stale.
         """
         if not self.my_signal_id:
             self.conversations_list.clear()
@@ -3773,6 +3767,7 @@ class MessagesTab(QWidget):
             if not self._load_msg_worker.wait(_WORKER_STOP_TIMEOUT_MS):
                 print("Warning: previous message-load worker did not stop in time; "
                       "proceeding with new worker anyway")
+                self._load_msg_worker.terminate()
 
         self._load_msg_worker = LoadConversationWorker(
             self.message_manager, self.contact_manager,
@@ -3801,14 +3796,18 @@ class MessagesTab(QWidget):
 
     def _on_conversation_loaded(self, messages, display_name):
         """Handle conversation messages loaded in background thread"""
+        # Capture scroll state before clearing so we can honour the user's position
+        scrollbar = self.message_history.verticalScrollBar()
+        was_at_bottom = (scrollbar.maximum() == 0 or
+                         scrollbar.value() >= scrollbar.maximum() - 5)
         self.chat_header.setText(f"Chat with {display_name}")
         self.message_history.clear()
         self.current_messages = messages
         for msg in messages:
             self.message_history.append(self._format_message_display(msg, display_name))
-        # Auto-scroll to the most recent message (improvement over the original sync version)
-        scrollbar = self.message_history.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        # Auto-scroll to the latest message only when the user was already at the bottom
+        if was_at_bottom:
+            scrollbar.setValue(scrollbar.maximum())
         if self._load_msg_worker:
             self._load_msg_worker.deleteLater()
             self._load_msg_worker = None
@@ -3820,7 +3819,7 @@ class MessagesTab(QWidget):
         list sidebar so preview text and ordering stay current.
         """
         self._on_conversation_loaded(messages, display_name)
-        self.load_conversations(force_refresh=True)
+        self.load_conversations()
 
     def _on_conversation_error(self, error_msg):
         """Handle error loading conversation messages"""
@@ -3840,7 +3839,7 @@ class MessagesTab(QWidget):
             parent=self
         )
         if dialog.exec_() == QDialog.Accepted:
-            self.load_conversations(force_refresh=True)
+            self.load_conversations()
 
     def message_from_contacts(self):
         """Open contact picker and start conversation"""
@@ -3929,7 +3928,7 @@ class MessagesTab(QWidget):
             # Ensure contact exists
             self.contact_manager.get_or_create_contact(self.current_recipient)
             # Refresh conversations list
-            self.load_conversations(force_refresh=True)
+            self.load_conversations()
         except Exception as e:
             print(f"Error saving message to database: {e}")
             # Show warning to user if database save fails
@@ -3981,7 +3980,7 @@ class MessagesTab(QWidget):
 
         if sent_count > 0:
             QMessageBox.information(self, "Success", f"Sent {sent_count} product(s)")
-            self.load_conversations(force_refresh=True)
+            self.load_conversations()
         else:
             QMessageBox.warning(self, "Failed", "Failed to send products")
 
@@ -4054,7 +4053,7 @@ class MessagesTab(QWidget):
         else:
             QMessageBox.critical(self, "Failed", result_msg)
 
-        self.load_conversations(force_refresh=True)
+        self.load_conversations()
 
         if self._catalog_worker:
             self._catalog_worker.deleteLater()
@@ -4107,7 +4106,7 @@ class MessagesTab(QWidget):
         if sender not in self.conversations:
             self.conversations[sender] = []
             # Reload conversations to show new one
-            self.load_conversations(force_refresh=True)
+            self.load_conversations()
         
         self.conversations[sender].append(message)
         
@@ -4151,7 +4150,7 @@ class MessagesTab(QWidget):
                     self.message_history.clear()
                 
                 # Reload conversations
-                self.load_conversations(force_refresh=True)
+                self.load_conversations()
                 QMessageBox.information(self, "Success", "Conversation deleted")
             else:
                 QMessageBox.warning(self, "Error", "Failed to delete conversation")
@@ -4274,7 +4273,7 @@ class MessagesTab(QWidget):
         if reply == QMessageBox.Yes:
             if self.message_manager.delete_conversation(self.current_recipient, self.my_signal_id):
                 self.message_history.clear()
-                self.load_conversations(force_refresh=True)
+                self.load_conversations()
                 QMessageBox.information(self, "Success", "All messages cleared")
             else:
                 QMessageBox.warning(self, "Error", "Failed to clear messages")
