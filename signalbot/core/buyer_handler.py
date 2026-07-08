@@ -481,7 +481,8 @@ class BuyerHandler:
         product_id_str = None  # track last product_id for footer
         task_meta = []  # (message, attachments) per task for fallback
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        executor = ThreadPoolExecutor(max_workers=5)
+        try:
             for index, product in enumerate(products, 1):
                 product_id_str = self._format_product_id(product.product_id)
 
@@ -519,6 +520,10 @@ class BuyerHandler:
 
             print(f"\n⚡ Waiting for {len(send_tasks)} parallel sends (max 30s)...")
             futures_wait(send_tasks, timeout=30)
+        finally:
+            # Shut down without waiting for timed-out tasks so we don't block.
+            # cancel_futures requires Python 3.9+; this project targets 3.9+.
+            executor.shutdown(wait=False, cancel_futures=True)
 
         # Retry failed tasks as text-only fallback (no image)
         sent_count = 0
