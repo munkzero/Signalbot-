@@ -5702,8 +5702,8 @@ class DashboardWindow(QMainWindow):
             (lambda: ContactsTab(self.contact_manager, self.message_manager, self.signal_handler), "Contacts"),
             (lambda: SettingsTab(self.seller_manager, self.signal_handler), "Settings"),
         ]
-        # Track which tabs have already been loaded (using a set of indices)
-        self._loaded_tabs: set = set()
+        # Track which tab indices have already been fully loaded
+        self._loaded_tabs: set = set()  # type: set[int]
         
         # Add lightweight placeholder container for every tab slot
         for _, label in self._tab_specs:
@@ -5737,7 +5737,12 @@ class DashboardWindow(QMainWindow):
         return container
 
     def _load_tab(self, index: int) -> None:
-        """Instantiate and display the real widget for *index* (once only)."""
+        """Instantiate and display the real widget for *index* (once only).
+
+        Factories in ``_tab_specs`` access ``self`` attributes at call time,
+        so any managers/wallet references set after ``__init__`` are always
+        picked up correctly.
+        """
         if index in self._loaded_tabs:
             return
         self._loaded_tabs.add(index)
@@ -5746,16 +5751,20 @@ class DashboardWindow(QMainWindow):
         real_widget = factory()
 
         # Each tab slot is a container QWidget; swap its content in-place so
-        # we never remove/re-insert tabs (which would fire currentChanged again).
+        # we never remove/re-insert tabs (which would re-fire currentChanged).
         container = self.tabs.widget(index)
         layout = container.layout()
         if layout is None:
+            print(f"WARNING: _load_tab({index}) – container has no layout; tab cannot be loaded")
             return
-        # Clear the placeholder label
+        # Clear all placeholder items (widgets, spacers, nested layouts)
         while layout.count():
             item = layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+            elif item.layout():
+                item.layout().deleteLater()
+            # spacerItems are freed automatically when the layout is updated
         # addWidget automatically reparents real_widget to container
         layout.addWidget(real_widget)
 
