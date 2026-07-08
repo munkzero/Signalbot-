@@ -5686,21 +5686,92 @@ class DashboardWindow(QMainWindow):
         self.setWindowTitle(WINDOW_TITLE)
         self.setMinimumSize(WINDOW_WIDTH, WINDOW_HEIGHT)
         
-        # Create tabs
-        tabs = QTabWidget()
+        # Create tabs with lazy loading – each tab is only instantiated the
+        # first time the user clicks on it, keeping startup fast and the UI
+        # responsive.
+        self.tabs = QTabWidget()
         
-        # Add tabs
-        tabs.addTab(WalletTab(self.wallet, self.db_manager, self.seller_manager), "💰 Wallet")
-        tabs.addTab(ProductsTab(self.product_manager), "Products")
-        tabs.addTab(OrdersTab(self.order_manager, self.signal_handler), "Orders")
-        tabs.addTab(MessagesTab(self.signal_handler, self.contact_manager, self.message_manager, self.seller_manager, self.product_manager), "Messages")
-        tabs.addTab(ContactsTab(self.contact_manager, self.message_manager, self.signal_handler), "Contacts")
-        tabs.addTab(SettingsTab(self.seller_manager, self.signal_handler), "Settings")
+        # Tab specs: (factory_callable, display_label).  Factories capture
+        # *self* by reference so they always see the latest wallet/manager
+        # references even if those are updated after __init__ returns.
+        self._tab_specs = [
+            (lambda: WalletTab(self.wallet, self.db_manager, self.seller_manager), "💰 Wallet"),
+            (lambda: ProductsTab(self.product_manager), "Products"),
+            (lambda: OrdersTab(self.order_manager, self.signal_handler), "Orders"),
+            (lambda: MessagesTab(self.signal_handler, self.contact_manager, self.message_manager, self.seller_manager, self.product_manager), "Messages"),
+            (lambda: ContactsTab(self.contact_manager, self.message_manager, self.signal_handler), "Contacts"),
+            (lambda: SettingsTab(self.seller_manager, self.signal_handler), "Settings"),
+        ]
+        # Track which tab indices have already been fully loaded
+        self._loaded_tabs: set = set()  # type: set[int]
         
-        self.setCentralWidget(tabs)
+        # Add lightweight placeholder container for every tab slot
+        for _, label in self._tab_specs:
+            self.tabs.addTab(self._make_loading_placeholder(), label)
+        
+        # Load the first tab (Wallet) immediately so the user sees content,
+        # then wire the signal so subsequent clicks trigger deferred loading.
+        # Loading tab 0 before connecting prevents any double-load if the
+        # initial tab change fires currentChanged during setup.
+        self._load_tab(0)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        
+        self.setCentralWidget(self.tabs)
         
         print("✓ DEBUG: Dashboard initialization completed successfully")
     
+    # ------------------------------------------------------------------
+    # Lazy-loading helpers
+    # ------------------------------------------------------------------
+
+    def _make_loading_placeholder(self) -> QWidget:
+        """Return a lightweight placeholder widget shown before a tab loads."""
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        loading_label = QLabel("⏳ Loading…")
+        loading_label.setAlignment(Qt.AlignCenter)
+        loading_label.setFont(QFont("Arial", 14))
+        loading_label.setStyleSheet("color: gray;")
+        layout.addWidget(loading_label)
+        return container
+
+    def _load_tab(self, index: int) -> None:
+        """Instantiate and display the real widget for *index* (once only).
+
+        Factories in ``_tab_specs`` access ``self`` attributes at call time,
+        so any managers/wallet references set after ``__init__`` are always
+        picked up correctly.
+        """
+        if index in self._loaded_tabs:
+            return
+        self._loaded_tabs.add(index)
+
+        factory, _ = self._tab_specs[index]
+        real_widget = factory()
+
+        # Each tab slot is a container QWidget; swap its content in-place so
+        # we never remove/re-insert tabs (which would re-fire currentChanged).
+        container = self.tabs.widget(index)
+        layout = container.layout()
+        if layout is None:
+            print(f"WARNING: _load_tab({index}) – container has no layout; tab cannot be loaded")
+            return
+        # Clear all placeholder items (widgets, spacers, nested layouts)
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                item.layout().deleteLater()
+            # spacerItems are freed automatically when the layout is updated
+        # addWidget automatically reparents real_widget to container
+        layout.addWidget(real_widget)
+
+    def _on_tab_changed(self, index: int) -> None:
+        """Triggered by QTabWidget.currentChanged – loads the tab on first visit."""
+        self._load_tab(index)
+
     def _show_connection_warning(self):
         """Show connection warning after dashboard is loaded"""
         print("🔧 DEBUG: Showing deferred connection warning")
