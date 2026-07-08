@@ -5702,18 +5702,19 @@ class DashboardWindow(QMainWindow):
             (lambda: ContactsTab(self.contact_manager, self.message_manager, self.signal_handler), "Contacts"),
             (lambda: SettingsTab(self.seller_manager, self.signal_handler), "Settings"),
         ]
-        # Track which tabs have already been loaded
-        self._loaded_tabs = [False] * len(self._tab_specs)
+        # Track which tabs have already been loaded (using a set of indices)
+        self._loaded_tabs: set = set()
         
         # Add lightweight placeholder container for every tab slot
         for _, label in self._tab_specs:
             self.tabs.addTab(self._make_loading_placeholder(), label)
         
-        # Wire up lazy loading before showing the first tab
-        self.tabs.currentChanged.connect(self._on_tab_changed)
-        
-        # Load the first tab (Wallet) immediately so the user sees content
+        # Load the first tab (Wallet) immediately so the user sees content,
+        # then wire the signal so subsequent clicks trigger deferred loading.
+        # Loading tab 0 before connecting prevents any double-load if the
+        # initial tab change fires currentChanged during setup.
         self._load_tab(0)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
         
         self.setCentralWidget(self.tabs)
         
@@ -5737,9 +5738,9 @@ class DashboardWindow(QMainWindow):
 
     def _load_tab(self, index: int) -> None:
         """Instantiate and display the real widget for *index* (once only)."""
-        if self._loaded_tabs[index]:
+        if index in self._loaded_tabs:
             return
-        self._loaded_tabs[index] = True
+        self._loaded_tabs.add(index)
 
         factory, _ = self._tab_specs[index]
         real_widget = factory()
@@ -5748,13 +5749,14 @@ class DashboardWindow(QMainWindow):
         # we never remove/re-insert tabs (which would fire currentChanged again).
         container = self.tabs.widget(index)
         layout = container.layout()
+        if layout is None:
+            return
         # Clear the placeholder label
         while layout.count():
             item = layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        # Place the real tab widget inside the container
-        real_widget.setParent(container)
+        # addWidget automatically reparents real_widget to container
         layout.addWidget(real_widget)
 
     def _on_tab_changed(self, index: int) -> None:
