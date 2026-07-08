@@ -49,6 +49,17 @@ COMMON_IMAGE_SEARCH_DIRS = [
     '.',
 ]
 
+# Catalog/product send timing constants
+_CATALOG_MAX_RETRY_DELAY_SECONDS = 60   # Maximum exponential back-off delay per retry
+_CATALOG_INTER_PRODUCT_DELAY_SECONDS = 2.5  # Pause between sending successive products
+
+
+def _format_product_id(product_id: Optional[str]) -> str:
+    """Format a product ID with a leading '#' prefix if not already present."""
+    if not product_id:
+        return "N/A"
+    return product_id if product_id.startswith('#') else f"#{product_id}"
+
 
 class PINDialog(QDialog):
     """Dialog for PIN entry"""
@@ -3237,7 +3248,7 @@ class SendCatalogWorker(QThread):
             self.progress.emit(index - 1, total_products,
                                f"Sending product {index}/{total_products}: {product.name}")
 
-            product_id_str = MessagesTab._format_product_id(product.product_id)
+            product_id_str = _format_product_id(product.product_id)
             message = (
                 f"━━━━━━━━━━━━━━━━━\n"
                 f"{product_id_str} - {product.name}\n"
@@ -3289,12 +3300,12 @@ class SendCatalogWorker(QThread):
                     else:
                         print(f"Attempt {attempt} for {product.name} failed")
                         if attempt < max_retries:
-                            retry_delay = min(3 * (2 ** (attempt - 1)), 60)
+                            retry_delay = min(3 * (2 ** (attempt - 1)), _CATALOG_MAX_RETRY_DELAY_SECONDS)
                             time.sleep(retry_delay)
                 except Exception as e:
                     print(f"Error on attempt {attempt} for {product.name}: {e}")
                     if attempt < max_retries:
-                        retry_delay = min(3 * (2 ** (attempt - 1)), 60)
+                        retry_delay = min(3 * (2 ** (attempt - 1)), _CATALOG_MAX_RETRY_DELAY_SECONDS)
                         time.sleep(retry_delay)
 
             if not success:
@@ -3333,7 +3344,7 @@ class SendCatalogWorker(QThread):
                     print(f"Product {product.name} failed after {max_retries} attempts")
 
             if index < total_products and not self._cancel_requested:
-                time.sleep(2.5)
+                time.sleep(_CATALOG_INTER_PRODUCT_DELAY_SECONDS)
 
         self.finished.emit(sent_count, failed_count, missing_images)
 
@@ -3356,7 +3367,7 @@ class SendProductWorker(QThread):
         messages_sent = []
 
         for product in self.products:
-            product_id_str = MessagesTab._format_product_id(product.product_id)
+            product_id_str = _format_product_id(product.product_id)
             message = (
                 f"━━━━━━━━━━━━━━━━━\n"
                 f"{product_id_str} - {product.name}\n"
@@ -3540,24 +3551,9 @@ class MessagesTab(QWidget):
     
     @staticmethod
     def _format_product_id(product_id: Optional[str]) -> str:
-        """
-        Format product ID consistently
-        
-        Args:
-            product_id: Product ID to format
-            
-        Returns:
-            Formatted product ID string
-        """
-        if not product_id:
-            return "N/A"
-        
-        # Add # prefix if not already present
-        if not product_id.startswith('#'):
-            return f"#{product_id}"
-        
-        return product_id
-    
+        """Format product ID consistently — delegates to the module-level helper."""
+        return _format_product_id(product_id)
+
     def _resolve_image_path(self, image_path: str) -> Optional[str]:
         """
         Resolve image path by checking multiple common locations.
@@ -3692,10 +3688,6 @@ class MessagesTab(QWidget):
         if self._load_conv_worker and self._load_conv_worker.isRunning():
             return
 
-        # Clear the contact name cache on forced refresh so stale names are not shown
-        if force_refresh:
-            self.conversations_cache = {}
-
         # Show loading placeholder while the worker fetches data
         self.conversations_list.clear()
         loading_item = QListWidgetItem("Loading...")
@@ -3754,9 +3746,11 @@ class MessagesTab(QWidget):
                 self._load_msg_worker.finished.disconnect()
                 self._load_msg_worker.error.disconnect()
             except TypeError:
+                # Signals may already be disconnected; this is safe to ignore
                 pass
             self._load_msg_worker.quit()
-            self._load_msg_worker.wait(500)
+            if not self._load_msg_worker.wait(500):
+                print("Warning: previous message-load worker did not stop in time")
 
         self._load_msg_worker = LoadConversationWorker(
             self.message_manager, self.contact_manager,
