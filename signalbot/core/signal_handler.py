@@ -281,14 +281,14 @@ class SignalHandler:
         if message:
             cmd.extend(['-m', message])
 
+        cmd.append(recipient)
+
         if attachments:
             for attachment in attachments:
                 if os.path.exists(attachment):
                     cmd.extend(['--attachment', attachment])
                 else:
                     logger.warning(f"Attachment not found, skipping: {attachment}")
-
-        cmd.append(recipient)
 
         try:
             result = subprocess.run(
@@ -397,7 +397,12 @@ class SignalHandler:
                         try:
                             message_data = json.loads(line)
                             if message_data.get("envelope"):
-                                self._handle_message(message_data)
+                                threading.Thread(
+                                    target=self._handle_message,
+                                    args=(message_data,),
+                                    daemon=True,
+                                    name="MsgHandler",
+                                ).start()
                         except json.JSONDecodeError:
                             pass
                 elif result.returncode != 0:
