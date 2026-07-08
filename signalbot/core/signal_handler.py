@@ -366,7 +366,10 @@ class SignalHandler:
             # timeout is 30 s, but the thread checks self.listening between
             # polls and exits promptly once the flag is cleared).
             self.listen_thread.join(timeout=10)
-        self._msg_handler_pool.shutdown(wait=True)
+        # Don't block on in-flight handlers; they are non-daemon threads and
+        # will finish naturally.  New submissions are impossible because the
+        # polling thread has stopped.
+        self._msg_handler_pool.shutdown(wait=False)
         print("⏹ Polling stopped")
 
     def is_listening(self):

@@ -4,7 +4,6 @@ Buyer Handler - Processes buyer commands and order creation
 
 import os
 import re
-import sys
 import time
 import logging
 from typing import Optional, Tuple
@@ -523,11 +522,8 @@ class BuyerHandler:
             futures_wait(send_tasks, timeout=30)
         finally:
             # Shut down without waiting for timed-out tasks so we don't block.
-            # cancel_futures was added in Python 3.9; guard for older runtimes.
-            if sys.version_info >= (3, 9):
-                executor.shutdown(wait=False, cancel_futures=True)
-            else:
-                executor.shutdown(wait=False)
+            # cancel_futures requires Python 3.9+; this project targets 3.9+.
+            executor.shutdown(wait=False, cancel_futures=True)
 
         # Retry failed tasks as text-only fallback (no image)
         sent_count = 0
