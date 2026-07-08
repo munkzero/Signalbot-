@@ -5,6 +5,7 @@ Main seller dashboard GUI
 import sys
 import os
 import time
+import threading
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLabel, QPushButton, QTableWidget,
@@ -48,6 +49,20 @@ COMMON_IMAGE_SEARCH_DIRS = [
     'images',
     '.',
 ]
+
+# Catalog/product send timing constants
+_CATALOG_MAX_RETRY_DELAY_SECONDS = 60   # Maximum exponential back-off delay per retry
+_CATALOG_INTER_PRODUCT_DELAY_SECONDS = 2.5  # Pause between sending successive products
+
+# Background worker shutdown timeout
+_WORKER_STOP_TIMEOUT_MS = 500  # Maximum milliseconds to wait for a worker thread to stop
+
+
+def _format_product_id(product_id: Optional[str]) -> str:
+    """Format a product ID with a leading '#' prefix if not already present."""
+    if not product_id:
+        return "N/A"
+    return product_id if product_id.startswith('#') else f"#{product_id}"
 
 
 class PINDialog(QDialog):
@@ -3142,6 +3157,270 @@ class MessageSendThread(QThread):
             self.finished.emit(False, f"Error: {str(e)}")
 
 
+class LoadConversationsWorker(QThread):
+    """Worker thread for loading conversation list without blocking the UI"""
+    finished = pyqtSignal(list)  # list of (contact_id, display_name, last_msg) tuples
+    error = pyqtSignal(str)
+
+    def __init__(self, message_manager, contact_manager, my_signal_id,
+                 contact_cache, contact_cache_lock):
+        super().__init__()
+        self.message_manager = message_manager
+        self.contact_manager = contact_manager
+        self.my_signal_id = my_signal_id
+        self.contact_cache = contact_cache
+        self.contact_cache_lock = contact_cache_lock
+
+    def run(self):
+        try:
+            conversations = self.message_manager.get_all_conversations(self.my_signal_id)
+            result = []
+            for contact_id, conv_data in conversations.items():
+                with self.contact_cache_lock:
+                    if contact_id not in self.contact_cache:
+                        contact = self.contact_manager.get_contact_by_signal_id(contact_id)
+                        self.contact_cache[contact_id] = (
+                            contact.name if contact else contact_id
+                        )
+                    display_name = self.contact_cache[contact_id]
+                last_msg = conv_data['last_message'][:30] if conv_data['last_message'] else ''
+                result.append((contact_id, display_name, last_msg))
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class LoadConversationWorker(QThread):
+    """Worker thread for loading messages in a conversation without blocking the UI"""
+    finished = pyqtSignal(list, str)  # messages list, display_name
+    error = pyqtSignal(str)
+
+    def __init__(self, message_manager, contact_manager, recipient, my_signal_id,
+                 contact_cache, contact_cache_lock):
+        super().__init__()
+        self.message_manager = message_manager
+        self.contact_manager = contact_manager
+        self.recipient = recipient
+        self.my_signal_id = my_signal_id
+        self.contact_cache = contact_cache
+        self.contact_cache_lock = contact_cache_lock
+
+    def run(self):
+        try:
+            with self.contact_cache_lock:
+                if self.recipient not in self.contact_cache:
+                    contact = self.contact_manager.get_contact_by_signal_id(self.recipient)
+                    self.contact_cache[self.recipient] = (
+                        contact.name if contact else self.recipient
+                    )
+                display_name = self.contact_cache[self.recipient]
+            messages = self.message_manager.get_conversation(self.recipient, self.my_signal_id)
+            self.finished.emit(messages, display_name)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class SendCatalogWorker(QThread):
+    """Worker thread for sending a product catalog without blocking the UI"""
+    progress = pyqtSignal(int, int, str)   # current index, total, label text
+    finished = pyqtSignal(int, int, list)  # sent_count, failed_count, missing_image_names
+    cancelled = pyqtSignal(int, int)       # sent_count, total
+
+    def __init__(self, signal_handler, message_manager, recipient, my_signal_id,
+                 products, resolve_image_fn, optimize_image_fn):
+        super().__init__()
+        self.signal_handler = signal_handler
+        self.message_manager = message_manager
+        self.recipient = recipient
+        self.my_signal_id = my_signal_id
+        self.products = products
+        self.resolve_image_fn = resolve_image_fn
+        self.optimize_image_fn = optimize_image_fn
+        self._cancel_requested = False
+
+    def cancel(self):
+        self._cancel_requested = True
+
+    def run(self):
+        total_products = len(self.products)
+        sent_count = 0
+        failed_count = 0
+        missing_images = []
+
+        # Send catalog header
+        header = f"🛍️ PRODUCT CATALOG ({total_products} items)\n"
+        try:
+            self.signal_handler.send_message(recipient=self.recipient, message=header)
+        except Exception as e:
+            print(f"Failed to send catalog header: {e}")
+
+        for index, product in enumerate(self.products, 1):
+            if self._cancel_requested:
+                self.cancelled.emit(sent_count, total_products)
+                return
+
+            self.progress.emit(index - 1, total_products,
+                               f"Sending product {index}/{total_products}: {product.name}")
+
+            product_id_str = _format_product_id(product.product_id)
+            message = (
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"{product_id_str} - {product.name}\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"{product.description}\n\n"
+                f"💰 Price: {product.price} {product.currency}\n"
+                f"📊 Stock: {product.stock} available\n"
+                f"🏷️ Category: {product.category or 'N/A'}\n"
+            )
+
+            # Resolve and optimize image
+            attachments = []
+            if product.image_path:
+                resolved_path = self.resolve_image_fn(product.image_path)
+                if resolved_path:
+                    optimized_path = self.optimize_image_fn(resolved_path)
+                    attachments.append(optimized_path)
+                else:
+                    missing_images.append(product.name)
+
+            # Send with exponential backoff retry logic
+            max_retries = 5
+            success = False
+
+            for attempt in range(1, max_retries + 1):
+                if self._cancel_requested:
+                    self.cancelled.emit(sent_count, total_products)
+                    return
+                try:
+                    result = self.signal_handler.send_message(
+                        recipient=self.recipient,
+                        message=message.strip(),
+                        attachments=attachments if attachments else None
+                    )
+                    if result:
+                        sent_count += 1
+                        success = True
+                        if self.my_signal_id:
+                            try:
+                                self.message_manager.add_message(
+                                    sender_signal_id=self.my_signal_id,
+                                    recipient_signal_id=self.recipient,
+                                    message_body=message.strip(),
+                                    is_outgoing=True
+                                )
+                            except Exception as e:
+                                print(f"Failed to save message to history: {e}")
+                        break
+                    else:
+                        print(f"Attempt {attempt} for {product.name} failed")
+                        if attempt < max_retries:
+                            retry_delay = min(3 * (2 ** (attempt - 1)), _CATALOG_MAX_RETRY_DELAY_SECONDS)
+                            time.sleep(retry_delay)
+                except Exception as e:
+                    print(f"Error on attempt {attempt} for {product.name}: {e}")
+                    if attempt < max_retries:
+                        retry_delay = min(3 * (2 ** (attempt - 1)), _CATALOG_MAX_RETRY_DELAY_SECONDS)
+                        time.sleep(retry_delay)
+
+            if not success:
+                if attachments:
+                    print(f"  📝 Attempting text-only fallback for {product.name}...")
+                    try:
+                        result = self.signal_handler.send_message(
+                            recipient=self.recipient,
+                            message=message.strip(),
+                            attachments=None
+                        )
+                        if result:
+                            print(f"  ✅ Text-only version sent successfully for {product.name}")
+                            sent_count += 1
+                            success = True
+                            if self.my_signal_id:
+                                try:
+                                    self.message_manager.add_message(
+                                        sender_signal_id=self.my_signal_id,
+                                        recipient_signal_id=self.recipient,
+                                        message_body=message.strip(),
+                                        is_outgoing=True
+                                    )
+                                except Exception as e:
+                                    print(f"Failed to save message to history: {e}")
+                        else:
+                            print(f"  ✗ Text-only fallback also failed for {product.name}")
+                            failed_count += 1
+                    except Exception as e:
+                        print(f"  ✗ Text-only fallback error for {product.name}: {e}")
+                        failed_count += 1
+                else:
+                    failed_count += 1
+
+                if not success:
+                    print(f"Product {product.name} failed after {max_retries} attempts")
+
+            if index < total_products and not self._cancel_requested:
+                time.sleep(_CATALOG_INTER_PRODUCT_DELAY_SECONDS)
+
+        self.finished.emit(sent_count, failed_count, missing_images)
+
+
+class SendProductWorker(QThread):
+    """Worker thread for sending selected products without blocking the UI"""
+    finished = pyqtSignal(int, int, list)  # sent_count, total, messages_sent
+    error = pyqtSignal(str)
+
+    def __init__(self, signal_handler, message_manager, recipient, my_signal_id, products):
+        super().__init__()
+        self.signal_handler = signal_handler
+        self.message_manager = message_manager
+        self.recipient = recipient
+        self.my_signal_id = my_signal_id
+        self.products = products
+
+    def run(self):
+        sent_count = 0
+        messages_sent = []
+
+        for product in self.products:
+            product_id_str = _format_product_id(product.product_id)
+            message = (
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"{product_id_str} - {product.name}\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"{product.description}\n\n"
+                f"💰 Price: {product.price} {product.currency}\n"
+                f"📊 Stock: {product.stock} available\n"
+                f"🏷️ Category: {product.category or 'N/A'}\n"
+            )
+
+            attachments = []
+            if product.image_path and os.path.exists(product.image_path):
+                attachments.append(product.image_path)
+
+            try:
+                success = self.signal_handler.send_message(
+                    recipient=self.recipient,
+                    message=message,
+                    attachments=attachments if attachments else None
+                )
+                if success:
+                    sent_count += 1
+                    messages_sent.append(message)
+                    if self.my_signal_id:
+                        try:
+                            self.message_manager.add_message(
+                                sender_signal_id=self.my_signal_id,
+                                recipient_signal_id=self.recipient,
+                                message_body=message,
+                                is_outgoing=True
+                            )
+                        except Exception as e:
+                            print(f"Error saving product message: {e}")
+            except Exception as e:
+                print(f"Error sending product {product.name}: {e}")
+
+        self.finished.emit(sent_count, len(self.products), messages_sent)
+
+
 class MessagesTab(QWidget):
     """Messaging tab with conversation list and chat window"""
     
@@ -3157,6 +3436,15 @@ class MessagesTab(QWidget):
         self.current_recipient = None
         self.my_signal_id = None
         self.current_messages = []  # Store message objects for current conversation
+        self._contact_name_cache = {}  # Cache for contact name lookups to reduce DB queries
+        self._contact_name_lock = threading.Lock()  # Protects concurrent cache writes
+
+        # Background worker references (kept to allow cleanup and prevent duplicates)
+        self._load_conv_worker = None
+        self._load_msg_worker = None
+        self._catalog_worker = None
+        self._catalog_progress = None
+        self._product_worker = None
         
         # Get seller's Signal ID
         seller = self.seller_manager.get_seller(1)
@@ -3274,26 +3562,6 @@ class MessagesTab(QWidget):
         
         self.attachment_path = None
         self.send_thread = None  # Thread for async message sending
-    
-    @staticmethod
-    def _format_product_id(product_id: Optional[str]) -> str:
-        """
-        Format product ID consistently
-        
-        Args:
-            product_id: Product ID to format
-            
-        Returns:
-            Formatted product ID string
-        """
-        if not product_id:
-            return "N/A"
-        
-        # Add # prefix if not already present
-        if not product_id.startswith('#'):
-            return f"#{product_id}"
-        
-        return product_id
     
     def _resolve_image_path(self, image_path: str) -> Optional[str]:
         """
@@ -3416,37 +3684,64 @@ class MessagesTab(QWidget):
         text = msg.message_body or "[Attachment]"
         return f"[{timestamp}] {sender_name}: {text}\n"
     
-    def load_conversations(self, force_refresh=False):
-        """Load conversation list from database with caching"""
-        self.conversations_list.clear()
-        
+    def load_conversations(self):
+        """Load conversation list from database using a background thread.
+
+        Each call always fetches fresh data from the database via a background
+        worker so the list is never stale.
+        """
         if not self.my_signal_id:
+            self.conversations_list.clear()
             item = QListWidgetItem("No Signal ID configured")
             item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
             self.conversations_list.addItem(item)
             return
-        
-        # Get all conversations from database (use cache if available)
-        if force_refresh or not self.conversations_cache:
-            self.conversations_cache = self.message_manager.get_all_conversations(self.my_signal_id)
-        
-        conversations = self.conversations_cache
-        
-        if not conversations:
+
+        # Skip if a load is already in progress
+        if self._load_conv_worker and self._load_conv_worker.isRunning():
+            return
+
+        # Show loading placeholder while the worker fetches data
+        self.conversations_list.clear()
+        loading_item = QListWidgetItem("Loading...")
+        loading_item.setFlags(loading_item.flags() & ~Qt.ItemIsSelectable)
+        self.conversations_list.addItem(loading_item)
+
+        self._load_conv_worker = LoadConversationsWorker(
+            self.message_manager, self.contact_manager,
+            self.my_signal_id, self._contact_name_cache, self._contact_name_lock
+        )
+        self._load_conv_worker.finished.connect(self._on_conversations_loaded)
+        self._load_conv_worker.error.connect(self._on_conversations_error)
+        self._load_conv_worker.start()
+
+    def _on_conversations_loaded(self, conversation_data):
+        """Handle conversations loaded in background thread"""
+        self.conversations_list.clear()
+        if not conversation_data:
             item = QListWidgetItem("No conversations yet")
             item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
             self.conversations_list.addItem(item)
         else:
-            for contact_id, conv_data in conversations.items():
-                # Try to get contact name
-                contact = self.contact_manager.get_contact_by_signal_id(contact_id)
-                display_name = contact.name if contact else contact_id
-                
-                last_msg = conv_data['last_message'][:30] if conv_data['last_message'] else ''
+            for contact_id, display_name, last_msg in conversation_data:
                 item = QListWidgetItem(f"{display_name} - {last_msg}...")
                 item.setData(Qt.UserRole, contact_id)
                 self.conversations_list.addItem(item)
-    
+        if self._load_conv_worker:
+            self._load_conv_worker.deleteLater()
+            self._load_conv_worker = None
+
+    def _on_conversations_error(self, error_msg):
+        """Handle error loading conversations"""
+        self.conversations_list.clear()
+        item = QListWidgetItem("Error loading conversations")
+        item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+        self.conversations_list.addItem(item)
+        print(f"Error loading conversations: {error_msg}")
+        if self._load_conv_worker:
+            self._load_conv_worker.deleteLater()
+            self._load_conv_worker = None
+
     def filter_conversations(self, text):
         """Filter conversations based on search text"""
         search_text = text.lower()
@@ -3456,31 +3751,84 @@ class MessagesTab(QWidget):
                 item.setHidden(False)
             else:
                 item.setHidden(True)
-    
+
+    def _start_load_msg_worker(self, recipient):
+        """Cancel any running message loader and start a new one for ``recipient``."""
+        if self._load_msg_worker and self._load_msg_worker.isRunning():
+            try:
+                self._load_msg_worker.finished.disconnect(self._on_conversation_loaded)
+            except TypeError:
+                pass
+            try:
+                self._load_msg_worker.error.disconnect(self._on_conversation_error)
+            except TypeError:
+                pass
+            self._load_msg_worker.quit()
+            if not self._load_msg_worker.wait(_WORKER_STOP_TIMEOUT_MS):
+                print("Warning: previous message-load worker did not stop in time; "
+                      "proceeding with new worker anyway")
+                self._load_msg_worker.terminate()
+
+        self._load_msg_worker = LoadConversationWorker(
+            self.message_manager, self.contact_manager,
+            recipient, self.my_signal_id,
+            self._contact_name_cache, self._contact_name_lock
+        )
+        return self._load_msg_worker
+
     def load_conversation(self, item):
-        """Load selected conversation from database"""
+        """Load selected conversation from database using a background thread"""
         if not item or not item.flags() & Qt.ItemIsSelectable:
             return
-        
+
         recipient = item.data(Qt.UserRole)
-        if recipient and self.my_signal_id:
-            self.current_recipient = recipient
-            
-            # Try to get contact name
-            contact = self.contact_manager.get_contact_by_signal_id(recipient)
-            display_name = contact.name if contact else recipient
-            self.chat_header.setText(f"Chat with {display_name}")
-            
-            # Load message history from database
-            self.message_history.clear()
-            messages = self.message_manager.get_conversation(recipient, self.my_signal_id)
-            
-            # Store messages for deletion feature
-            self.current_messages = messages
-            
-            for msg in messages:
-                self.message_history.append(self._format_message_display(msg, display_name))
-    
+        if not recipient or not self.my_signal_id:
+            return
+
+        self.current_recipient = recipient
+        self.chat_header.setText("Loading...")
+        self.message_history.clear()
+
+        worker = self._start_load_msg_worker(recipient)
+        worker.finished.connect(self._on_conversation_loaded)
+        worker.error.connect(self._on_conversation_error)
+        worker.start()
+
+    def _on_conversation_loaded(self, messages, display_name):
+        """Handle conversation messages loaded in background thread"""
+        # Capture scroll state before clearing so we can honour the user's position
+        scrollbar = self.message_history.verticalScrollBar()
+        was_at_bottom = (scrollbar.maximum() == 0 or
+                         scrollbar.value() >= scrollbar.maximum() - 5)
+        self.chat_header.setText(f"Chat with {display_name}")
+        self.message_history.clear()
+        self.current_messages = messages
+        for msg in messages:
+            self.message_history.append(self._format_message_display(msg, display_name))
+        # Auto-scroll to the latest message only when the user was already at the bottom
+        if was_at_bottom:
+            scrollbar.setValue(scrollbar.maximum())
+        if self._load_msg_worker:
+            self._load_msg_worker.deleteLater()
+            self._load_msg_worker = None
+
+    def _on_conversation_refresh_loaded(self, messages, display_name):
+        """Handle messages reloaded after an in-conversation change (e.g. delete).
+
+        Same as ``_on_conversation_loaded`` but also refreshes the conversation
+        list sidebar so preview text and ordering stay current.
+        """
+        self._on_conversation_loaded(messages, display_name)
+        self.load_conversations()
+
+    def _on_conversation_error(self, error_msg):
+        """Handle error loading conversation messages"""
+        self.chat_header.setText("Error loading conversation")
+        print(f"Error loading conversation: {error_msg}")
+        if self._load_msg_worker:
+            self._load_msg_worker.deleteLater()
+            self._load_msg_worker = None
+
     def compose_message(self):
         """Open compose message dialog"""
         dialog = ComposeMessageDialog(
@@ -3491,29 +3839,28 @@ class MessagesTab(QWidget):
             parent=self
         )
         if dialog.exec_() == QDialog.Accepted:
-            self.load_conversations(force_refresh=True)
-    
+            self.load_conversations()
+
     def message_from_contacts(self):
         """Open contact picker and start conversation"""
         dialog = ContactPickerDialog(self.contact_manager, parent=self)
         if dialog.exec_() == QDialog.Accepted:
             contact = dialog.get_selected_contact()
             if contact:
-                # Set current recipient and load conversation
                 self.current_recipient = contact.signal_id
-                self.chat_header.setText(f"Chat with {contact.name}")
-                
-                # Load message history
+                # Pre-populate cache with the known contact name so the worker
+                # doesn't need a DB round-trip for this contact
+                with self._contact_name_lock:
+                    self._contact_name_cache[contact.signal_id] = contact.name
+                self.chat_header.setText("Loading...")
                 self.message_history.clear()
-                messages = self.message_manager.get_conversation(contact.signal_id, self.my_signal_id)
-                
-                # Store messages for deletion feature
-                self.current_messages = messages
-                
-                for msg in messages:
-                    self.message_history.append(self._format_message_display(msg, contact.name))
-                
-                # Focus on message input
+
+                worker = self._start_load_msg_worker(contact.signal_id)
+                worker.finished.connect(self._on_conversation_loaded)
+                worker.error.connect(self._on_conversation_error)
+                worker.start()
+
+                # Focus on message input immediately while messages load in background
                 self.message_input.setFocus()
     
     def send_message(self):
@@ -3581,7 +3928,7 @@ class MessagesTab(QWidget):
             # Ensure contact exists
             self.contact_manager.get_or_create_contact(self.current_recipient)
             # Refresh conversations list
-            self.load_conversations(force_refresh=True)
+            self.load_conversations()
         except Exception as e:
             print(f"Error saving message to database: {e}")
             # Show warning to user if database save fails
@@ -3592,275 +3939,139 @@ class MessagesTab(QWidget):
             )
     
     def send_product(self):
-        """Open product picker and send product info"""
+        """Open product picker and send product info using a background thread"""
         if not self.current_recipient:
             QMessageBox.warning(self, "No Recipient", "Please select a conversation first")
             return
-        
+
         if not self.product_manager:
             QMessageBox.warning(self, "Error", "Product manager not available")
             return
-        
+
         dialog = ProductPickerDialog(self.product_manager, self)
         if dialog.exec_() == QDialog.Accepted:
             products = dialog.get_selected_products()
-            
+
             if not products:
                 QMessageBox.warning(self, "No Selection", "Please select at least one product")
                 return
-            
-            # Send each selected product
-            sent_count = 0
-            for product in products:
-                # Format product message with ID
-                product_id_str = self._format_product_id(product.product_id)
-                message = f"""━━━━━━━━━━━━━━━━━
-{product_id_str} - {product.name}
-━━━━━━━━━━━━━━━━━
-{product.description}
 
-💰 Price: {product.price} {product.currency}
-📊 Stock: {product.stock} available
-🏷️ Category: {product.category or 'N/A'}
-"""
-                
-                # CRITICAL: Attach product image
-                attachments = []
-                if product.image_path and os.path.exists(product.image_path):
-                    attachments.append(product.image_path)
-                else:
+            # Warn about products without images before starting the background send
+            for product in products:
+                if not product.image_path or not os.path.exists(product.image_path):
                     QMessageBox.warning(
-                        self, 
-                        "No Image", 
+                        self,
+                        "No Image",
                         f"Product '{product.name}' has no image. Sending text only."
                     )
-                
-                # Send via Signal
-                try:
-                    success = self.signal_handler.send_message(
-                        recipient=self.current_recipient,
-                        message=message,
-                        attachments=attachments if attachments else None
-                    )
-                    
-                    if success:
-                        sent_count += 1
-                        
-                        # Save to message history
-                        if self.my_signal_id:
-                            try:
-                                self.message_manager.add_message(
-                                    sender_signal_id=self.my_signal_id,
-                                    recipient_signal_id=self.current_recipient,
-                                    message_body=message,
-                                    is_outgoing=True
-                                )
-                                
-                                # Update UI
-                                timestamp = datetime.now().strftime("%H:%M")
-                                self.message_history.append(f"[{timestamp}] You: {message}\n")
-                            except Exception as e:
-                                print(f"Error saving product message: {e}")
-                except Exception as e:
-                    print(f"Error sending product {product.name}: {e}")
-            
-            if sent_count > 0:
-                QMessageBox.information(self, "Success", f"Sent {sent_count} product(s)")
-                self.load_conversations(force_refresh=True)
-            else:
-                QMessageBox.warning(self, "Failed", "Failed to send products")
-    
+
+            self._product_worker = SendProductWorker(
+                self.signal_handler, self.message_manager,
+                self.current_recipient, self.my_signal_id, products
+            )
+            self._product_worker.finished.connect(self._on_products_sent)
+            self._product_worker.start()
+
+    def _on_products_sent(self, sent_count, total, messages_sent):
+        """Handle product send completion"""
+        timestamp = datetime.now().strftime("%H:%M")
+        for msg in messages_sent:
+            self.message_history.append(f"[{timestamp}] You: {msg}\n")
+
+        if sent_count > 0:
+            QMessageBox.information(self, "Success", f"Sent {sent_count} product(s)")
+            self.load_conversations()
+        else:
+            QMessageBox.warning(self, "Failed", "Failed to send products")
+
+        if self._product_worker:
+            self._product_worker.deleteLater()
+            self._product_worker = None
+
     def send_catalog(self):
-        """Send product catalog to current recipient with robust error handling"""
+        """Send product catalog to current recipient using a background thread"""
         if not self.current_recipient:
             QMessageBox.warning(self, "No Recipient", "Please select a conversation first.")
             return
-        
+
         if not self.product_manager:
             QMessageBox.warning(self, "Error", "Product manager not available")
             return
-        
-        # Get all active products
+
         products = self.product_manager.list_products(active_only=True)
-        
         if not products:
             QMessageBox.information(self, "No Products", "No active products to send.")
             return
-        
-        total_products = len(products)
-        
-        # Send catalog header
-        header = f"🛍️ PRODUCT CATALOG ({total_products} items)\n"
-        try:
-            self.signal_handler.send_message(
-                recipient=self.current_recipient,
-                message=header
-            )
-        except Exception as e:
-            print(f"Failed to send catalog header: {e}")
-        
-        sent_count = 0
-        failed_count = 0
-        missing_images = []
-        
-        # Progress dialog
-        progress = QProgressDialog(
-            f"Sending catalog...",
-            "Cancel",
-            0,
-            total_products,
-            self
-        )
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setWindowTitle("Sending Catalog")
-        
-        # Send each product
-        for index, product in enumerate(products, 1):
-            # Update progress
-            progress.setValue(index - 1)
-            progress.setLabelText(f"Sending product {index}/{total_products}: {product.name}")
-            
-            # Check if user cancelled
-            if progress.wasCanceled():
-                QMessageBox.information(
-                    self,
-                    "Cancelled",
-                    f"Catalog sending cancelled. Sent {sent_count}/{total_products} products."
-                )
-                return
-            
-            product_id_str = self._format_product_id(product.product_id)
-            message = f"""━━━━━━━━━━━━━━━━━
-{product_id_str} - {product.name}
-━━━━━━━━━━━━━━━━━
-{product.description}
 
-💰 Price: {product.price} {product.currency}
-📊 Stock: {product.stock} available
-🏷️ Category: {product.category or 'N/A'}
-"""
-            
-            # Resolve and optimize image
-            attachments = []
-            if product.image_path:
-                resolved_path = self._resolve_image_path(product.image_path)
-                
-                if resolved_path:
-                    # Optimize image before sending
-                    optimized_path = self._optimize_image_for_signal(resolved_path)
-                    attachments.append(optimized_path)
-                else:
-                    missing_images.append(product.name)
-            
-            # Send with exponential backoff retry logic
-            max_retries = 5
-            success = False
-            
-            for attempt in range(1, max_retries + 1):
-                try:
-                    result = self.signal_handler.send_message(
-                        recipient=self.current_recipient,
-                        message=message.strip(),
-                        attachments=attachments if attachments else None
-                    )
-                    
-                    if result:
-                        sent_count += 1
-                        success = True
-                        
-                        # Save to message history
-                        if self.my_signal_id:
-                            try:
-                                self.message_manager.add_message(
-                                    sender_signal_id=self.my_signal_id,
-                                    recipient_signal_id=self.current_recipient,
-                                    message_body=message.strip(),
-                                    is_outgoing=True
-                                )
-                            except Exception as e:
-                                print(f"Failed to save message to history: {e}")
-                        
-                        break  # Exit retry loop
-                        
-                    else:
-                        print(f"Attempt {attempt} for {product.name} failed")
-                        if attempt < max_retries:
-                            # Exponential backoff: 3s, 6s, 12s, 24s, 48s (capped at 60s)
-                            retry_delay = min(3 * (2 ** (attempt - 1)), 60)
-                            time.sleep(retry_delay)
-                            
-                except Exception as e:
-                    print(f"Error on attempt {attempt} for {product.name}: {e}")
-                    
-                    if attempt < max_retries:
-                        # Exponential backoff: 3s, 6s, 12s, 24s, 48s (capped at 60s)
-                        retry_delay = min(3 * (2 ** (attempt - 1)), 60)
-                        time.sleep(retry_delay)
-            
-            if not success:
-                # Try one final time without image (text-only fallback)
-                if attachments:
-                    print(f"  📝 Attempting text-only fallback (no image) for {product.name}...")
-                    try:
-                        result = self.signal_handler.send_message(
-                            recipient=self.current_recipient,
-                            message=message.strip(),
-                            attachments=None  # No image
-                        )
-                        if result:
-                            print(f"  ✅ Text-only version sent successfully for {product.name}")
-                            sent_count += 1
-                            success = True
-                            
-                            # Save to message history
-                            if self.my_signal_id:
-                                try:
-                                    self.message_manager.add_message(
-                                        sender_signal_id=self.my_signal_id,
-                                        recipient_signal_id=self.current_recipient,
-                                        message_body=message.strip(),
-                                        is_outgoing=True
-                                    )
-                                except Exception as e:
-                                    print(f"Failed to save message to history: {e}")
-                        else:
-                            print(f"  ✗ Text-only fallback also failed for {product.name}")
-                            failed_count += 1
-                    except Exception as e:
-                        print(f"  ✗ Text-only fallback error for {product.name}: {e}")
-                        failed_count += 1
-                else:
-                    failed_count += 1
-                    
-                if not success:
-                    print(f"Product {product.name} failed after {max_retries} attempts")
-            
-            # Delay between products (already correct at 2.5s)
-            if index < total_products:
-                time.sleep(2.5)
-        
-        progress.setValue(total_products)
-        
-        # Show results
-        result_msg = f"Catalog Send Complete\n\n"
+        total_products = len(products)
+
+        # Create a non-blocking progress dialog; the worker runs in its own thread
+        self._catalog_progress = QProgressDialog(
+            "Sending catalog...", "Cancel", 0, total_products, self
+        )
+        self._catalog_progress.setWindowModality(Qt.WindowModal)
+        self._catalog_progress.setWindowTitle("Sending Catalog")
+        self._catalog_progress.show()
+
+        self._catalog_worker = SendCatalogWorker(
+            self.signal_handler, self.message_manager,
+            self.current_recipient, self.my_signal_id,
+            products, self._resolve_image_path, self._optimize_image_for_signal
+        )
+        self._catalog_worker.progress.connect(self._on_catalog_progress)
+        self._catalog_worker.finished.connect(self._on_catalog_finished)
+        self._catalog_worker.cancelled.connect(self._on_catalog_cancelled)
+        self._catalog_progress.canceled.connect(self._catalog_worker.cancel)
+        self._catalog_worker.start()
+
+    def _on_catalog_progress(self, current, total, label):
+        """Update catalog send progress dialog from background thread"""
+        if self._catalog_progress:
+            self._catalog_progress.setValue(current)
+            self._catalog_progress.setLabelText(label)
+
+    def _on_catalog_finished(self, sent_count, failed_count, missing_images):
+        """Handle catalog send completion"""
+        total_products = sent_count + failed_count
+        if self._catalog_progress:
+            self._catalog_progress.setValue(total_products)
+            self._catalog_progress.close()
+            self._catalog_progress = None
+
+        result_msg = "Catalog Send Complete\n\n"
         result_msg += f"✅ Successfully sent: {sent_count}/{total_products} products\n"
-        
         if failed_count > 0:
             result_msg += f"❌ Failed: {failed_count} products\n"
-        
         if missing_images:
-            result_msg += f"\n⚠ Images not found for:\n"
+            result_msg += "\n⚠ Images not found for:\n"
             result_msg += "\n".join(f"  • {name}" for name in missing_images)
-        
+
         if sent_count == total_products:
             QMessageBox.information(self, "Success", result_msg)
         elif sent_count > 0:
             QMessageBox.warning(self, "Partial Success", result_msg)
         else:
             QMessageBox.critical(self, "Failed", result_msg)
-        
-        self.load_conversations(force_refresh=True)
-    
+
+        self.load_conversations()
+
+        if self._catalog_worker:
+            self._catalog_worker.deleteLater()
+            self._catalog_worker = None
+
+    def _on_catalog_cancelled(self, sent_count, total):
+        """Handle catalog send cancellation"""
+        if self._catalog_progress:
+            self._catalog_progress.close()
+            self._catalog_progress = None
+        QMessageBox.information(
+            self, "Cancelled",
+            f"Catalog sending cancelled. Sent {sent_count}/{total} products."
+        )
+        if self._catalog_worker:
+            self._catalog_worker.deleteLater()
+            self._catalog_worker = None
+
     def attach_image(self):
         """Attach image to message"""
         file_path, _ = QFileDialog.getOpenFileName(
@@ -3895,7 +4106,7 @@ class MessagesTab(QWidget):
         if sender not in self.conversations:
             self.conversations[sender] = []
             # Reload conversations to show new one
-            self.load_conversations(force_refresh=True)
+            self.load_conversations()
         
         self.conversations[sender].append(message)
         
@@ -3939,7 +4150,7 @@ class MessagesTab(QWidget):
                     self.message_history.clear()
                 
                 # Reload conversations
-                self.load_conversations(force_refresh=True)
+                self.load_conversations()
                 QMessageBox.information(self, "Success", "Conversation deleted")
             else:
                 QMessageBox.warning(self, "Error", "Failed to delete conversation")
@@ -4036,27 +4247,16 @@ class MessagesTab(QWidget):
                 QMessageBox.warning(self, "Error", "Failed to delete message")
     
     def load_conversation_refresh(self):
-        """Reload current conversation without changing selection"""
+        """Reload current conversation without changing selection using a background thread"""
         if not self.current_recipient or not self.my_signal_id:
             return
-        
-        # Get contact name
-        contact = self.contact_manager.get_contact_by_signal_id(self.current_recipient)
-        display_name = contact.name if contact else self.current_recipient
-        
-        # Reload message history from database
-        self.message_history.clear()
-        messages = self.message_manager.get_conversation(self.current_recipient, self.my_signal_id)
-        
-        # Store messages for deletion feature
-        self.current_messages = messages
-        
-        for msg in messages:
-            self.message_history.append(self._format_message_display(msg, display_name))
-        
-        # Refresh conversation list
-        self.load_conversations(force_refresh=True)
-    
+
+        worker = self._start_load_msg_worker(self.current_recipient)
+        # Use the dedicated refresh handler so the conversations sidebar is also updated
+        worker.finished.connect(self._on_conversation_refresh_loaded)
+        worker.error.connect(self._on_conversation_error)
+        worker.start()
+
     def clear_all_messages(self):
         """Clear all messages in current conversation"""
         if not self.current_recipient:
@@ -4073,7 +4273,7 @@ class MessagesTab(QWidget):
         if reply == QMessageBox.Yes:
             if self.message_manager.delete_conversation(self.current_recipient, self.my_signal_id):
                 self.message_history.clear()
-                self.load_conversations(force_refresh=True)
+                self.load_conversations()
                 QMessageBox.information(self, "Success", "All messages cleared")
             else:
                 QMessageBox.warning(self, "Error", "Failed to clear messages")
