@@ -7,10 +7,12 @@ from typing import Optional, Callable, Dict, List
 import json
 import logging
 import subprocess
+import sys
 import threading
 import time
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,9 @@ class SignalHandler:
         self.listen_thread = None
         self.trusted_contacts = set()  # Track already-trusted contacts to avoid redundant calls
         self._trust_attempted = set()  # Cache of contacts we've attempted to trust
+        # Bounded pool for processing incoming messages (prevents resource exhaustion
+        # if many messages arrive in quick succession).
+        self._msg_handler_pool = ThreadPoolExecutor(max_workers=10, thread_name_prefix="MsgHandler")
 
         print(f"DEBUG: SignalHandler initialized with phone_number={self.phone_number}")
 
@@ -354,13 +359,14 @@ class SignalHandler:
         print("DEBUG: Polling started (5-second intervals)")
     
     def stop_listening(self):
-        """Stop polling loop."""
+        """Stop polling loop and shut down the message handler pool."""
         self.listening = False
         if self.listen_thread:
             # Allow up to 10 seconds for the current poll cycle (subprocess
             # timeout is 30 s, but the thread checks self.listening between
             # polls and exits promptly once the flag is cleared).
             self.listen_thread.join(timeout=10)
+        self._msg_handler_pool.shutdown(wait=True)
         print("⏹ Polling stopped")
 
     def is_listening(self):
@@ -397,12 +403,9 @@ class SignalHandler:
                         try:
                             message_data = json.loads(line)
                             if message_data.get("envelope"):
-                                threading.Thread(
-                                    target=self._handle_message,
-                                    args=(message_data,),
-                                    daemon=True,
-                                    name="MsgHandler",
-                                ).start()
+                                self._msg_handler_pool.submit(
+                                    self._handle_message, message_data
+                                )
                         except json.JSONDecodeError:
                             pass
                 elif result.returncode != 0:
