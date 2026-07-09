@@ -2743,6 +2743,20 @@ class OrdersTab(QWidget):
         info_layout.addWidget(QLabel("<b>Order Status:</b>"), 5, 0)
         info_layout.addWidget(QLabel(order.order_status), 5, 1)
         
+        # Delivery address (shipping_info) — always show when available
+        row_idx = 6
+        if order.shipping_info:
+            info_layout.addWidget(QLabel("<b>Delivery Address:</b>"), row_idx, 0)
+            address_label = QLabel(order.shipping_info)
+            address_label.setWordWrap(True)
+            info_layout.addWidget(address_label, row_idx, 1)
+            row_idx += 1
+        
+        # Tracking number — show for shipped orders that are still in details view
+        if order.tracking_number:
+            info_layout.addWidget(QLabel("<b>Tracking #:</b>"), row_idx, 0)
+            info_layout.addWidget(QLabel(order.tracking_number), row_idx, 1)
+        
         info_widget.setLayout(info_layout)
         self.details_layout.addWidget(info_widget)
         
