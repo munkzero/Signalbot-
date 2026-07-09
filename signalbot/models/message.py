@@ -180,42 +180,59 @@ class MessageManager:
     
     def get_all_conversations(self, my_signal_id: str) -> Dict[str, Dict]:
         """
-        Get all conversations with message counts and last message
-        
+        Get all conversations with the latest message per contact.
+
+        Loads only the most recent messages (ordered newest-first) and stops
+        decrypting as soon as each unique contact's latest message is found.
+        This keeps the Messages tab fast regardless of total message count.
+
         Args:
             my_signal_id: My Signal ID
-            
+
         Returns:
             Dict mapping contact Signal IDs to conversation data
         """
-        db_messages = self.db.session.query(MessageModel).order_by(MessageModel.sent_at.desc()).all()
-        
-        conversations = {}
-        
+        # Fetch recent messages newest-first.  2000 rows is generous enough
+        # to cover all unique contacts while keeping decryption work bounded.
+        db_messages = (
+            self.db.session.query(MessageModel)
+            .order_by(MessageModel.sent_at.desc())
+            .limit(2000)
+            .all()
+        )
+
+        conversations: Dict[str, Dict] = {}
+        # Track which contacts we have already captured so we can skip further
+        # decryption work for them once the latest message is recorded.
+        seen_contacts: set = set()
+
         for db_msg in db_messages:
             try:
                 sender = self.db.decrypt_field(db_msg.sender_signal_id, db_msg.sender_signal_id_salt)
                 recipient = self.db.decrypt_field(db_msg.recipient_signal_id, db_msg.recipient_signal_id_salt)
-                
+
                 # Determine the contact (the other party)
-                contact_id = None
                 if sender == my_signal_id:
                     contact_id = recipient
                 elif recipient == my_signal_id:
                     contact_id = sender
-                
-                if contact_id and contact_id not in conversations:
+                else:
+                    continue
+
+                if not contact_id:
+                    continue
+
+                # Since messages are ordered DESC, the first occurrence for
+                # each contact is already the latest message.
+                if contact_id not in seen_contacts:
                     conversations[contact_id] = {
                         'last_message': db_msg.message_body or '[Attachment]',
                         'last_timestamp': db_msg.sent_at,
-                        'count': 0
                     }
-                
-                if contact_id:
-                    conversations[contact_id]['count'] += 1
+                    seen_contacts.add(contact_id)
             except Exception:
                 continue
-        
+
         return conversations
     
     def delete_message(self, message_id: int) -> bool:

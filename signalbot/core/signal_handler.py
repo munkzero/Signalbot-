@@ -381,85 +381,186 @@ class SignalHandler:
         """
         return self.listening
 
+    def _dispatch_message(self, sender: str, message_text: str, timestamp: int):
+        """
+        Process a single incoming message: call buyer handler and registered callbacks.
+
+        Args:
+            sender: Sender's Signal identifier (phone number or UUID).
+            message_text: Decoded message body.
+            timestamp: Message timestamp in milliseconds.
+        """
+        print(f"✅ Received message from {sender}: {message_text[:50]}")
+
+        message = {
+            'sender': sender,
+            'text': message_text,
+            'timestamp': timestamp,
+            'is_group': False,
+            'group_id': None,
+            'recipient_identity': self.phone_number,
+        }
+
+        if self.buyer_handler and message_text:
+            try:
+                print(f"DEBUG: Processing buyer command from {sender}")
+                self.buyer_handler.handle_buyer_message(sender, message_text, self.phone_number)
+            except Exception as e:
+                print(f"ERROR: Error in buyer handler: {e}")
+
+        for callback in self.message_callbacks:
+            try:
+                callback(message)
+            except Exception as e:
+                print(f"ERROR: Error in message callback: {e}")
+
+    def _parse_json_output(self, stdout: str):
+        """
+        Parse JSON-mode output from ``signal-cli receive --json``.
+
+        Each line is a self-contained JSON envelope.  Only ``dataMessage``
+        envelopes with a non-empty body are dispatched to handlers; receipts,
+        typing indicators and sync messages are silently ignored.
+
+        Args:
+            stdout: Raw stdout string from the subprocess.
+        """
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"DEBUG: Non-JSON line from signal-cli: {line[:80]}")
+                continue
+
+            try:
+                envelope = data.get('envelope', {})
+
+                # Prefer sourceNumber (E.164) then source (may be UUID)
+                sender = (
+                    envelope.get('sourceNumber')
+                    or envelope.get('source')
+                    or ''
+                ).strip()
+
+                if not sender or sender == self.phone_number:
+                    continue
+
+                # Auto-trust new contacts in background
+                if sender not in self._trust_attempted:
+                    threading.Thread(
+                        target=self._trust_contact_background,
+                        args=(sender,),
+                        daemon=True,
+                        name=f"Trust-{sender[:10]}",
+                    ).start()
+
+                data_message = envelope.get('dataMessage') or {}
+                message_text = (data_message.get('message') or '').strip()
+
+                if not message_text:
+                    # Receipt, typing indicator, or empty sync — skip silently
+                    continue
+
+                timestamp = envelope.get('timestamp') or int(time.time() * 1000)
+                self._dispatch_message(sender, message_text, timestamp)
+
+            except Exception as exc:
+                print(f"DEBUG: Error processing JSON envelope: {exc}")
+
+    def _parse_text_output(self, stdout: str):
+        """
+        Fallback parser for plain-text ``signal-cli receive`` output.
+
+        Scans for ``Envelope from:`` headers and the ``Body:`` line that
+        follows within the same envelope block.  This handles variable
+        amounts of header lines between the envelope and the body.
+
+        Args:
+            stdout: Raw stdout string from the subprocess.
+        """
+        lines = stdout.splitlines()
+        sender = None
+        timestamp = int(time.time() * 1000)
+
+        for line in lines:
+            stripped = line.strip()
+
+            if stripped.startswith('Envelope from:'):
+                # Reset state for each new envelope
+                sender = None
+                # Extract the first E.164 phone number from the header line
+                phone_match = re.search(r'\+\d{7,15}', stripped)
+                if phone_match:
+                    candidate = phone_match.group(0)
+                    if candidate != self.phone_number:
+                        sender = candidate
+
+            elif stripped.startswith('Timestamp:'):
+                ts_match = re.search(r'\b(\d{13})\b', stripped)
+                if ts_match:
+                    try:
+                        timestamp = int(ts_match.group(1))
+                    except ValueError:
+                        pass
+
+            elif stripped.startswith('Body:') and sender:
+                message_text = stripped[len('Body:'):].strip()
+                if message_text:
+                    if sender not in self._trust_attempted:
+                        threading.Thread(
+                            target=self._trust_contact_background,
+                            args=(sender,),
+                            daemon=True,
+                            name=f"Trust-{sender[:10]}",
+                        ).start()
+                    self._dispatch_message(sender, message_text, timestamp)
+                    sender = None  # Consumed; wait for next envelope
+
     def _polling_loop(self):
         """
         Polling loop: periodically calls ``signal-cli receive`` to fetch
         pending messages. Runs every 5 seconds in a background thread.
+
+        Tries JSON output (``--json``) first for reliable structured parsing;
+        falls back to plain-text parsing if the flag is unsupported.
         """
         poll_interval = 5
+        use_json = True  # Start with JSON mode; disabled on first failure
 
-        print("DEBUG: Entering polling loop (signal-cli receive mode)")
+        print("DEBUG: Entering polling loop (signal-cli receive --json mode)")
 
         while self.listening:
             try:
-                # Use plain receive (no --json) with short timeout
+                cmd = ["signal-cli", "-a", self.phone_number, "receive", "--timeout", "1"]
+                if use_json:
+                    cmd.append("--json")
+
                 result = subprocess.run(
-                    ["signal-cli", "-a", self.phone_number, "receive", "--timeout", "1"],
+                    cmd,
                     capture_output=True,
                     text=True,
                     timeout=30,
                 )
-                if result.returncode == 0 and result.stdout.strip():
-                    # Parse the text output from signal-cli receive
-                    output = result.stdout.strip()
-                    print(f"DEBUG: Received signal-cli output")
-                    
-                    # Parse envelope lines
-                    lines = output.split('\n')
-                    for i, line in enumerate(lines):
-                        line = line.strip()
-                        
-                        # Look for "Envelope from:" lines which indicate a new message
-                        if line.startswith('Envelope from:'):
-                            # Parse sender from envelope
-                            # Example: Envelope from: "Satoshi" +64274268090 (device: 1) to +64274268090
-                            try:
-                                # Extract phone number (looks for pattern like +64274268090)
-                                phone_match = re.search(r'\+\d+', line)
-                                if phone_match:
-                                    sender = phone_match.group(0)
-                                    
-                                    # Look ahead for the message body in subsequent lines
-                                    message_text = ""
-                                    if i + 1 < len(lines):
-                                        # Next line might have timestamp, skip it
-                                        if "Timestamp:" in lines[i + 1]:
-                                            # Message text is usually 2-3 lines after envelope
-                                            if i + 3 < len(lines):
-                                                message_text = lines[i + 3].strip()
-                                        else:
-                                            message_text = lines[i + 1].strip()
-                                    
-                                    if sender and message_text and sender != self.phone_number:
-                                        print(f"✅ Parsed message from {sender}: {message_text[:50]}")
-                                        
-                                        # Create and process message
-                                        message = {
-                                            'sender': sender,
-                                            'text': message_text,
-                                            'timestamp': int(time.time() * 1000),
-                                            'is_group': False,
-                                            'group_id': None,
-                                            'recipient_identity': self.phone_number
-                                        }
-                                        
-                                        # Process buyer commands
-                                        if self.buyer_handler and message_text:
-                                            try:
-                                                print(f"DEBUG: Processing message from {sender}")
-                                                self.buyer_handler.handle_buyer_message(sender, message_text, self.phone_number)
-                                            except Exception as e:
-                                                print(f"ERROR: Error in buyer handler: {e}")
-                                        
-                                        # Call registered callbacks
-                                        for callback in self.message_callbacks:
-                                            try:
-                                                callback(message)
-                                            except Exception as e:
-                                                print(f"ERROR: Error in message callback: {e}")
-                            except Exception as e:
-                                print(f"DEBUG: Error parsing envelope: {e}")
-                                
+
+                if result.returncode != 0 and use_json:
+                    # --json flag may not be supported by this signal-cli version
+                    stderr_lower = result.stderr.lower()
+                    if 'unknown option' in stderr_lower or 'unrecognized' in stderr_lower or '--json' in stderr_lower:
+                        print("WARNING: signal-cli --json not supported; falling back to text mode")
+                        use_json = False
+                        # Retry immediately without --json
+                        time.sleep(0)
+                        continue
+
+                if result.stdout.strip():
+                    if use_json:
+                        self._parse_json_output(result.stdout)
+                    else:
+                        self._parse_text_output(result.stdout)
+
             except FileNotFoundError:
                 print("ERROR: signal-cli not found; polling mode unavailable")
                 break
@@ -581,8 +682,10 @@ Thank you for your purchase!
     
     def send_shipping_notification(self, recipient: str, order_id: str, tracking_number: str, shipped_at):
         """
-        Send shipping notification to customer
-        
+        Send shipping notification to customer.
+
+        Message format: "Your order is on the way! Tracking: [number]"
+
         Args:
             recipient: Buyer's phone number
             order_id: Order ID
@@ -590,32 +693,29 @@ Thank you for your purchase!
             shipped_at: DateTime when order was shipped
         """
         from datetime import datetime
-        
+
         # Format shipped date
         if shipped_at:
             shipped_date = shipped_at.strftime("%B %d, %Y")
         else:
             shipped_date = datetime.utcnow().strftime("%B %d, %Y")
-        
-        # Build base message
+
+        # Build message — lead with the customer-facing line matching the spec
         message_parts = [
-            f"🚚 Your order #{order_id} has been shipped!",
+            f"📦 Your order is on the way!",
             "",
         ]
-        
-        # Add tracking number if provided
+
         if tracking_number and tracking_number.strip():
-            message_parts.append(f"Tracking Number: {tracking_number}")
-        
-        # Add shipped date and footer
+            message_parts.append(f"Tracking: {tracking_number.strip()}")
+
         message_parts.extend([
+            f"Order: #{order_id}",
             f"Shipped: {shipped_date}",
             "",
-            "Your package is on its way! 📦",
-            "",
-            "Thanks for your order!"
+            "Thanks for your order! 🎉"
         ])
-        
+
         message = "\n".join(message_parts)
         self.send_message(recipient, message)
     
