@@ -551,8 +551,7 @@ class SignalHandler:
                     if 'unknown option' in stderr_lower or 'unrecognized' in stderr_lower or '--json' in stderr_lower:
                         print("WARNING: signal-cli --json not supported; falling back to text mode")
                         use_json = False
-                        # Retry immediately without --json
-                        time.sleep(0)
+                        # Retry immediately in text mode (skip the poll-interval sleep)
                         continue
 
                 if result.stdout.strip():
@@ -702,7 +701,7 @@ Thank you for your purchase!
 
         # Build message — lead with the customer-facing line matching the spec
         message_parts = [
-            f"📦 Your order is on the way!",
+            f"🚚 Your order is on the way!",
             "",
         ]
 
