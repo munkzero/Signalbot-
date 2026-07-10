@@ -5,7 +5,6 @@ Buyer Handler - Processes buyer commands and order creation
 import os
 import re
 import time
-import secrets
 import logging
 from typing import Optional, Tuple
 from datetime import datetime, timedelta
@@ -673,8 +672,9 @@ We apologize for the inconvenience and appreciate your patience.
                 return  # Do not create order
             
             # Generate payment address from wallet (real subaddress)
-            # Generate the order ID upfront so it can be used as the subaddress label
-            order_id = f"ORD-{secrets.token_hex(8).upper()}"
+            # Generate the order ID upfront so it can be used as the subaddress label.
+            # Reuse the model's static method to ensure consistent ID format.
+            order_id = Order._generate_order_id()
             try:
                 payment_address = self._generate_payment_address(product.id, buyer_signal_id, order_id=order_id)
             except RuntimeError as addr_err:
@@ -799,9 +799,8 @@ Order #{order.order_id}
     
     def _generate_payment_address(self, product_id: int, buyer_signal_id: str, order_id: str = None) -> str:
         """
-        Generate unique Monero sub-address for order using the connected wallet.
-        Falls back to the primary wallet address when a new subaddress cannot be created.
-        
+        Generate a unique Monero sub-address for an order using the connected wallet.
+
         Args:
             product_id: Product ID
             buyer_signal_id: Buyer's Signal ID
@@ -811,7 +810,7 @@ Order #{order.order_id}
             Monero payment address
             
         Raises:
-            RuntimeError: If wallet is not connected and no address can be generated
+            RuntimeError: If the wallet is not connected or subaddress creation fails
         """
         if self.wallet:
             label = f"Order-{order_id}" if order_id else f"Product-{product_id}"
