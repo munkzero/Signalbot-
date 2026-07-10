@@ -240,6 +240,11 @@ class OrderManager:
         db_order.payment_txid = order.payment_txid
         db_order.tracking_number = order.tracking_number
         db_order.shipped_at = order.shipped_at
+        db_order.commission_paid = order.commission_paid
+        if order.commission_txid:
+            db_order.commission_txid = order.commission_txid
+        if order.commission_paid_at:
+            db_order.commission_paid_at = order.commission_paid_at
         
         if order.shipping_info:
             shipping_enc, shipping_salt = self.db.encrypt_field(order.shipping_info)

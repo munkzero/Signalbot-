@@ -74,7 +74,7 @@ class ProductCache:
 class BuyerHandler:
     """Handles buyer commands and order creation"""
     
-    def __init__(self, product_manager, order_manager, signal_handler, seller_signal_id):
+    def __init__(self, product_manager, order_manager, signal_handler, seller_signal_id, wallet=None):
         """
         Initialize buyer handler
         
@@ -83,22 +83,23 @@ class BuyerHandler:
             order_manager: OrderManager instance
             signal_handler: SignalHandler instance
             seller_signal_id: Seller's Signal ID
+            wallet: Optional MoneroWallet or InHouseWallet instance for subaddress generation
         """
         self.product_manager = product_manager
         self.order_manager = order_manager
         self.signal_handler = signal_handler
         self.seller_signal_id = seller_signal_id
+        self.wallet = wallet  # Used to generate real payment subaddresses
         
         # Add product cache
         self.product_cache = ProductCache(product_manager, cache_duration=300)
         
         # Conversation state tracking for order flow
         # Format: {buyer_signal_id: {
-        #     'state': 'awaiting_name'|'awaiting_address',
+        #     'state': 'awaiting_address',
         #     'product_id': str,
         #     'quantity': int,
         #     'recipient_identity': str,
-        #     'name': str (only after name collected),
         #     'address': str (only after address collected)
         # }}
         self.conversation_states = {}
@@ -308,7 +309,7 @@ class BuyerHandler:
     
     def _initiate_order_conversation(self, buyer_signal_id: str, product_id: str, quantity: int, recipient_identity: Optional[str] = None):
         """
-        Start the order conversation flow by asking for customer name
+        Start the order conversation flow by asking for delivery address.
         
         Args:
             buyer_signal_id: Buyer's Signal ID
@@ -316,21 +317,21 @@ class BuyerHandler:
             quantity: Quantity to order
             recipient_identity: Identity that received the message
         """
-        # Store conversation state
+        # Store conversation state — go straight to address collection
         self.conversation_states[buyer_signal_id] = {
-            'state': 'awaiting_name',
+            'state': 'awaiting_address',
             'product_id': product_id,
             'quantity': quantity,
             'recipient_identity': recipient_identity
         }
         
-        # Ask for name
+        # Ask for delivery address directly
         self.signal_handler.send_message(
             recipient=buyer_signal_id,
-            message="📝 What's your name?",
+            message="📍 Please send your delivery address:\n(Include full address with street, city, and postal code)",
             sender_identity=recipient_identity
         )
-        print(f"DEBUG: Waiting for name from {buyer_signal_id}")
+        print(f"DEBUG: Waiting for delivery address from {buyer_signal_id}")
     
     def _handle_conversation_state(self, buyer_signal_id: str, message_text: str, recipient_identity: Optional[str] = None):
         """
@@ -344,19 +345,7 @@ class BuyerHandler:
         state_info = self.conversation_states[buyer_signal_id]
         current_state = state_info['state']
         
-        if current_state == 'awaiting_name':
-            # Store the name and ask for address
-            state_info['name'] = message_text.strip()
-            state_info['state'] = 'awaiting_address'
-            
-            self.signal_handler.send_message(
-                recipient=buyer_signal_id,
-                message="📍 What's your shipping address?\n(Please include street, city, and postal code)",
-                sender_identity=state_info.get('recipient_identity', recipient_identity)
-            )
-            print(f"DEBUG: Received name, waiting for address from {buyer_signal_id}")
-        
-        elif current_state == 'awaiting_address':
+        if current_state == 'awaiting_address':
             # Store the address and create the order
             state_info['address'] = message_text.strip()
             
@@ -365,7 +354,6 @@ class BuyerHandler:
                 buyer_signal_id,
                 state_info['product_id'],
                 state_info['quantity'],
-                state_info['name'],
                 state_info['address'],
                 state_info.get('recipient_identity', recipient_identity)
             )
@@ -375,7 +363,7 @@ class BuyerHandler:
             print(f"DEBUG: Order creation completed for {buyer_signal_id}")
     
     def _create_order_with_shipping_info(self, buyer_signal_id: str, product_id: str, quantity: int, 
-                                         name: str, address: str, recipient_identity: Optional[str] = None):
+                                         address: str, recipient_identity: Optional[str] = None):
         """
         Create order with collected shipping information
         
@@ -383,15 +371,13 @@ class BuyerHandler:
             buyer_signal_id: Buyer's Signal ID
             product_id: Product ID
             quantity: Quantity
-            name: Customer name
-            address: Shipping address
+            address: Delivery address
             recipient_identity: Identity that received the message
         """
         import json
         
         # Create shipping info as JSON
         shipping_info = json.dumps({
-            'name': name,
             'address': address
         })
         
@@ -685,11 +671,28 @@ We apologize for the inconvenience and appreciate your patience.
                 
                 return  # Do not create order
             
-            # Generate payment address (placeholder)
-            payment_address = self._generate_payment_address(product.id, buyer_signal_id)
+            # Generate payment address from wallet (real subaddress)
+            # Build an Order object first to get the order_id for the label
+            from ..models.order import Order as _Order
+            temp_order_id = _Order._generate_order_id()
+            try:
+                payment_address = self._generate_payment_address(product.id, buyer_signal_id, order_id=temp_order_id)
+            except RuntimeError as addr_err:
+                print(f"ERROR: {addr_err}")
+                self.signal_handler.send_message(
+                    recipient=buyer_signal_id,
+                    message=(
+                        "❌ Unable to process your order right now — "
+                        "the payment system is temporarily unavailable.\n\n"
+                        "Please try again later or contact support."
+                    ),
+                    sender_identity=recipient_identity
+                )
+                return
             
-            # Create order in database
+            # Create order in database (use the pre-generated order_id so it matches the subaddress label)
             order = Order(
+                order_id=temp_order_id,
                 customer_signal_id=buyer_signal_id,
                 product_id=product.id,
                 product_name=product.name,
@@ -794,23 +797,50 @@ Order #{order.order_id}
                 sender_identity=recipient_identity
             )
     
-    def _generate_payment_address(self, product_id: int, buyer_signal_id: str) -> str:
+    def _generate_payment_address(self, product_id: int, buyer_signal_id: str, order_id: str = None) -> str:
         """
-        Generate unique Monero sub-address for order
+        Generate unique Monero sub-address for order using the connected wallet.
+        Falls back to the primary wallet address when wallet is unavailable.
         
         Args:
             product_id: Product ID
             buyer_signal_id: Buyer's Signal ID
+            order_id: Order ID for the subaddress label
             
         Returns:
             Monero payment address
+            
+        Raises:
+            RuntimeError: If wallet is not connected and no address can be generated
         """
-        # TODO: Integrate with MoneroWallet.create_subaddress()
-        # This is a placeholder implementation
-        import hashlib
-        hash_input = f"{product_id}{buyer_signal_id}{datetime.utcnow().isoformat()}"
-        hash_hex = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
-        return f"4{hash_hex}WQHqFEXuCep9YkqJ6ZB7WCnnJiemkAn8UvSpAe71Hr..."
+        # Sync wallet object from setup_manager if available (InHouseWallet pattern)
+        if self.wallet and not getattr(self.wallet, 'wallet', None):
+            if hasattr(self.wallet, 'setup_manager') and hasattr(self.wallet.setup_manager, 'wallet'):
+                self.wallet.wallet = self.wallet.setup_manager.wallet
+
+        if self.wallet:
+            try:
+                label = f"Order-{order_id}" if order_id else f"Product-{product_id}"
+                subaddr_info = self.wallet.create_subaddress(label=label)
+                address = subaddr_info.get('address', '')
+                if address:
+                    print(f"DEBUG: Generated payment subaddress for order {order_id}: {address[:20]}...")
+                    return address
+            except Exception as e:
+                print(f"WARNING: Could not create wallet subaddress: {e}")
+                # Try getting primary address as fallback
+                try:
+                    primary = self.wallet.get_address()
+                    if primary:
+                        print(f"WARNING: Using primary wallet address for order {order_id}")
+                        return primary
+                except Exception:
+                    pass
+
+        raise RuntimeError(
+            "Wallet not connected — cannot generate a payment address. "
+            "Please configure and connect your Monero wallet in the Wallet tab."
+        )
     
     def send_help(self, buyer_signal_id: str, recipient_identity: Optional[str] = None):
         """

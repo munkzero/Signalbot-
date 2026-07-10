@@ -160,7 +160,7 @@ class MessageManager:
         Returns:
             List of messages ordered by time
         """
-        db_messages = self.db.session.query(MessageModel).order_by(MessageModel.sent_at).all()
+        db_messages = self.db.session.query(MessageModel).order_by(MessageModel.sent_at.desc()).limit(500).all()
         
         # Decrypt and filter messages for this conversation
         conversation_messages = []
@@ -176,6 +176,8 @@ class MessageManager:
             except Exception:
                 continue
         
+        # Return in chronological order (oldest first for display)
+        conversation_messages.reverse()
         return conversation_messages
     
     def get_all_conversations(self, my_signal_id: str) -> Dict[str, Dict]:

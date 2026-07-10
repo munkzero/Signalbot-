@@ -529,6 +529,8 @@ class SignalHandler:
         """
         poll_interval = 5
         use_json = True  # Start with JSON mode; disabled on first failure
+        consecutive_errors = 0
+        MAX_CONSECUTIVE_ERRORS = 12  # ~1 minute of retries before backing off
 
         print("DEBUG: Entering polling loop (signal-cli receive --json mode)")
 
@@ -553,6 +555,9 @@ class SignalHandler:
                         use_json = False
                         # Retry immediately in text mode (skip the poll-interval sleep)
                         continue
+                    # Log other non-zero exits for diagnostics
+                    if result.returncode != 0 and result.stderr.strip():
+                        print(f"DEBUG: signal-cli receive exit {result.returncode}: {result.stderr.strip()[:120]}")
 
                 if result.stdout.strip():
                     if use_json:
@@ -560,11 +565,27 @@ class SignalHandler:
                     else:
                         self._parse_text_output(result.stdout)
 
+                # Reset error counter on successful poll
+                consecutive_errors = 0
+
             except FileNotFoundError:
-                print("ERROR: signal-cli not found; polling mode unavailable")
-                break
+                consecutive_errors += 1
+                if consecutive_errors == 1:
+                    print("ERROR: signal-cli not found. Retrying every 30 seconds...")
+                # Retry after a longer delay rather than stopping entirely
+                time.sleep(30)
+                continue
+            except subprocess.TimeoutExpired:
+                print("WARNING: signal-cli receive timed out; retrying")
+                consecutive_errors += 1
             except Exception as exc:
-                print(f"WARNING: Polling error: {exc}")
+                consecutive_errors += 1
+                print(f"WARNING: Polling error ({consecutive_errors}): {exc}")
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    print(f"WARNING: {MAX_CONSECUTIVE_ERRORS} consecutive polling errors; backing off 60s")
+                    time.sleep(60)
+                    consecutive_errors = 0
+                    continue
 
             time.sleep(poll_interval)
 
