@@ -4,6 +4,7 @@ Main seller dashboard GUI
 
 import sys
 import os
+import json
 import time
 import threading
 from PyQt5.QtWidgets import (
@@ -2747,10 +2748,9 @@ class OrdersTab(QWidget):
         row_idx = 6
         if order.shipping_info:
             # Parse JSON shipping info if possible, fall back to raw text
-            import json as _json
             try:
-                shipping_data = _json.loads(order.shipping_info)
-                delivery_address = shipping_data.get('address') or order.shipping_info
+                shipping_data = json.loads(order.shipping_info)
+                delivery_address = shipping_data.get('address') if shipping_data.get('address') else order.shipping_info
             except (ValueError, TypeError):
                 delivery_address = order.shipping_info
 

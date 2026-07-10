@@ -5,6 +5,7 @@ Buyer Handler - Processes buyer commands and order creation
 import os
 import re
 import time
+import secrets
 import logging
 from typing import Optional, Tuple
 from datetime import datetime, timedelta
@@ -672,9 +673,8 @@ We apologize for the inconvenience and appreciate your patience.
                 return  # Do not create order
             
             # Generate payment address from wallet (real subaddress)
-            # Build an Order object first to get the order_id for the label
-            from ..models.order import Order as _Order
-            temp_order_id = _Order._generate_order_id()
+            # Generate the order ID upfront so it can be used as the subaddress label
+            temp_order_id = f"ORD-{secrets.token_hex(8).upper()}"
             try:
                 payment_address = self._generate_payment_address(product.id, buyer_signal_id, order_id=temp_order_id)
             except RuntimeError as addr_err:
@@ -800,7 +800,7 @@ Order #{order.order_id}
     def _generate_payment_address(self, product_id: int, buyer_signal_id: str, order_id: str = None) -> str:
         """
         Generate unique Monero sub-address for order using the connected wallet.
-        Falls back to the primary wallet address when wallet is unavailable.
+        Falls back to the primary wallet address when a new subaddress cannot be created.
         
         Args:
             product_id: Product ID
@@ -813,22 +813,16 @@ Order #{order.order_id}
         Raises:
             RuntimeError: If wallet is not connected and no address can be generated
         """
-        # Sync wallet object from setup_manager if available (InHouseWallet pattern)
-        if self.wallet and not getattr(self.wallet, 'wallet', None):
-            if hasattr(self.wallet, 'setup_manager') and hasattr(self.wallet.setup_manager, 'wallet'):
-                self.wallet.wallet = self.wallet.setup_manager.wallet
-
         if self.wallet:
+            label = f"Order-{order_id}" if order_id else f"Product-{product_id}"
             try:
-                label = f"Order-{order_id}" if order_id else f"Product-{product_id}"
                 subaddr_info = self.wallet.create_subaddress(label=label)
                 address = subaddr_info.get('address', '')
                 if address:
                     print(f"DEBUG: Generated payment subaddress for order {order_id}: {address[:20]}...")
                     return address
-            except Exception as e:
-                print(f"WARNING: Could not create wallet subaddress: {e}")
-                # Try getting primary address as fallback
+            except Exception as subaddr_err:
+                print(f"WARNING: Could not create subaddress ({subaddr_err}); trying primary address")
                 try:
                     primary = self.wallet.get_address()
                     if primary:

@@ -572,12 +572,14 @@ class SignalHandler:
                 consecutive_errors += 1
                 if consecutive_errors == 1:
                     print("ERROR: signal-cli not found. Retrying every 30 seconds...")
+                elif consecutive_errors % 10 == 0:
+                    print(f"WARNING: signal-cli still not found after {consecutive_errors} attempts; continuing to retry...")
                 # Retry after a longer delay rather than stopping entirely
                 time.sleep(30)
                 continue
             except subprocess.TimeoutExpired:
-                print("WARNING: signal-cli receive timed out; retrying")
                 consecutive_errors += 1
+                print(f"WARNING: signal-cli receive timed out (attempt {consecutive_errors}); retrying")
             except Exception as exc:
                 consecutive_errors += 1
                 print(f"WARNING: Polling error ({consecutive_errors}): {exc}")
