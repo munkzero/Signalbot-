@@ -26,8 +26,10 @@ class SignalHandler:
     # Maximum characters to log from envelope JSON for diagnostics.
     _MAX_ENVELOPE_LOG_LENGTH = 500
 
-    # Number of consecutive polling errors before backing off for 60 seconds.
+    # Number of consecutive polling errors before backing off.
     _MAX_CONSECUTIVE_POLL_ERRORS = 12
+    # Seconds to sleep after hitting _MAX_CONSECUTIVE_POLL_ERRORS.
+    _BACKOFF_SLEEP_SECONDS = 60
 
     def __init__(self, phone_number: Optional[str] = None):
         """
@@ -586,8 +588,8 @@ class SignalHandler:
                 consecutive_errors += 1
                 print(f"WARNING: Polling error ({consecutive_errors}): {exc}")
                 if consecutive_errors >= self._MAX_CONSECUTIVE_POLL_ERRORS:
-                    print(f"WARNING: {self._MAX_CONSECUTIVE_POLL_ERRORS} consecutive polling errors; backing off 60s")
-                    time.sleep(60)
+                    print(f"WARNING: {self._MAX_CONSECUTIVE_POLL_ERRORS} consecutive polling errors; backing off {self._BACKOFF_SLEEP_SECONDS}s")
+                    time.sleep(self._BACKOFF_SLEEP_SECONDS)
                     consecutive_errors = 0
                     continue
 

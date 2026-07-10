@@ -674,9 +674,9 @@ We apologize for the inconvenience and appreciate your patience.
             
             # Generate payment address from wallet (real subaddress)
             # Generate the order ID upfront so it can be used as the subaddress label
-            temp_order_id = f"ORD-{secrets.token_hex(8).upper()}"
+            order_id = f"ORD-{secrets.token_hex(8).upper()}"
             try:
-                payment_address = self._generate_payment_address(product.id, buyer_signal_id, order_id=temp_order_id)
+                payment_address = self._generate_payment_address(product.id, buyer_signal_id, order_id=order_id)
             except RuntimeError as addr_err:
                 print(f"ERROR: {addr_err}")
                 self.signal_handler.send_message(
@@ -692,7 +692,7 @@ We apologize for the inconvenience and appreciate your patience.
             
             # Create order in database (use the pre-generated order_id so it matches the subaddress label)
             order = Order(
-                order_id=temp_order_id,
+                order_id=order_id,
                 customer_signal_id=buyer_signal_id,
                 product_id=product.id,
                 product_name=product.name,
@@ -821,15 +821,11 @@ Order #{order.order_id}
                 if address:
                     print(f"DEBUG: Generated payment subaddress for order {order_id}: {address[:20]}...")
                     return address
+                else:
+                    # Subaddress creation returned a dict without an 'address' key — unexpected
+                    print(f"ERROR: create_subaddress() returned no address for order {order_id}: {subaddr_info}")
             except Exception as subaddr_err:
-                print(f"WARNING: Could not create subaddress ({subaddr_err}); trying primary address")
-                try:
-                    primary = self.wallet.get_address()
-                    if primary:
-                        print(f"WARNING: Using primary wallet address for order {order_id}")
-                        return primary
-                except Exception:
-                    pass
+                print(f"ERROR: Could not create subaddress for order {order_id} ({subaddr_err}); wallet may not be ready")
 
         raise RuntimeError(
             "Wallet not connected — cannot generate a payment address. "

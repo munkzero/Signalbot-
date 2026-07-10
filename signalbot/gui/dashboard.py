@@ -2750,7 +2750,7 @@ class OrdersTab(QWidget):
             # Parse JSON shipping info if possible, fall back to raw text
             try:
                 shipping_data = json.loads(order.shipping_info)
-                delivery_address = shipping_data.get('address', order.shipping_info)
+                delivery_address = shipping_data.get('address', '')
             except (ValueError, TypeError):
                 delivery_address = order.shipping_info
 

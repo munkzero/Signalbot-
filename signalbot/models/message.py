@@ -165,9 +165,11 @@ class MessageManager:
         Returns:
             List of messages ordered by time (oldest first)
         """
+        # Scan the most recent `limit` messages; encrypted fields prevent DB-level
+        # per-contact filtering, so we decrypt and filter in Python.
         db_messages = self.db.session.query(MessageModel).order_by(MessageModel.sent_at.desc()).limit(limit).all()
         
-        # Decrypt and filter messages for this conversation
+        # Decrypt and filter messages for this conversation (collected newest-first)
         conversation_messages = []
         for db_msg in db_messages:
             try:
@@ -181,8 +183,8 @@ class MessageManager:
             except Exception:
                 continue
         
-        # Return in chronological order (oldest first for display)
-        conversation_messages.reverse()
+        # Reverse to chronological order (oldest first for display)
+        conversation_messages.sort(key=lambda m: m.sent_at)
         return conversation_messages
     
     def get_all_conversations(self, my_signal_id: str) -> Dict[str, Dict]:
