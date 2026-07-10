@@ -149,18 +149,23 @@ class MessageManager:
         message.id = db_message.id
         return message
     
-    def get_conversation(self, contact_signal_id: str, my_signal_id: str) -> List[Message]:
+    def get_conversation(self, contact_signal_id: str, my_signal_id: str, limit: int = 500) -> List[Message]:
         """
-        Get conversation messages with a contact
-        
+        Get conversation messages with a contact.
+
+        Loads only the most recent ``limit`` messages (ordered newest-first) to
+        keep the call fast regardless of total message count, then filters and
+        returns them in chronological order.
+
         Args:
             contact_signal_id: Contact's Signal ID
             my_signal_id: My Signal ID
+            limit: Maximum number of recent messages to scan (default 500)
             
         Returns:
-            List of messages ordered by time
+            List of messages ordered by time (oldest first)
         """
-        db_messages = self.db.session.query(MessageModel).order_by(MessageModel.sent_at.desc()).limit(500).all()
+        db_messages = self.db.session.query(MessageModel).order_by(MessageModel.sent_at.desc()).limit(limit).all()
         
         # Decrypt and filter messages for this conversation
         conversation_messages = []

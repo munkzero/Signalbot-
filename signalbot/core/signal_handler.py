@@ -26,6 +26,9 @@ class SignalHandler:
     # Maximum characters to log from envelope JSON for diagnostics.
     _MAX_ENVELOPE_LOG_LENGTH = 500
 
+    # Number of consecutive polling errors before backing off for 60 seconds.
+    _MAX_CONSECUTIVE_POLL_ERRORS = 12
+
     def __init__(self, phone_number: Optional[str] = None):
         """
         Initialize Signal handler.
@@ -530,7 +533,6 @@ class SignalHandler:
         poll_interval = 5
         use_json = True  # Start with JSON mode; disabled on first failure
         consecutive_errors = 0
-        MAX_CONSECUTIVE_ERRORS = 12  # ~1 minute of retries before backing off
 
         print("DEBUG: Entering polling loop (signal-cli receive --json mode)")
 
@@ -583,8 +585,8 @@ class SignalHandler:
             except Exception as exc:
                 consecutive_errors += 1
                 print(f"WARNING: Polling error ({consecutive_errors}): {exc}")
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                    print(f"WARNING: {MAX_CONSECUTIVE_ERRORS} consecutive polling errors; backing off 60s")
+                if consecutive_errors >= self._MAX_CONSECUTIVE_POLL_ERRORS:
+                    print(f"WARNING: {self._MAX_CONSECUTIVE_POLL_ERRORS} consecutive polling errors; backing off 60s")
                     time.sleep(60)
                     consecutive_errors = 0
                     continue

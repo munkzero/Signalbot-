@@ -2750,7 +2750,7 @@ class OrdersTab(QWidget):
             # Parse JSON shipping info if possible, fall back to raw text
             try:
                 shipping_data = json.loads(order.shipping_info)
-                delivery_address = shipping_data.get('address') if shipping_data.get('address') else order.shipping_info
+                delivery_address = shipping_data.get('address', order.shipping_info)
             except (ValueError, TypeError):
                 delivery_address = order.shipping_info
 
@@ -5876,9 +5876,10 @@ class DashboardWindow(QMainWindow):
                                 from ..core.payments import PaymentProcessor
                                 from ..core.commission import CommissionManager
                                 from ..core.monero_wallet import MoneroWallet
+                                # The wallet RPC is always started locally by WalletSetupManager
                                 rpc_wallet = MoneroWallet(
                                     wallet_type='rpc',
-                                    rpc_host='localhost',
+                                    rpc_host='127.0.0.1',
                                     rpc_port=self.wallet.rpc_port
                                 )
                                 commission_manager = CommissionManager()
