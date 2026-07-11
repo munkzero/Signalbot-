@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 # Delay between catalog product messages to avoid rate limiting
 CATALOG_SEND_DELAY_SECONDS = 1.5
 
+# Minimum character length for a valid shipping address
+MIN_ADDRESS_LENGTH = 10
+
+# Words that are not valid shipping addresses (single-word replies to dismiss)
+INVALID_ADDRESS_WORDS = frozenset({'ok', 'yes', 'no', 'test', 'hi', 'hello', 'thanks'})
+
 # Common image directories to search for product images (in order of priority)
 COMMON_IMAGE_SEARCH_DIRS = [
     'data/products/images',      # Expected location
@@ -426,10 +432,9 @@ class BuyerHandler:
             True if the address looks valid, False otherwise
         """
         stripped = address.strip()
-        if len(stripped) < 10:
+        if len(stripped) < MIN_ADDRESS_LENGTH:
             return False
-        invalid_words = {'ok', 'yes', 'no', 'test', 'hi', 'hello', 'thanks'}
-        if stripped.lower() in invalid_words:
+        if stripped.lower() in INVALID_ADDRESS_WORDS:
             return False
         return True
 
