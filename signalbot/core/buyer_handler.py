@@ -540,12 +540,27 @@ class BuyerHandler:
 
         failed_count = total_products - sent_count
 
-        # Send footer
-        footer = f"\n✨ End of catalog\n\nTo order, reply with 'ORDER {product_id_str} QTY X'"
+        # Send footer with order instructions
+        footer = f"""
+✨ END OF CATALOG
+
+📋 TO PLACE AN ORDER:
+Reply with: "order {product_id_str} qty X"
+(Replace {product_id_str} with the product number and X with quantity)
+
+💳 AFTER ORDER:
+1. You'll get a payment address and QR code
+2. Send exactly the XMR amount shown
+3. Once paid, order processing begins
+4. You'll get shipping updates
+
+❓ NEED HELP?
+Reply "help" for command list
+"""
         try:
             self.signal_handler.send_message_native(
                 recipient=buyer_signal_id,
-                message=footer
+                message=footer.strip()
             )
             print(f"✓ Footer sent\n")
         except Exception as e:
