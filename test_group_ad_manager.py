@@ -8,7 +8,7 @@ import sys
 import time
 import unittest
 import inspect
-from datetime import datetime, timedelta, timezone
+import datetime as dt
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -56,17 +56,19 @@ class GroupAdManagerTests(unittest.TestCase):
         time.sleep(0.3)
         self.assertEqual(len(self.signal_handler.sent), first_count)
 
-        with self.manager._lock:
-            self.manager._groups["g2"]["last_post_at"] = datetime.now(timezone.utc) - timedelta(hours=2)
+        self.assertTrue(
+            self.manager._set_group_last_post_at("g2", dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2))
+        )
         time.sleep(1.2)
         self.assertGreater(len(self.signal_handler.sent), first_count)
 
     def test_signal_handler_exposes_join_and_leave_group_methods(self):
-        source = inspect.getsource(SignalHandler)
-        self.assertIn("def join_group", source)
-        self.assertIn("joinGroup", source)
-        self.assertIn("def leave_group", source)
-        self.assertIn("quitGroup", source)
+        self.assertTrue(hasattr(SignalHandler, "join_group"))
+        self.assertTrue(hasattr(SignalHandler, "leave_group"))
+        join_source = inspect.getsource(SignalHandler.join_group)
+        leave_source = inspect.getsource(SignalHandler.leave_group)
+        self.assertIn("joinGroup", join_source)
+        self.assertIn("quitGroup", leave_source)
 
 
 if __name__ == "__main__":

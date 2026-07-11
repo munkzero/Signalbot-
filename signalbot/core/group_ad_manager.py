@@ -6,13 +6,17 @@ from __future__ import annotations
 
 import threading
 import time
+import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class GroupAdManager:
     """Manage per-group advertisement scheduling and posting."""
 
+    SECONDS_PER_DAY = 86400
     DEFAULT_AD_MESSAGE = (
         "👋 Hey! I'm a 24/7 shopping bot\n\n"
         "📦 To browse my catalog: DM me\n"
@@ -31,6 +35,7 @@ class GroupAdManager:
         self._running = False
 
     def add_group(self, group_id, name, ads_per_day):
+        """Add or update a managed group with posting frequency."""
         group_id = (group_id or "").strip()
         if not group_id:
             raise ValueError("group_id is required")
@@ -42,24 +47,29 @@ class GroupAdManager:
                 "group_id": group_id,
                 "name": name or "Unknown Group",
                 "ads_per_day": frequency,
+                "interval_seconds": self.SECONDS_PER_DAY / frequency,
                 "enabled": True,
                 "last_post_at": last_post_at,
             }
 
     def remove_group(self, group_id):
+        """Remove a group from ad management."""
         with self._lock:
             return self._groups.pop(group_id, None) is not None
 
     def update_group_frequency(self, group_id, ads_per_day):
+        """Update how many ads per day are allowed for a group."""
         frequency = self._validate_ads_per_day(ads_per_day)
         with self._lock:
             group = self._groups.get(group_id)
             if not group:
                 return False
             group["ads_per_day"] = frequency
+            group["interval_seconds"] = self.SECONDS_PER_DAY / frequency
             return True
 
     def enable_group(self, group_id):
+        """Enable scheduled ad posting for a group."""
         with self._lock:
             group = self._groups.get(group_id)
             if not group:
@@ -68,6 +78,7 @@ class GroupAdManager:
             return True
 
     def disable_group(self, group_id):
+        """Disable scheduled ad posting for a group."""
         with self._lock:
             group = self._groups.get(group_id)
             if not group:
@@ -76,6 +87,7 @@ class GroupAdManager:
             return True
 
     def post_ad_now(self, group_id):
+        """Immediately post the configured advertisement to a group."""
         with self._lock:
             group = self._groups.get(group_id)
             if not group:
@@ -83,6 +95,7 @@ class GroupAdManager:
         return self._post_to_group(group_id)
 
     def set_ad_message(self, message):
+        """Set the shared advertisement message used for all groups."""
         cleaned = (message or "").strip()
         if not cleaned:
             raise ValueError("Ad message cannot be empty")
@@ -90,6 +103,7 @@ class GroupAdManager:
             self._ad_message = cleaned
 
     def start(self):
+        """Start the background scheduler thread."""
         with self._lock:
             if self._running:
                 return
@@ -99,6 +113,7 @@ class GroupAdManager:
             self._running = True
 
     def stop(self):
+        """Stop the background scheduler thread."""
         with self._lock:
             if not self._running:
                 return
@@ -110,6 +125,7 @@ class GroupAdManager:
             thread.join(timeout=2)
 
     def get_status(self):
+        """Return scheduler state and managed group metadata."""
         with self._lock:
             groups: List[Dict] = []
             for group in self._groups.values():
@@ -132,6 +148,15 @@ class GroupAdManager:
                 "groups": groups,
             }
 
+    def _set_group_last_post_at(self, group_id: str, last_post_at: datetime):
+        """Set a group's last-post timestamp."""
+        with self._lock:
+            group = self._groups.get(group_id)
+            if not group:
+                return False
+            group["last_post_at"] = last_post_at
+            return True
+
     def _run_scheduler(self):
         while not self._stop_event.wait(self.poll_interval_seconds):
             group_ids_to_post = []
@@ -153,7 +178,8 @@ class GroupAdManager:
             message = self._ad_message
         try:
             success = bool(self.signal_handler.send_message(group_id, message))
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to post group advertisement to %s: %s", group_id, exc)
             success = False
         if success:
             with self._lock:
@@ -165,7 +191,7 @@ class GroupAdManager:
         last_post_at = group.get("last_post_at")
         if last_post_at is None:
             return True
-        interval_seconds = 86400 / group["ads_per_day"]
+        interval_seconds = group.get("interval_seconds", self.SECONDS_PER_DAY / group["ads_per_day"])
         elapsed_seconds = max(0.0, (now - last_post_at).total_seconds())
         return elapsed_seconds >= interval_seconds
 

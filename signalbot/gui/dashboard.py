@@ -4056,7 +4056,7 @@ class GroupsTab(QWidget):
     def _build_ui(self):
         layout = QVBoxLayout()
 
-        header = QLabel("🛍️ GROUP ADVERTISING MANAGER")
+        header = QLabel("📢 GROUP ADVERTISING MANAGER")
         header.setFont(QFont("Arial", 14, QFont.Bold))
         layout.addWidget(header)
 
@@ -4135,7 +4135,7 @@ class GroupsTab(QWidget):
         self.groups_table.setRowCount(len(groups))
         for row, group in enumerate(groups):
             self.groups_table.setItem(row, 0, QTableWidgetItem(group["name"]))
-            self.groups_table.setItem(row, 1, QTableWidgetItem(f'{group["ads_per_day"]}/day'))
+            self.groups_table.setItem(row, 1, QTableWidgetItem(f"{group['ads_per_day']}/day"))
             self.groups_table.setItem(row, 2, QTableWidgetItem("✅ Enabled" if group["enabled"] else "⏸ Disabled"))
             self.groups_table.setItem(row, 3, QTableWidgetItem(group["group_id"]))
         self.groups_table.resizeColumnsToContents()
@@ -4180,10 +4180,11 @@ class GroupsTab(QWidget):
 
         groups = self.signal_handler.list_groups()
         if not groups:
-            QMessageBox.warning(self, "Joined", "Group joined, but no groups were returned yet. Refresh and add manually.")
+            QMessageBox.warning(self, "Group List Unavailable", "Group joined, but no groups were returned yet. Refresh and add manually.")
             return
 
-        options = [f'{group.get("name") or "Unknown"} ({group.get("id")})' for group in groups if group.get("id")]
+        managed_groups = [group for group in groups if group.get("id")]
+        options = [f'{group.get("name") or "Unknown"} ({group.get("id")})' for group in managed_groups]
         if not options:
             QMessageBox.warning(self, "Joined", "Group joined, but could not resolve group ID yet.")
             return
@@ -4192,9 +4193,10 @@ class GroupsTab(QWidget):
         if not ok:
             return
         selected_index = options.index(selected)
-        selected_group = [group for group in groups if group.get("id")][selected_index]
+        selected_group = managed_groups[selected_index]
         self.group_ad_manager.add_group(selected_group.get("id"), selected_group.get("name", "Unknown"), ads_per_day)
-        self.group_ad_manager.post_ad_now(selected_group.get("id"))
+        if not self.group_ad_manager.post_ad_now(selected_group.get("id")):
+            QMessageBox.warning(self, "Send Failed", "Group was added, but the first ad could not be sent.\nCheck Signal connection/group permissions, then retry with 'Post Ad Now'.")
         self.refresh_groups()
 
     def edit_selected_group_frequency(self):
@@ -4225,8 +4227,20 @@ class GroupsTab(QWidget):
         group_id = self._selected_group_id()
         if not group_id:
             return
+        if not self.signal_handler.leave_group(group_id):
+            remove_anyway = QMessageBox.question(
+                self,
+                "Leave Failed",
+                "Could not leave the Signal group.\n\nRemove this group from ad management anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if remove_anyway == QMessageBox.No:
+                return
+            self.group_ad_manager.remove_group(group_id)
+            self.refresh_groups()
+            return
         self.group_ad_manager.remove_group(group_id)
-        self.signal_handler.leave_group(group_id)
         self.refresh_groups()
 
     def post_selected_group_now(self):
