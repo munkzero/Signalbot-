@@ -27,6 +27,11 @@ class Seller(Base):
     signal_id_salt = Column(String(255), nullable=True)
     wallet_path = Column(String(500), nullable=True)  # Path to in-house wallet file
     default_currency = Column(String(10), default='USD')
+    message_retention_days = Column(Integer, default=30)
+    order_archive_days = Column(Integer, default=90)
+    archive_retention_days = Column(Integer, default=365)
+    last_cleanup_at = Column(DateTime, nullable=True)
+    cleanup_status = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -82,6 +87,8 @@ class Order(Base):
     shipped_at = Column(DateTime, nullable=True)  # When order was shipped
     expires_at = Column(DateTime, nullable=False)
     paid_at = Column(DateTime, nullable=True)
+    archived_at = Column(DateTime, nullable=True)
+    purge_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -124,6 +131,26 @@ class Message(Base):
     message_body = Column(Text, nullable=True)
     is_outgoing = Column(Boolean, nullable=False)
     sent_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+    archived_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MessageArchive(Base):
+    """Archived message history for retention cleanup"""
+    __tablename__ = 'message_archives'
+
+    id = Column(Integer, primary_key=True)
+    original_message_id = Column(Integer, nullable=True)
+    sender_signal_id = Column(Text, nullable=False)
+    sender_signal_id_salt = Column(String(255), nullable=False)
+    recipient_signal_id = Column(Text, nullable=False)
+    recipient_signal_id_salt = Column(String(255), nullable=False)
+    message_body = Column(Text, nullable=True)
+    is_outgoing = Column(Boolean, nullable=False)
+    sent_at = Column(DateTime, nullable=True)
+    archived_at = Column(DateTime, default=datetime.utcnow)
+    purge_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -143,6 +170,44 @@ class MoneroNode(Base):
     is_default = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class OrderArchive(Base):
+    """Archived orders and addresses retained for privacy-safe recovery"""
+    __tablename__ = 'order_archives'
+
+    id = Column(Integer, primary_key=True)
+    original_order_db_id = Column(Integer, nullable=True)
+    order_id = Column(String(100), nullable=False)
+    customer_signal_id = Column(Text, nullable=False)
+    customer_signal_id_salt = Column(String(255), nullable=False)
+    product_id = Column(Integer, nullable=False)
+    product_name = Column(String(255), nullable=False)
+    quantity = Column(Integer, default=1)
+    price_fiat = Column(Float, nullable=False)
+    currency = Column(String(10), nullable=False)
+    price_xmr = Column(Float, nullable=False)
+    payment_address = Column(Text, nullable=False)
+    payment_address_salt = Column(String(255), nullable=False)
+    address_index = Column(Integer, nullable=True)
+    payment_status = Column(String(20), default='pending')
+    order_status = Column(String(20), default='processing')
+    amount_paid = Column(Float, default=0.0)
+    payment_txid = Column(Text, nullable=True)
+    commission_amount = Column(Float, nullable=False)
+    seller_amount = Column(Float, nullable=False)
+    commission_paid = Column(Boolean, default=False)
+    commission_txid = Column(Text, nullable=True)
+    commission_paid_at = Column(DateTime, nullable=True)
+    shipping_info = Column(Text, nullable=True)
+    shipping_info_salt = Column(String(255), nullable=True)
+    tracking_number = Column(Text, nullable=True)
+    shipped_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    paid_at = Column(DateTime, nullable=True)
+    archived_at = Column(DateTime, default=datetime.utcnow)
+    purge_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=True)
 
 
 class DatabaseManager:
@@ -235,6 +300,31 @@ class DatabaseManager:
                 conn.execute(text('''
                     CREATE INDEX IF NOT EXISTS idx_orders_order_status 
                     ON orders(order_status)
+                '''))
+
+                conn.execute(text('''
+                    CREATE INDEX IF NOT EXISTS idx_messages_sent_at
+                    ON messages(sent_at)
+                '''))
+
+                conn.execute(text('''
+                    CREATE INDEX IF NOT EXISTS idx_messages_expires_at
+                    ON messages(expires_at)
+                '''))
+
+                conn.execute(text('''
+                    CREATE INDEX IF NOT EXISTS idx_orders_archived_at
+                    ON orders(archived_at)
+                '''))
+
+                conn.execute(text('''
+                    CREATE INDEX IF NOT EXISTS idx_order_archives_purge_at
+                    ON order_archives(purge_at)
+                '''))
+
+                conn.execute(text('''
+                    CREATE INDEX IF NOT EXISTS idx_message_archives_purge_at
+                    ON message_archives(purge_at)
                 '''))
                 
                 conn.commit()
@@ -343,6 +433,54 @@ class DatabaseManager:
                         conn.execute(text('ALTER TABLE orders ADD COLUMN shipped_at TIMESTAMP'))
                         migrations_applied.append("shipped_at")
                         print("✓ Added shipped_at column")
+
+                    # Seller retention settings
+                    seller_columns = {
+                        'message_retention_days': 'INTEGER DEFAULT 30',
+                        'order_archive_days': 'INTEGER DEFAULT 90',
+                        'archive_retention_days': 'INTEGER DEFAULT 365',
+                        'last_cleanup_at': 'TIMESTAMP',
+                        'cleanup_status': 'TEXT',
+                    }
+                    for column_name, column_def in seller_columns.items():
+                        result = conn.execute(text(
+                            f"SELECT COUNT(*) FROM pragma_table_info('sellers') WHERE name='{column_name}'"
+                        ))
+                        if result.scalar() == 0:
+                            print(f"🔄 Adding {column_name} column to sellers table...")
+                            conn.execute(text(f'ALTER TABLE sellers ADD COLUMN {column_name} {column_def}'))
+                            migrations_applied.append(column_name)
+                            print(f"✓ Added {column_name} column")
+
+                    # Message retention columns
+                    message_columns = {
+                        'expires_at': 'TIMESTAMP',
+                        'archived_at': 'TIMESTAMP',
+                    }
+                    for column_name, column_def in message_columns.items():
+                        result = conn.execute(text(
+                            f"SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='{column_name}'"
+                        ))
+                        if result.scalar() == 0:
+                            print(f"🔄 Adding {column_name} column to messages table...")
+                            conn.execute(text(f'ALTER TABLE messages ADD COLUMN {column_name} {column_def}'))
+                            migrations_applied.append(f"messages.{column_name}")
+                            print(f"✓ Added {column_name} column")
+
+                    # Order archival columns
+                    order_columns = {
+                        'archived_at': 'TIMESTAMP',
+                        'purge_at': 'TIMESTAMP',
+                    }
+                    for column_name, column_def in order_columns.items():
+                        result = conn.execute(text(
+                            f"SELECT COUNT(*) FROM pragma_table_info('orders') WHERE name='{column_name}'"
+                        ))
+                        if result.scalar() == 0:
+                            print(f"🔄 Adding {column_name} column to orders table...")
+                            conn.execute(text(f'ALTER TABLE orders ADD COLUMN {column_name} {column_def}'))
+                            migrations_applied.append(f"orders.{column_name}")
+                            print(f"✓ Added {column_name} column")
                     
                     # Commit transaction
                     trans.commit()

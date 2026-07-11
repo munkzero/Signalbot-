@@ -6,6 +6,7 @@ Handles payment detection and commission forwarding
 import time
 from typing import Optional, Dict, Callable, TYPE_CHECKING
 from datetime import datetime
+from collections import deque
 from .monero_wallet import MoneroWallet
 from .commission import CommissionManager
 from ..models.order import Order, OrderManager
@@ -51,6 +52,15 @@ class PaymentProcessor:
         self.monitoring = False
         self.monitor_thread = None
         self.payment_callbacks = {}
+        self.failed_payment_checks = deque()
+        self._failed_check_ids = set()
+        self._status = {
+            'healthy': True,
+            'last_check_at': None,
+            'last_success_at': None,
+            'last_error': None,
+            'queued_retries': 0,
+        }
     
     def create_payment_request(
         self,
@@ -103,6 +113,9 @@ class PaymentProcessor:
             Payment status info with detailed transaction data
         """
         try:
+            self._status['last_check_at'] = datetime.utcnow().isoformat()
+            if hasattr(self.wallet, 'ensure_connection') and not self.wallet.ensure_connection():
+                raise RuntimeError("Wallet RPC unavailable for payment check")
             # Use subaddress index for efficient monitoring if available
             if order.address_index is not None:
                 transfers = self.wallet.get_transfers(
@@ -156,6 +169,9 @@ class PaymentProcessor:
             }
         except Exception as e:
             print(f"Error checking payment for order {order.order_id}: {e}")
+            self._queue_failed_payment_check(order)
+            self._status['healthy'] = False
+            self._status['last_error'] = str(e)
             return {
                 'received': False,
                 'amount': 0.0,
@@ -164,8 +180,33 @@ class PaymentProcessor:
                 'txid': None,
                 'complete': False,
                 'unconfirmed': False,
-                'partial': False
+                'partial': False,
+                'error': str(e)
             }
+
+    def _queue_failed_payment_check(self, order: Order) -> None:
+        if order.order_id in self._failed_check_ids:
+            return
+        self.failed_payment_checks.append(order.order_id)
+        self._failed_check_ids.add(order.order_id)
+        self._status['queued_retries'] = len(self.failed_payment_checks)
+
+    def _retry_failed_payment_checks(self) -> None:
+        if not self.failed_payment_checks:
+            return
+
+        retry_ids = list(self.failed_payment_checks)
+        self.failed_payment_checks.clear()
+        self._failed_check_ids.clear()
+        self._status['queued_retries'] = 0
+
+        for order_id in retry_ids:
+            order = self.orders.get_order(order_id)
+            if not order:
+                continue
+            status = self.check_order_payment(order)
+            if status.get('complete'):
+                self.process_payment(order)
     
     def process_payment(self, order: Order) -> bool:
         """
@@ -356,6 +397,7 @@ class PaymentProcessor:
             try:
                 # Get pending orders
                 pending_orders = self.orders.list_orders(payment_status='pending')
+                self._retry_failed_payment_checks()
                 
                 if pending_orders:
                     print(f"DEBUG: Checking {len(pending_orders)} pending orders for payments")
@@ -376,6 +418,9 @@ class PaymentProcessor:
                         print(f"  Confirmations: {status['confirmations']}")
                         # Process payment (confirm and forward commission)
                         self.process_payment(order)
+                        self._status['healthy'] = True
+                        self._status['last_success_at'] = datetime.utcnow().isoformat()
+                        self._status['last_error'] = None
                     elif status['unconfirmed']:
                         print(f"⏳ Payment detected (unconfirmed): {status['amount']:.6f} XMR for order #{order.order_id}")
                         print(f"  TX: {status['txid']}")
@@ -385,6 +430,9 @@ class PaymentProcessor:
                         order.amount_paid = status['amount']
                         order.payment_txid = status['txid']
                         self.orders.update_order(order)
+                        self._status['healthy'] = True
+                        self._status['last_success_at'] = datetime.utcnow().isoformat()
+                        self._status['last_error'] = None
                     elif status['partial']:
                         print(f"⚠ Partial payment: {status['amount']:.6f}/{status['expected']:.6f} XMR for order #{order.order_id}")
                         # Partial payment
@@ -393,6 +441,9 @@ class PaymentProcessor:
                         if status['txid']:
                             order.payment_txid = status['txid']
                         self.orders.update_order(order)
+                        self._status['healthy'] = True
+                        self._status['last_success_at'] = datetime.utcnow().isoformat()
+                        self._status['last_error'] = None
                 
                 # Also check unconfirmed orders for confirmation
                 unconfirmed_orders = self.orders.list_orders(payment_status='unconfirmed')
@@ -401,12 +452,17 @@ class PaymentProcessor:
                     if status['complete']:
                         print(f"✓ Payment now confirmed for order #{order.order_id}")
                         self.process_payment(order)
+                        self._status['healthy'] = True
+                        self._status['last_success_at'] = datetime.utcnow().isoformat()
+                        self._status['last_error'] = None
                 
                 # Expire old orders
                 self.orders.expire_old_orders()
                 
             except Exception as e:
                 print(f"ERROR: Error in payment monitoring: {e}")
+                self._status['healthy'] = False
+                self._status['last_error'] = str(e)
             
             # Sleep between checks
             time.sleep(PAYMENT_CHECK_INTERVAL)
@@ -473,3 +529,8 @@ class PaymentProcessor:
         """
         if order_id in self.payment_callbacks:
             del self.payment_callbacks[order_id]
+
+    def get_health_status(self) -> Dict[str, any]:
+        status = dict(self._status)
+        status['queued_retries'] = len(self.failed_payment_checks)
+        return status

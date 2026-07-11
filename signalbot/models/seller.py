@@ -16,12 +16,22 @@ class Seller:
         id: Optional[int] = None,
         signal_id: Optional[str] = None,
         wallet_path: Optional[str] = None,
-        default_currency: str = "USD"
+        default_currency: str = "USD",
+        message_retention_days: int = 30,
+        order_archive_days: int = 90,
+        archive_retention_days: int = 365,
+        last_cleanup_at = None,
+        cleanup_status: Optional[str] = None
     ):
         self.id = id
         self.signal_id = signal_id
         self.wallet_path = wallet_path
         self.default_currency = default_currency
+        self.message_retention_days = message_retention_days
+        self.order_archive_days = order_archive_days
+        self.archive_retention_days = archive_retention_days
+        self.last_cleanup_at = last_cleanup_at
+        self.cleanup_status = cleanup_status
     
     @classmethod
     def from_db_model(cls, db_seller: SellerModel, db_manager: DatabaseManager) -> 'Seller':
@@ -49,7 +59,12 @@ class Seller:
             id=db_seller.id,
             signal_id=signal_id,
             wallet_path=db_seller.wallet_path,
-            default_currency=db_seller.default_currency
+            default_currency=db_seller.default_currency,
+            message_retention_days=getattr(db_seller, 'message_retention_days', 30) or 30,
+            order_archive_days=getattr(db_seller, 'order_archive_days', 90) or 90,
+            archive_retention_days=getattr(db_seller, 'archive_retention_days', 365) or 365,
+            last_cleanup_at=getattr(db_seller, 'last_cleanup_at', None),
+            cleanup_status=getattr(db_seller, 'cleanup_status', None)
         )
     
     def to_db_model(self, db_manager: DatabaseManager, pin: str) -> SellerModel:
@@ -78,7 +93,12 @@ class Seller:
             signal_id=signal_id_enc,
             signal_id_salt=signal_id_salt,
             wallet_path=self.wallet_path,
-            default_currency=self.default_currency
+            default_currency=self.default_currency,
+            message_retention_days=self.message_retention_days,
+            order_archive_days=self.order_archive_days,
+            archive_retention_days=self.archive_retention_days,
+            last_cleanup_at=self.last_cleanup_at,
+            cleanup_status=self.cleanup_status
         )
         
         if self.id:
@@ -155,6 +175,11 @@ class SellerManager:
         
         db_seller.wallet_path = seller.wallet_path
         db_seller.default_currency = seller.default_currency
+        db_seller.message_retention_days = seller.message_retention_days
+        db_seller.order_archive_days = seller.order_archive_days
+        db_seller.archive_retention_days = seller.archive_retention_days
+        db_seller.last_cleanup_at = seller.last_cleanup_at
+        db_seller.cleanup_status = seller.cleanup_status
         
         self.db.session.commit()
         return seller

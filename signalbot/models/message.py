@@ -3,9 +3,11 @@ Message model and management
 """
 
 from typing import Optional, List, Dict
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
-from ..database.db import Message as MessageModel, DatabaseManager
+from pathlib import Path
+from ..database.db import Message as MessageModel, MessageArchive as MessageArchiveModel, DatabaseManager, Seller as SellerModel
+from ..config.settings import DATABASE_FILE
 
 
 class Message:
@@ -19,6 +21,8 @@ class Message:
         message_body: Optional[str] = None,
         is_outgoing: bool = False,
         sent_at: Optional[datetime] = None,
+        expires_at: Optional[datetime] = None,
+        archived_at: Optional[datetime] = None,
         created_at: Optional[datetime] = None
     ):
         self.id = id
@@ -27,6 +31,8 @@ class Message:
         self.message_body = message_body
         self.is_outgoing = is_outgoing
         self.sent_at = sent_at
+        self.expires_at = expires_at
+        self.archived_at = archived_at
         self.created_at = created_at
     
     @classmethod
@@ -68,6 +74,8 @@ class Message:
             message_body=db_message.message_body,
             is_outgoing=db_message.is_outgoing,
             sent_at=db_message.sent_at,
+            expires_at=getattr(db_message, 'expires_at', None),
+            archived_at=getattr(db_message, 'archived_at', None),
             created_at=db_message.created_at
         )
     
@@ -100,7 +108,9 @@ class Message:
             recipient_signal_id_salt=recipient_salt,
             message_body=self.message_body,
             is_outgoing=self.is_outgoing,
-            sent_at=self.sent_at or datetime.utcnow()
+            sent_at=self.sent_at or datetime.utcnow(),
+            expires_at=self.expires_at,
+            archived_at=self.archived_at
         )
         
         if self.id:
@@ -114,6 +124,11 @@ class MessageManager:
     
     def __init__(self, db_manager: DatabaseManager):
         self.db = db_manager
+
+    def _get_message_retention_days(self) -> int:
+        seller = self.db.session.query(SellerModel).filter_by(id=1).first()
+        retention_days = getattr(seller, 'message_retention_days', 30) if seller else 30
+        return max(1, int(retention_days or 30))
     
     def add_message(
         self,
@@ -139,7 +154,8 @@ class MessageManager:
             recipient_signal_id=recipient_signal_id,
             message_body=message_body,
             is_outgoing=is_outgoing,
-            sent_at=datetime.utcnow()
+            sent_at=datetime.utcnow(),
+            expires_at=datetime.utcnow() + timedelta(days=self._get_message_retention_days())
         )
         
         db_message = message.to_db_model(self.db)
@@ -298,3 +314,77 @@ class MessageManager:
             self.db.session.commit()
         
         return deleted
+
+    def _archive_message_record(self, db_message: MessageModel, purge_at: Optional[datetime] = None) -> None:
+        archive = MessageArchiveModel(
+            original_message_id=db_message.id,
+            sender_signal_id=db_message.sender_signal_id,
+            sender_signal_id_salt=db_message.sender_signal_id_salt,
+            recipient_signal_id=db_message.recipient_signal_id,
+            recipient_signal_id_salt=db_message.recipient_signal_id_salt,
+            message_body=db_message.message_body,
+            is_outgoing=db_message.is_outgoing,
+            sent_at=db_message.sent_at,
+            archived_at=datetime.utcnow(),
+            purge_at=purge_at,
+            created_at=db_message.created_at,
+        )
+        self.db.session.add(archive)
+
+    def archive_messages_older_than(self, retention_days: int, purge_after_days: int) -> int:
+        cutoff = datetime.utcnow() - timedelta(days=max(1, retention_days))
+        purge_at = datetime.utcnow() + timedelta(days=max(1, purge_after_days))
+        candidates = (
+            self.db.session.query(MessageModel)
+            .filter(MessageModel.sent_at < cutoff)
+            .filter(MessageModel.archived_at.is_(None))
+            .all()
+        )
+
+        archived_count = 0
+        for db_message in candidates:
+            self._archive_message_record(db_message, purge_at=purge_at)
+            db_message.archived_at = datetime.utcnow()
+            self.db.session.delete(db_message)
+            archived_count += 1
+
+        if archived_count:
+            self.db.session.commit()
+        return archived_count
+
+    def purge_archived_messages(self, purge_after_days: int) -> int:
+        cutoff = datetime.utcnow() - timedelta(days=max(1, purge_after_days))
+        candidates = (
+            self.db.session.query(MessageArchiveModel)
+            .filter(
+                (MessageArchiveModel.purge_at.isnot(None) & (MessageArchiveModel.purge_at < datetime.utcnow())) |
+                (MessageArchiveModel.archived_at < cutoff)
+            )
+            .all()
+        )
+
+        purged_count = 0
+        for archive in candidates:
+            self.db.session.delete(archive)
+            purged_count += 1
+
+        if purged_count:
+            self.db.session.commit()
+        return purged_count
+
+    def delete_all_messages(self) -> Dict[str, int]:
+        live_deleted = self.db.session.query(MessageModel).delete()
+        archived_deleted = self.db.session.query(MessageArchiveModel).delete()
+        self.db.session.commit()
+        return {
+            'live_messages_deleted': live_deleted,
+            'archived_messages_deleted': archived_deleted,
+        }
+
+    def get_storage_usage(self) -> Dict[str, int]:
+        db_path = Path(DATABASE_FILE)
+        return {
+            'live_messages': self.db.session.query(MessageModel).count(),
+            'archived_messages': self.db.session.query(MessageArchiveModel).count(),
+            'database_bytes': db_path.stat().st_size if db_path.exists() else 0,
+        }
