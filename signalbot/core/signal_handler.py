@@ -12,6 +12,7 @@ import threading
 import time
 import os
 import re
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
@@ -69,14 +70,36 @@ class SignalHandler:
         self._msg_handler_pool = ThreadPoolExecutor(max_workers=10, thread_name_prefix="MsgHandler")
         self._conversation_cache: Dict[str, List[Dict]] = {}
         self._conversation_cache_lock = threading.Lock()
+        self._status = {
+            'available': False,
+            'listening': False,
+            'last_poll_at': None,
+            'last_success_at': None,
+            'last_error': None,
+            'last_receive_error': None,
+            'consecutive_errors': 0,
+        }
 
-        print(f"DEBUG: SignalHandler initialized with phone_number={self.phone_number}")
+        logger.debug("SignalHandler initialized")
 
         # Verify signal-cli is available for polling mode
         self.ensure_signal_cli_ready()
 
         # Verify auto-trust is working
         self._verify_auto_trust_config()
+
+    def _run_signal_cli(self, args: List[str], timeout: int = 10) -> subprocess.CompletedProcess:
+        """Run signal-cli with consistent diagnostics."""
+        cmd = ['signal-cli', '-a', self.phone_number, *args]
+        masked_cmd = ['signal-cli', '-a', '<configured-account>', *args]
+        logger.debug("Running signal-cli command: %s", " ".join(masked_cmd))
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
     
     @staticmethod
     def _is_uuid(identifier: str) -> bool:
@@ -95,23 +118,40 @@ class SignalHandler:
         )
         return bool(uuid_pattern.match(identifier))
 
+    @staticmethod
+    def _mask_identifier(identifier: str) -> str:
+        """Mask sensitive identifiers before logging."""
+        if not identifier:
+            return "<unset>"
+        if len(identifier) <= 4:
+            return "*" * len(identifier)
+        return f"{identifier[:2]}***{identifier[-2:]}"
+
     def ensure_signal_cli_ready(self):
         """
         Verify signal-cli is available for polling mode (no daemon needed).
         """
         try:
-            result = subprocess.run(
-                ['signal-cli', '-a', self.phone_number, 'listGroups'],
-                capture_output=True,
-                timeout=5,
-                check=False
-            )
-            logger.info("✅ signal-cli ready for polling mode")
-            return True
+            result = self._run_signal_cli(['listGroups'], timeout=5)
+            if result.returncode == 0:
+                self._status['available'] = True
+                self._status['last_error'] = None
+                logger.info("✅ signal-cli ready for polling mode")
+                return True
+
+            error_msg = (result.stderr or result.stdout or "unknown signal-cli error").strip()
+            self._status['available'] = False
+            self._status['last_error'] = error_msg[:250]
+            logger.warning("signal-cli readiness check failed: %s", error_msg[:250])
+            return False
         except FileNotFoundError:
+            self._status['available'] = False
+            self._status['last_error'] = "signal-cli not found"
             print("WARNING: signal-cli not found. Messaging will be unavailable.")
             return False
         except Exception as e:
+            self._status['available'] = False
+            self._status['last_error'] = str(e)
             logger.error(f"❌ signal-cli not ready: {e}")
             return False
 
@@ -361,7 +401,7 @@ class SignalHandler:
             self.send_message_native(recipient, message, attachments)
 
         threading.Thread(target=_send, daemon=True, name=f"NativeSend-{recipient[:10]}").start()
-        logger.debug(f"⚡ Started native send thread for {recipient}")
+        logger.debug("⚡ Started native send thread for %s", self._mask_identifier(recipient))
         return True
 
     def start_listening(self):
@@ -372,12 +412,13 @@ class SignalHandler:
             print("DEBUG: start_listening() called but already listening")
             return
 
-        print(f"DEBUG: start_listening() called for {self.phone_number}")
+        print("DEBUG: start_listening() called")
         self.listening = True
         self.listen_thread = threading.Thread(
             target=self._polling_loop, daemon=True, name="signal-polling"
         )
         self.listen_thread.start()
+        self._status['listening'] = True
         print("DEBUG: Polling started (5-second intervals)")
     
     def stop_listening(self):
@@ -392,6 +433,7 @@ class SignalHandler:
         # will finish naturally.  New submissions are impossible because the
         # polling thread has stopped.
         self._msg_handler_pool.shutdown(wait=False)
+        self._status['listening'] = False
         print("⏹ Polling stopped")
 
     def is_listening(self):
@@ -558,6 +600,7 @@ class SignalHandler:
 
         while self.listening:
             try:
+                self._status['last_poll_at'] = datetime.utcnow().isoformat()
                 cmd = ["signal-cli", "-a", self.phone_number, "receive", "--timeout", "1"]
                 if use_json:
                     cmd.append("--json")
@@ -589,9 +632,16 @@ class SignalHandler:
 
                 # Reset error counter on successful poll
                 consecutive_errors = 0
+                self._status['available'] = True
+                self._status['last_success_at'] = datetime.utcnow().isoformat()
+                self._status['last_receive_error'] = None
+                self._status['consecutive_errors'] = 0
 
             except FileNotFoundError:
                 consecutive_errors += 1
+                self._status['available'] = False
+                self._status['last_receive_error'] = "signal-cli not found"
+                self._status['consecutive_errors'] = consecutive_errors
                 if consecutive_errors == 1:
                     print("ERROR: signal-cli not found. Retrying every 30 seconds...")
                 elif consecutive_errors % 10 == 0:
@@ -601,9 +651,13 @@ class SignalHandler:
                 continue
             except subprocess.TimeoutExpired:
                 consecutive_errors += 1
+                self._status['last_receive_error'] = "signal-cli receive timeout"
+                self._status['consecutive_errors'] = consecutive_errors
                 print(f"WARNING: signal-cli receive timed out (attempt {consecutive_errors}); retrying")
             except Exception as exc:
                 consecutive_errors += 1
+                self._status['last_receive_error'] = str(exc)
+                self._status['consecutive_errors'] = consecutive_errors
                 print(f"WARNING: Polling error ({consecutive_errors}): {exc}")
                 if consecutive_errors >= self._MAX_CONSECUTIVE_POLL_ERRORS:
                     print(f"WARNING: {self._MAX_CONSECUTIVE_POLL_ERRORS} consecutive polling errors; backing off {self._BACKOFF_SLEEP_SECONDS}s")
@@ -861,6 +915,11 @@ Thank you for your purchase!
         with self._conversation_cache_lock:
             self._conversation_cache.pop(contact_id, None)
 
+    def clear_all_live_conversations(self):
+        """Clear all in-memory live conversations."""
+        with self._conversation_cache_lock:
+            self._conversation_cache.clear()
+
     def list_contacts(self) -> List[Dict]:
         """List contacts from signal-cli for live message browsing."""
         if not self.phone_number:
@@ -868,13 +927,10 @@ Thank you for your purchase!
         contacts = []
         seen = set()
         try:
-            result = subprocess.run(
-                ['signal-cli', '-a', self.phone_number, 'listContacts'],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
+            result = self._run_signal_cli(['listContacts'], timeout=10)
+            if result.returncode != 0:
+                logger.warning("signal-cli listContacts failed: %s", (result.stderr or "unknown error").strip()[:250])
+                return []
             output = result.stdout or ""
             for line in output.splitlines():
                 line = line.strip()
@@ -913,6 +969,13 @@ Thank you for your purchase!
             return []
 
         return contacts
+
+    def get_health_status(self) -> Dict[str, object]:
+        """Return current Signal service status for UI and diagnostics."""
+        return {
+            **self._status,
+            'cached_conversations': len(self._conversation_cache),
+        }
 
     def _verify_auto_trust_config(self):
         """Verify that auto-trust configuration is active (reads local config file)."""

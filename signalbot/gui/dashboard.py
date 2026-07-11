@@ -37,6 +37,7 @@ from ..config.settings import (
     MESSAGE_SEND_DELAY_SECONDS
 )
 from ..core.signal_handler import SignalHandler
+from ..core.cleanup_manager import CleanupManager
 from ..utils.image_tools import image_processor
 from ..core.monero_wallet import InHouseWallet
 from ..models.node import NodeManager, MoneroNodeConfig
@@ -57,6 +58,7 @@ _CATALOG_INTER_PRODUCT_DELAY_SECONDS = 2.5  # Pause between sending successive p
 
 # Background worker shutdown timeout
 _WORKER_STOP_TIMEOUT_MS = 500  # Maximum milliseconds to wait for a worker thread to stop
+DEFAULT_SELLER_ID = 1
 
 
 def _format_product_id(product_id: Optional[str]) -> str:
@@ -3617,7 +3619,7 @@ class MessagesTab(QWidget):
         return f"[{timestamp}] {sender_name}: {text}\n"
     
     def load_conversations(self):
-        """Load conversation list directly from Signal (no database message queries)."""
+        """Load conversation list from live Signal conversations only."""
         if not self.my_signal_id:
             self.conversations_list.clear()
             item = QListWidgetItem("No Signal ID configured")
@@ -3629,18 +3631,6 @@ class MessagesTab(QWidget):
         live_conversations = self.signal_handler.get_live_conversations() if self.signal_handler else []
         live_lookup = {c['contact_id']: c for c in live_conversations}
         contact_ids = [c['contact_id'] for c in live_conversations]
-        contact_id_set = set(contact_ids)
-
-        if self.signal_handler:
-            for contact in self.signal_handler.list_contacts():
-                contact_id = contact.get('id')
-                if not contact_id:
-                    continue
-                with self._contact_name_lock:
-                    self._contact_name_cache[contact_id] = contact.get('name') or contact_id
-                if contact_id not in contact_id_set:
-                    contact_ids.append(contact_id)
-                    contact_id_set.add(contact_id)
 
         if not contact_ids:
             item = QListWidgetItem("No conversations yet")
@@ -3649,8 +3639,7 @@ class MessagesTab(QWidget):
             return
 
         for contact_id in contact_ids:
-            with self._contact_name_lock:
-                display_name = self._contact_name_cache.get(contact_id, contact_id)
+            display_name = self._resolve_display_name(contact_id)
             last_msg = (live_lookup.get(contact_id, {}).get('last_message') or "").strip()
             item_text = f"{display_name} - {last_msg[:30]}..." if last_msg else display_name
             item = QListWidgetItem(item_text)
@@ -3681,6 +3670,12 @@ class MessagesTab(QWidget):
         with self._contact_name_lock:
             if recipient in self._contact_name_cache:
                 return self._contact_name_cache[recipient]
+        if self.contact_manager:
+            contact = self.contact_manager.get_contact_by_signal_id(recipient)
+            if contact and contact.name:
+                with self._contact_name_lock:
+                    self._contact_name_cache[recipient] = contact.name
+                return contact.name
         return recipient
 
     def _render_conversation(self, recipient):
@@ -4050,10 +4045,25 @@ class MessagesTab(QWidget):
 class SettingsTab(QWidget):
     """Settings tab with configuration options"""
     
-    def __init__(self, seller_manager: SellerManager, signal_handler: SignalHandler):
+    def __init__(
+        self,
+        seller_manager: SellerManager,
+        signal_handler: SignalHandler,
+        message_manager: Optional[MessageManager] = None,
+        order_manager: Optional[OrderManager] = None,
+        cleanup_manager: Optional[CleanupManager] = None,
+        wallet=None,
+        payment_processor=None
+    ):
         super().__init__()
         self.seller_manager = seller_manager
         self.signal_handler = signal_handler
+        self.message_manager = message_manager
+        self.order_manager = order_manager
+        self.cleanup_manager = cleanup_manager
+        self.wallet = wallet
+        self.payment_processor = payment_processor
+        self.current_seller_id = DEFAULT_SELLER_ID
         
         # Main layout with scroll
         scroll = QScrollArea()
@@ -4070,7 +4080,7 @@ class SettingsTab(QWidget):
         signal_group = QGroupBox("Signal Account")
         signal_layout = QVBoxLayout()
         
-        seller = self.seller_manager.get_seller(1)
+        seller = self.seller_manager.get_seller(self.current_seller_id)
         
         # Display current number
         current_number_layout = QHBoxLayout()
@@ -4151,8 +4161,67 @@ class SettingsTab(QWidget):
         
         wallet_group.setLayout(wallet_layout)
         layout.addWidget(wallet_group)
+
+        # Section 3: Service Health
+        health_group = QGroupBox("Health / Status")
+        health_layout = QGridLayout()
+        health_layout.addWidget(QLabel("Signal Listener:"), 0, 0)
+        self.signal_health_label = QLabel("Unknown")
+        health_layout.addWidget(self.signal_health_label, 0, 1)
+        health_layout.addWidget(QLabel("Wallet RPC:"), 1, 0)
+        self.wallet_health_label = QLabel("Unknown")
+        health_layout.addWidget(self.wallet_health_label, 1, 1)
+        health_layout.addWidget(QLabel("Payment Processor:"), 2, 0)
+        self.payment_health_label = QLabel("Unknown")
+        health_layout.addWidget(self.payment_health_label, 2, 1)
+        health_layout.addWidget(QLabel("Last Cleanup:"), 3, 0)
+        self.cleanup_health_label = QLabel(getattr(seller, 'cleanup_status', None) or "Not run yet")
+        health_layout.addWidget(self.cleanup_health_label, 3, 1)
+        refresh_health_btn = QPushButton("Refresh Status")
+        refresh_health_btn.clicked.connect(self.refresh_health_status)
+        health_layout.addWidget(refresh_health_btn, 4, 0, 1, 2)
+        health_group.setLayout(health_layout)
+        layout.addWidget(health_group)
+
+        # Section 4: Data Privacy / Retention
+        privacy_group = QGroupBox("Data Privacy")
+        privacy_layout = QFormLayout()
+        self.message_retention_spin = QSpinBox()
+        self.message_retention_spin.setRange(1, 3650)
+        self.message_retention_spin.setValue(getattr(seller, 'message_retention_days', 30) or 30)
+        self.message_retention_spin.setSuffix(" days")
+        privacy_layout.addRow("Message retention:", self.message_retention_spin)
+
+        self.order_archive_spin = QSpinBox()
+        self.order_archive_spin.setRange(1, 3650)
+        self.order_archive_spin.setValue(getattr(seller, 'order_archive_days', 90) or 90)
+        self.order_archive_spin.setSuffix(" days")
+        privacy_layout.addRow("Order archival:", self.order_archive_spin)
+
+        self.archive_retention_spin = QSpinBox()
+        self.archive_retention_spin.setRange(1, 3650)
+        self.archive_retention_spin.setValue(getattr(seller, 'archive_retention_days', 365) or 365)
+        self.archive_retention_spin.setSuffix(" days")
+        privacy_layout.addRow("Archive purge:", self.archive_retention_spin)
+
+        self.storage_usage_label = QLabel("Storage usage unavailable")
+        privacy_layout.addRow("Storage usage:", self.storage_usage_label)
+
+        privacy_buttons = QHBoxLayout()
+        refresh_storage_btn = QPushButton("Refresh Storage")
+        refresh_storage_btn.clicked.connect(self.refresh_storage_usage)
+        privacy_buttons.addWidget(refresh_storage_btn)
+        run_cleanup_btn = QPushButton("Run Cleanup Now")
+        run_cleanup_btn.setStyleSheet("background-color: #b22222; color: white; font-weight: bold; border: 1px solid #7f1d1d;")
+        run_cleanup_btn.clicked.connect(self.run_cleanup_now)
+        privacy_buttons.addWidget(run_cleanup_btn)
+        privacy_buttons.addStretch()
+        privacy_layout.addRow(privacy_buttons)
+
+        privacy_group.setLayout(privacy_layout)
+        layout.addWidget(privacy_group)
         
-        # Section 3: Shop Settings
+        # Section 5: Shop Settings
         shop_group = QGroupBox("Shop Settings")
         shop_layout = QFormLayout()
         
@@ -4183,7 +4252,7 @@ class SettingsTab(QWidget):
         shop_group.setLayout(shop_layout)
         layout.addWidget(shop_group)
         
-        # Section 4: Commission Info
+        # Section 6: Commission Info
         commission_group = QGroupBox("Commission Information (Read-Only)")
         commission_layout = QVBoxLayout()
         
@@ -4212,19 +4281,119 @@ class SettingsTab(QWidget):
         self.expiration_spin = expiration_spin
         self.stock_threshold_spin = stock_threshold_spin
         self.confirmations_spin = confirmations_spin
+        self.refresh_health_status()
+        self.refresh_storage_usage()
     
     def save_settings(self):
         """Save settings changes"""
         try:
-            seller = self.seller_manager.get_seller(1)
+            seller = self.seller_manager.get_seller(self.current_seller_id)
             if seller:
                 seller.default_currency = self.currency_combo.currentText()
+                seller.message_retention_days = self.message_retention_spin.value()
+                seller.order_archive_days = self.order_archive_spin.value()
+                seller.archive_retention_days = self.archive_retention_spin.value()
                 self.seller_manager.update_seller(seller)
+                if self.message_manager and hasattr(self.message_manager, 'invalidate_retention_cache'):
+                    self.message_manager.invalidate_retention_cache()
+                if self.order_manager and hasattr(self.order_manager, 'invalidate_archive_settings_cache'):
+                    self.order_manager.invalidate_archive_settings_cache()
                 QMessageBox.information(self, "Success", "Settings saved successfully!")
+                self.refresh_storage_usage()
             else:
                 QMessageBox.warning(self, "Error", "Seller not found")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save settings: {e}")
+
+    def refresh_health_status(self):
+        """Refresh Signal, wallet, payment, and cleanup health indicators."""
+        signal_status = self.signal_handler.get_health_status() if self.signal_handler else {}
+        signal_ok = signal_status.get('available') and signal_status.get('listening')
+        self.signal_health_label.setText(
+            f"{'✅' if signal_ok else '⚠️'} "
+            f"{'Listening' if signal_status.get('listening') else 'Not listening'}"
+        )
+
+        wallet_status = self.wallet.get_health_status() if self.wallet and hasattr(self.wallet, 'get_health_status') else {}
+        wallet_ok = wallet_status.get('connected') or wallet_status.get('rpc', {}).get('responding')
+        wallet_error = wallet_status.get('last_error') or wallet_status.get('rpc', {}).get('error')
+        self.wallet_health_label.setText(
+            f"{'✅' if wallet_ok else '⚠️'} "
+            f"{'Connected' if wallet_ok else (wallet_error or 'Disconnected')}"
+        )
+
+        payment_status = self.payment_processor.get_health_status() if self.payment_processor and hasattr(self.payment_processor, 'get_health_status') else {}
+        payment_ok = payment_status.get('healthy')
+        queued_retries = payment_status.get('queued_retries', 0)
+        payment_text = "Healthy" if payment_ok else (payment_status.get('last_error') or "Degraded")
+        if queued_retries:
+            payment_text = f"{payment_text} ({queued_retries} retries queued)"
+        self.payment_health_label.setText(f"{'✅' if payment_ok else '⚠️'} {payment_text}")
+
+        cleanup_status = self.cleanup_manager.get_status() if self.cleanup_manager else {}
+        cleanup_text = cleanup_status.get('last_result')
+        if not cleanup_text:
+            seller = self.seller_manager.get_seller(self.current_seller_id)
+            cleanup_text = getattr(seller, 'cleanup_status', None) or "Not run yet"
+        self.cleanup_health_label.setText(cleanup_text)
+
+    def refresh_storage_usage(self):
+        """Refresh storage usage summary."""
+        if not self.cleanup_manager:
+            self.storage_usage_label.setText("Cleanup manager unavailable")
+            return
+
+        usage = self.cleanup_manager.get_storage_usage()
+        database_mb = usage.get('database_bytes', 0) / (1024 * 1024)
+        self.storage_usage_label.setText(
+            f"{usage.get('live_messages', 0)} live msg, "
+            f"{usage.get('archived_messages', 0)} archived msg, "
+            f"{usage.get('live_orders', 0)} live orders, "
+            f"{usage.get('archived_orders', 0)} archived orders, "
+            f"{database_mb:.2f} MB DB"
+        )
+
+    def run_cleanup_now(self):
+        """Run full manual cleanup after PIN verification."""
+        if not self.cleanup_manager:
+            QMessageBox.warning(self, "Unavailable", "Cleanup manager is not available")
+            return
+
+        pin_dialog = PINDialog(self)
+        pin_dialog.setWindowTitle("Enter PIN to Run Cleanup")
+        if pin_dialog.exec_() != QDialog.Accepted:
+            return
+
+        if not self.seller_manager.verify_pin(self.current_seller_id, pin_dialog.get_pin()):
+            QMessageBox.critical(self, "Access Denied", "Incorrect PIN")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Delete All Data",
+            "This will permanently delete all orders, addresses, messages, and archives.\n\nContinue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            result = self.cleanup_manager.run_full_cleanup()
+            if self.signal_handler and hasattr(self.signal_handler, 'clear_all_live_conversations'):
+                self.signal_handler.clear_all_live_conversations()
+            total_deleted = sum(result.values())
+            self.refresh_health_status()
+            self.refresh_storage_usage()
+            QMessageBox.information(
+                self,
+                "Cleanup Complete",
+                f"Deleted {total_deleted} records.\n\n"
+                f"Messages: {result.get('live_messages_deleted', 0)} live, {result.get('archived_messages_deleted', 0)} archived\n"
+                f"Orders: {result.get('live_orders_deleted', 0)} live, {result.get('archived_orders_deleted', 0)} archived"
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Cleanup Failed", str(exc))
     
     def relink_signal(self):
         """Open re-link dialog"""
@@ -5477,6 +5646,12 @@ class DashboardWindow(QMainWindow):
         self.order_manager = OrderManager(db_manager)
         self.contact_manager = ContactManager(db_manager)
         self.message_manager = MessageManager(db_manager)
+        self.cleanup_manager = CleanupManager(
+            self.seller_manager,
+            self.message_manager,
+            self.order_manager,
+        )
+        self.cleanup_manager.start()
         
         # Initialize SignalHandler if not provided
         if signal_handler is None:
@@ -5696,7 +5871,15 @@ class DashboardWindow(QMainWindow):
             (lambda: OrdersTab(self.order_manager, self.signal_handler), "Orders"),
             (lambda: MessagesTab(self.signal_handler, self.contact_manager, self.message_manager, self.seller_manager, self.product_manager), "Messages"),
             (lambda: ContactsTab(self.contact_manager, self.message_manager, self.signal_handler), "Contacts"),
-            (lambda: SettingsTab(self.seller_manager, self.signal_handler), "Settings"),
+            (lambda: SettingsTab(
+                self.seller_manager,
+                self.signal_handler,
+                self.message_manager,
+                self.order_manager,
+                self.cleanup_manager,
+                wallet=self.wallet,
+                payment_processor=self.payment_processor,
+            ), "Settings"),
         ]
         # Track which tab indices have already been fully loaded
         self._loaded_tabs: set = set()  # type: set[int]
@@ -5715,6 +5898,20 @@ class DashboardWindow(QMainWindow):
         self.setCentralWidget(self.tabs)
         
         print("✓ DEBUG: Dashboard initialization completed successfully")
+
+    def closeEvent(self, event):
+        """Stop background monitors on dashboard close."""
+        try:
+            if self.payment_processor:
+                self.payment_processor.stop_monitoring()
+            if self.node_monitor:
+                self.node_monitor.stop()
+            if self.cleanup_manager:
+                self.cleanup_manager.stop()
+            if self.signal_handler:
+                self.signal_handler.stop()
+        finally:
+            super().closeEvent(event)
     
     # ------------------------------------------------------------------
     # Lazy-loading helpers

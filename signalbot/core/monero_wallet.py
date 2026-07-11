@@ -4,7 +4,7 @@ Handles in-house wallet management and RPC connections
 """
 
 import requests
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple, Any
 import json
 import subprocess
 import time
@@ -27,6 +27,7 @@ from ..config.settings import (
 )
 
 logger = logging.getLogger(__name__)
+RPC_RETRY_ATTEMPTS = 3
 
 
 class InHouseWallet:
@@ -62,6 +63,11 @@ class InHouseWallet:
         self.rpc_process = None
         self.rpc_port = 18083  # Default wallet RPC port (MUST match wallet_setup.py)
         self._connected = False  # Track wallet connection status
+        self._status = {
+            'connected': False,
+            'last_success_at': None,
+            'last_error': None,
+        }
         
         # Auto-setup manager for wallet creation and RPC management
         self.setup_manager = WalletSetupManager(
@@ -187,12 +193,20 @@ class InHouseWallet:
             # Test connection
             try:
                 self.wallet.height()
+                self._connected = True
+                self._status['connected'] = True
+                self._status['last_success_at'] = datetime.utcnow().isoformat()
+                self._status['last_error'] = None
                 return True
-            except Exception:
+            except Exception as exc:
+                self._status['connected'] = False
+                self._status['last_error'] = str(exc)
                 return False
                 
         except Exception as e:
             print(f"Failed to connect wallet: {e}")
+            self._status['connected'] = False
+            self._status['last_error'] = str(e)
             return False
     
     def _start_wallet_rpc(self):
@@ -251,10 +265,15 @@ class InHouseWallet:
             # Test connection by getting address
             self.wallet.address()
             self._connected = True
+            self._status['connected'] = True
+            self._status['last_success_at'] = datetime.utcnow().isoformat()
+            self._status['last_error'] = None
             return True
         except Exception as e:
             logger.debug(f"Wallet not connected: {e}")
             self._connected = False
+            self._status['connected'] = False
+            self._status['last_error'] = str(e)
             return False
     
     def address(self, account: int = 0) -> Optional[str]:
@@ -601,6 +620,14 @@ class InHouseWallet:
             Dict with status info
         """
         return self.setup_manager.get_rpc_status()
+
+    def get_health_status(self) -> dict:
+        status = dict(self._status)
+        try:
+            status['rpc'] = self.get_rpc_status()
+        except Exception as exc:
+            status['rpc'] = {'running': False, 'error': str(exc)}
+        return status
     
     def close(self):
         """Close wallet connection"""
@@ -660,16 +687,28 @@ class MoneroWallet:
             self.auth = (rpc_user, rpc_password) if rpc_user and rpc_password else None
         
         elif wallet_type == 'file':
-            if not wallet_file or not wallet_password:
-                raise ValueError("Wallet file and password required for file mode")
+            if not wallet_file or wallet_password is None:
+                raise ValueError("Wallet file is required. Set wallet_password to empty string if no password is needed.")
             
             self.wallet_file = wallet_file
             self.wallet_password = wallet_password
             self.rpc_process = None
             self.rpc_url = None
+            self.auth = None
         
         else:
             raise ValueError(f"Invalid wallet type: {wallet_type}")
+
+        self.rpc_host = rpc_host
+        self.rpc_port = rpc_port
+        self.backup_rpc_endpoints: List[Tuple[str, int]] = []
+        self._status = {
+            'connected': False,
+            'last_success_at': None,
+            'last_error': None,
+            'active_endpoint': f"{rpc_host}:{rpc_port}" if rpc_host and rpc_port else None,
+            'retry_count': 0,
+        }
     
     def _rpc_call(self, method: str, params: Optional[Dict] = None) -> Dict:
         """
@@ -693,29 +732,67 @@ class MoneroWallet:
         
         if params:
             payload['params'] = params
-        
+
+        return self._rpc_call_with_payload(payload)
+
+    def _rpc_call_with_payload(self, payload: Dict) -> Dict:
+        """Execute an RPC payload with retry/reconnect support."""
+        last_error = None
+        for attempt in range(1, RPC_RETRY_ATTEMPTS + 1):
+            try:
+                response = requests.post(
+                    self.rpc_url,
+                    json=payload,
+                    auth=self.auth,
+                    timeout=30
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                
+                if 'error' in result:
+                    error_msg = result['error'].get('message', result['error'])
+                    raise RuntimeError(f"RPC error: {error_msg}")
+
+                self._status['connected'] = True
+                self._status['last_success_at'] = datetime.utcnow().isoformat()
+                self._status['last_error'] = None
+                self._status['retry_count'] = 0
+                return result.get('result', {})
+            except requests.exceptions.ConnectionError as e:
+                last_error = f"Cannot connect to wallet RPC: {e}"
+            except requests.exceptions.Timeout:
+                last_error = "Wallet RPC timeout - check node connection"
+            except Exception as e:
+                last_error = f"RPC call failed: {e}"
+
+            self._status['connected'] = False
+            self._status['last_error'] = last_error
+            self._status['retry_count'] = attempt
+            logger.warning("Wallet RPC call failed (attempt %s/%s): %s", attempt, RPC_RETRY_ATTEMPTS, last_error)
+
+            if self.wallet_type == 'rpc' and self.ensure_connection():
+                continue
+            if self._switch_to_backup_endpoint():
+                continue
+            time.sleep(min(attempt, 3))
+
+        raise RuntimeError(last_error or "Unknown wallet RPC failure")
+
+    def _rpc_ping(self) -> bool:
+        if not self.rpc_url:
+            return False
         try:
             response = requests.post(
                 self.rpc_url,
-                json=payload,
+                json={'jsonrpc': '2.0', 'id': '0', 'method': 'get_balance'},
                 auth=self.auth,
-                timeout=30
+                timeout=10,
             )
             response.raise_for_status()
-            
-            result = response.json()
-            
-            if 'error' in result:
-                error_msg = result['error'].get('message', result['error'])
-                raise RuntimeError(f"RPC error: {error_msg}")
-            
-            return result.get('result', {})
-        except requests.exceptions.ConnectionError as e:
-            raise RuntimeError(f"Cannot connect to wallet RPC: {e}")
-        except requests.exceptions.Timeout:
-            raise RuntimeError(f"Wallet RPC timeout - check node connection")
-        except Exception as e:
-            raise RuntimeError(f"RPC call failed: {e}")
+            return True
+        except Exception:
+            return False
     
     def test_connection(self) -> bool:
         """
@@ -725,10 +802,64 @@ class MoneroWallet:
             True if connection successful
         """
         try:
-            result = self._rpc_call('get_balance')
-            return True
-        except:
+            ok = self._rpc_ping()
+            if ok:
+                self._status['connected'] = True
+                self._status['last_success_at'] = datetime.utcnow().isoformat()
+                self._status['last_error'] = None
+            return ok
+        except Exception as exc:
+            self._status['connected'] = False
+            self._status['last_error'] = str(exc)
             return False
+
+    def set_backup_rpc_endpoints(self, endpoints: List[Tuple[str, int]]) -> None:
+        self.backup_rpc_endpoints = list(endpoints or [])
+
+    def _switch_to_backup_endpoint(self) -> bool:
+        if self.wallet_type != 'rpc':
+            return False
+
+        for host, port in self.backup_rpc_endpoints:
+            endpoint = f"{host}:{port}"
+            if endpoint == self._status.get('active_endpoint'):
+                continue
+            logger.warning("Attempting wallet RPC failover to %s", endpoint)
+            self.rpc_host = host
+            self.rpc_port = port
+            self.rpc_url = f"http://{host}:{port}/json_rpc"
+            self._status['active_endpoint'] = endpoint
+            try:
+                if not self._rpc_ping():
+                    raise RuntimeError("RPC ping failed")
+                self._status['connected'] = True
+                self._status['last_success_at'] = datetime.utcnow().isoformat()
+                self._status['last_error'] = None
+                logger.info("Wallet RPC failover succeeded: %s", endpoint)
+                return True
+            except Exception as exc:
+                self._status['last_error'] = str(exc)
+                logger.warning("Wallet RPC failover failed for %s: %s", endpoint, exc)
+
+        return False
+
+    def ensure_connection(self) -> bool:
+        if self.wallet_type != 'rpc':
+            return bool(self.rpc_url)
+
+        if self._rpc_ping():
+            self._status['connected'] = True
+            self._status['last_success_at'] = datetime.utcnow().isoformat()
+            self._status['last_error'] = None
+            return True
+
+        if self._switch_to_backup_endpoint():
+            return True
+
+        return False
+
+    def get_health_status(self) -> Dict[str, Any]:
+        return dict(self._status)
     
     def get_balance(self) -> Tuple[float, float]:
         """

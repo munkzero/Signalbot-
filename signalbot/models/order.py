@@ -2,11 +2,13 @@
 Order model and management
 """
 
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from datetime import datetime, timedelta
 import secrets
-from ..database.db import Order as OrderModel, DatabaseManager
+from ..database.db import Order as OrderModel, OrderArchive as OrderArchiveModel, DatabaseManager, Seller as SellerModel
 from ..config.settings import ORDER_EXPIRATION_MINUTES
+
+DEFAULT_SELLER_ID = 1
 
 
 class ShippingNotificationError(Exception):
@@ -45,7 +47,9 @@ class Order:
         shipped_at: Optional[datetime] = None,
         expires_at: Optional[datetime] = None,
         paid_at: Optional[datetime] = None,
-        created_at: Optional[datetime] = None
+        created_at: Optional[datetime] = None,
+        archived_at: Optional[datetime] = None,
+        purge_at: Optional[datetime] = None
     ):
         self.id = id
         self.order_id = order_id or self._generate_order_id()
@@ -73,6 +77,8 @@ class Order:
         self.expires_at = expires_at or (datetime.utcnow() + timedelta(minutes=ORDER_EXPIRATION_MINUTES))
         self.paid_at = paid_at
         self.created_at = created_at or datetime.utcnow()
+        self.archived_at = archived_at
+        self.purge_at = purge_at
     
     @staticmethod
     def _generate_order_id() -> str:
@@ -137,7 +143,9 @@ class Order:
             shipped_at=getattr(db_order, 'shipped_at', None),
             expires_at=db_order.expires_at,
             paid_at=db_order.paid_at,
-            created_at=db_order.created_at
+            created_at=db_order.created_at,
+            archived_at=getattr(db_order, 'archived_at', None),
+            purge_at=getattr(db_order, 'purge_at', None)
         )
     
     def to_db_model(self, db_manager: DatabaseManager) -> OrderModel:
@@ -185,7 +193,9 @@ class Order:
             tracking_number=self.tracking_number,
             shipped_at=self.shipped_at,
             expires_at=self.expires_at,
-            paid_at=self.paid_at
+            paid_at=self.paid_at,
+            archived_at=self.archived_at,
+            purge_at=self.purge_at
         )
         
         if self.id:
@@ -199,6 +209,21 @@ class OrderManager:
     
     def __init__(self, db_manager: DatabaseManager):
         self.db = db_manager
+        self._cached_archive_settings: Optional[Tuple[int, int]] = None
+
+    def _get_archive_settings(self) -> Tuple[int, int]:
+        if self._cached_archive_settings is None:
+            seller = self.db.session.query(SellerModel).filter_by(id=DEFAULT_SELLER_ID).first()
+            archive_days = getattr(seller, 'order_archive_days', 90) if seller else 90
+            purge_days = getattr(seller, 'archive_retention_days', 365) if seller else 365
+            self._cached_archive_settings = (
+                max(1, int(archive_days or 90)),
+                max(1, int(purge_days or 365)),
+            )
+        return self._cached_archive_settings
+
+    def invalidate_archive_settings_cache(self) -> None:
+        self._cached_archive_settings = None
     
     def create_order(self, order: Order) -> Order:
         """
@@ -318,6 +343,92 @@ class OrderManager:
         
         self.db.session.commit()
         return expired_ids
+
+    def _archive_order_record(self, db_order: OrderModel, purge_at: datetime) -> None:
+        archive = OrderArchiveModel(
+            original_order_db_id=db_order.id,
+            order_id=db_order.order_id,
+            customer_signal_id=db_order.customer_signal_id,
+            customer_signal_id_salt=db_order.customer_signal_id_salt,
+            product_id=db_order.product_id,
+            product_name=db_order.product_name,
+            quantity=db_order.quantity,
+            price_fiat=db_order.price_fiat,
+            currency=db_order.currency,
+            price_xmr=db_order.price_xmr,
+            payment_address=db_order.payment_address,
+            payment_address_salt=db_order.payment_address_salt,
+            address_index=getattr(db_order, 'address_index', None),
+            payment_status=db_order.payment_status,
+            order_status=db_order.order_status,
+            amount_paid=db_order.amount_paid,
+            payment_txid=getattr(db_order, 'payment_txid', None),
+            commission_amount=db_order.commission_amount,
+            seller_amount=db_order.seller_amount,
+            commission_paid=getattr(db_order, 'commission_paid', False),
+            commission_txid=getattr(db_order, 'commission_txid', None),
+            commission_paid_at=getattr(db_order, 'commission_paid_at', None),
+            shipping_info=getattr(db_order, 'shipping_info', None),
+            shipping_info_salt=getattr(db_order, 'shipping_info_salt', None),
+            tracking_number=getattr(db_order, 'tracking_number', None),
+            shipped_at=getattr(db_order, 'shipped_at', None),
+            expires_at=db_order.expires_at,
+            paid_at=db_order.paid_at,
+            created_at=db_order.created_at,
+            archived_at=datetime.utcnow(),
+            purge_at=purge_at,
+        )
+        self.db.session.add(archive)
+
+    def archive_orders_older_than(self, archive_days: Optional[int] = None, purge_after_days: Optional[int] = None) -> int:
+        default_archive_days, default_purge_days = self._get_archive_settings()
+        archive_days = max(1, int(archive_days or default_archive_days))
+        purge_after_days = max(1, int(purge_after_days or default_purge_days))
+        cutoff = datetime.utcnow() - timedelta(days=archive_days)
+        purge_at = datetime.utcnow() + timedelta(days=purge_after_days)
+
+        candidates = (
+            self.db.session.query(OrderModel)
+            .filter(OrderModel.created_at < cutoff)
+            .filter(OrderModel.archived_at.is_(None))
+            .all()
+        )
+
+        archived_count = 0
+        for db_order in candidates:
+            self._archive_order_record(db_order, purge_at)
+            db_order.archived_at = datetime.utcnow()
+            self.db.session.delete(db_order)
+            archived_count += 1
+
+        if archived_count:
+            self.db.session.commit()
+        return archived_count
+
+    def purge_archived_orders(self, purge_after_days: Optional[int] = None) -> int:
+        _, default_purge_days = self._get_archive_settings()
+        purge_after_days = max(1, int(purge_after_days or default_purge_days))
+        cutoff = datetime.utcnow() - timedelta(days=purge_after_days)
+
+        # Purge when either an explicit purge deadline has passed or the archive
+        # record has outlived the configured retention window.
+        candidates = (
+            self.db.session.query(OrderArchiveModel)
+            .filter(
+                (OrderArchiveModel.purge_at.isnot(None) & (OrderArchiveModel.purge_at < datetime.utcnow())) |
+                (OrderArchiveModel.archived_at < cutoff)
+            )
+            .all()
+        )
+
+        purged_count = 0
+        for archive in candidates:
+            self.db.session.delete(archive)
+            purged_count += 1
+
+        if purged_count:
+            self.db.session.commit()
+        return purged_count
     
     def mark_paid(self, order_id: str, amount_paid: float):
         """
@@ -553,3 +664,12 @@ class OrderManager:
         self.db.session.delete(db_order)
         self.db.session.commit()
         return True
+
+    def delete_all_orders_and_archives(self) -> dict:
+        live_deleted = self.db.session.query(OrderModel).delete()
+        archived_deleted = self.db.session.query(OrderArchiveModel).delete()
+        self.db.session.commit()
+        return {
+            'live_orders_deleted': live_deleted,
+            'archived_orders_deleted': archived_deleted,
+        }
