@@ -540,43 +540,48 @@ class BuyerHandler:
 
         failed_count = total_products - sent_count
 
-        # Send footer with order instructions
-        footer = f"""
-✨ END OF CATALOG
+        # ===== SEND INSTRUCTIONS FOOTER =====
+        instructions = """
+✨ CATALOG COMPLETE ✨
 
-📋 TO PLACE AN ORDER:
-Reply with: "order {product_id_str} qty X"
-(Replace {product_id_str} with the product number and X with quantity)
+📋 HOW TO ORDER:
 
-💳 AFTER ORDER:
-1. You'll get a payment address and QR code
-2. Send exactly the XMR amount shown
-3. Once paid, order processing begins
-4. You'll get shipping updates
+Reply with: order #1 qty 2
+(replace #1 with product number, 2 with quantity)
 
-❓ NEED HELP?
-Reply "help" for command list
+💳 AFTER YOU ORDER:
+• You get payment address & QR code
+• Send XMR amount to address
+• We'll ship when paid
+
+❓ Need help? Reply: help
 """
         try:
-            self.signal_handler.send_message_native(
+            print(f"\n📝 Sending order instructions...")
+            self.signal_handler.send_message(
                 recipient=buyer_signal_id,
-                message=footer.strip()
+                message=instructions.strip(),
+                sender_identity=recipient_identity
             )
-            print(f"✓ Footer sent\n")
+            print(f"✅ Instructions sent\n")
         except Exception as e:
-            print(f"✗ Failed to send footer: {e}\n")
+            print(f"⚠️ Instructions send failed: {e}")
+            try:
+                self.signal_handler.send_message_native(
+                    recipient=buyer_signal_id,
+                    message=instructions.strip()
+                )
+                print(f"✅ Instructions sent via native\n")
+            except Exception as e2:
+                print(f"❌ Failed to send instructions: {e2}\n")
 
         # Summary report
         print(f"\n{'='*60}")
-        print(f"📊 CATALOG SEND COMPLETE (parallel mode)")
+        print(f"📊 CATALOG SEND COMPLETE")
         print(f"{'='*60}")
-        print(f"✅ Sent: {sent_count}/{total_products} products")
-
+        print(f"✅ Products sent: {sent_count}/{total_products}")
         if failed_count:
-            print(f"❌ Failed: {failed_count} products")
-        else:
-            print(f"🎉 All products sent successfully!")
-
+            print(f"⚠️ Failed: {failed_count}")
         print(f"{'='*60}\n")
     
     def create_order(self, buyer_signal_id: str, product_id: str, quantity: int, recipient_identity: Optional[str] = None, shipping_info: Optional[str] = None):
