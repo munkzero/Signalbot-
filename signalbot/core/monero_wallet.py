@@ -688,7 +688,7 @@ class MoneroWallet:
         
         elif wallet_type == 'file':
             if not wallet_file or wallet_password is None:
-                raise ValueError("Wallet file is required and wallet_password must be provided (use empty string for no password)")
+                raise ValueError("Wallet file is required and wallet_password must be explicitly set (use empty string if no password is needed)")
             
             self.wallet_file = wallet_file
             self.wallet_password = wallet_password

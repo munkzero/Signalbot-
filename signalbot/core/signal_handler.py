@@ -80,7 +80,7 @@ class SignalHandler:
             'consecutive_errors': 0,
         }
 
-        print("DEBUG: SignalHandler initialized")
+        logger.debug("SignalHandler initialized")
 
         # Verify signal-cli is available for polling mode
         self.ensure_signal_cli_ready()

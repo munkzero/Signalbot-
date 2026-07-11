@@ -4212,7 +4212,7 @@ class SettingsTab(QWidget):
         refresh_storage_btn.clicked.connect(self.refresh_storage_usage)
         privacy_buttons.addWidget(refresh_storage_btn)
         run_cleanup_btn = QPushButton("Run Cleanup Now")
-        run_cleanup_btn.setStyleSheet("background-color: #ff6b6b; color: white; font-weight: bold;")
+        run_cleanup_btn.setStyleSheet("background-color: #b22222; color: white; font-weight: bold; border: 1px solid #7f1d1d;")
         run_cleanup_btn.clicked.connect(self.run_cleanup_now)
         privacy_buttons.addWidget(run_cleanup_btn)
         privacy_buttons.addStretch()

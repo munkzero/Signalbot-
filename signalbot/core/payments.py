@@ -4,7 +4,7 @@ Handles payment detection and commission forwarding
 """
 
 import time
-from typing import Optional, Dict, Callable, TYPE_CHECKING, Any
+from typing import Optional, Dict, Callable, TYPE_CHECKING, Any, TypedDict
 from datetime import datetime
 from collections import deque
 from .monero_wallet import MoneroWallet
@@ -24,6 +24,15 @@ if TYPE_CHECKING:
 
 # Display constants
 TXID_DISPLAY_LENGTH = 16  # Number of characters to show in transaction ID display
+
+
+class PaymentRequestDict(TypedDict):
+    address: str
+    address_index: Optional[int]
+    amount: float
+    seller_amount: float
+    commission_amount: float
+    order_id: str
 
 
 class PaymentProcessor:
@@ -66,7 +75,7 @@ class PaymentProcessor:
         self,
         order: Order,
         xmr_amount: float
-    ) -> Dict[str, Any]:
+    ) -> PaymentRequestDict:
         """
         Create payment request for order
         
