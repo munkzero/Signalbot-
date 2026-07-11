@@ -406,9 +406,11 @@ Bot: "Payment received! Order confirmed."
 ### Signal Group Support
 
 Bot can operate in Signal groups:
-- Tag bot to browse: `@shopbot show products`
-- Sensitive operations (checkout, payment) move to private DMs
-- Never shares payment details in groups
+- Use the **Groups** dashboard tab to join groups from invite links
+- Configure per-group ad frequency (1/day, 2/day, etc.)
+- Pause/resume ads per group and trigger **Post Ad Now**
+- Customize the group ad message sent on schedule
+- Sensitive operations (checkout, payment) remain in private DMs
 
 ## Project Structure
 
@@ -421,6 +423,7 @@ signalbot/
 │   └── components/        # UI components
 ├── core/
 │   ├── signal_handler.py  # Signal messaging
+│   ├── group_ad_manager.py # Group ad scheduling
 │   ├── monero_wallet.py   # Wallet integration (RPC + file)
 │   ├── payments.py        # Payment processing
 │   ├── commission.py      # Commission system (encrypted)
