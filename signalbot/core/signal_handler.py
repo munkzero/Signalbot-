@@ -26,6 +26,11 @@ class SignalHandler:
     # Maximum characters to log from envelope JSON for diagnostics.
     _MAX_ENVELOPE_LOG_LENGTH = 500
 
+    # Number of consecutive polling errors before backing off.
+    _MAX_CONSECUTIVE_POLL_ERRORS = 12
+    # Seconds to sleep after hitting _MAX_CONSECUTIVE_POLL_ERRORS.
+    _BACKOFF_SLEEP_SECONDS = 60
+
     def __init__(self, phone_number: Optional[str] = None):
         """
         Initialize Signal handler.
@@ -529,6 +534,7 @@ class SignalHandler:
         """
         poll_interval = 5
         use_json = True  # Start with JSON mode; disabled on first failure
+        consecutive_errors = 0
 
         print("DEBUG: Entering polling loop (signal-cli receive --json mode)")
 
@@ -553,6 +559,9 @@ class SignalHandler:
                         use_json = False
                         # Retry immediately in text mode (skip the poll-interval sleep)
                         continue
+                    # Log other non-zero exits for diagnostics
+                    if result.returncode != 0 and result.stderr.strip():
+                        print(f"DEBUG: signal-cli receive exit {result.returncode}: {result.stderr.strip()[:120]}")
 
                 if result.stdout.strip():
                     if use_json:
@@ -560,11 +569,29 @@ class SignalHandler:
                     else:
                         self._parse_text_output(result.stdout)
 
+                # Reset error counter on successful poll
+                consecutive_errors = 0
+
             except FileNotFoundError:
-                print("ERROR: signal-cli not found; polling mode unavailable")
-                break
+                consecutive_errors += 1
+                if consecutive_errors == 1:
+                    print("ERROR: signal-cli not found. Retrying every 30 seconds...")
+                elif consecutive_errors % 10 == 0:
+                    print(f"WARNING: signal-cli still not found after {consecutive_errors} attempts; continuing to retry...")
+                # Retry after a longer delay rather than stopping entirely
+                time.sleep(30)
+                continue
+            except subprocess.TimeoutExpired:
+                consecutive_errors += 1
+                print(f"WARNING: signal-cli receive timed out (attempt {consecutive_errors}); retrying")
             except Exception as exc:
-                print(f"WARNING: Polling error: {exc}")
+                consecutive_errors += 1
+                print(f"WARNING: Polling error ({consecutive_errors}): {exc}")
+                if consecutive_errors >= self._MAX_CONSECUTIVE_POLL_ERRORS:
+                    print(f"WARNING: {self._MAX_CONSECUTIVE_POLL_ERRORS} consecutive polling errors; backing off {self._BACKOFF_SLEEP_SECONDS}s")
+                    time.sleep(self._BACKOFF_SLEEP_SECONDS)
+                    consecutive_errors = 0
+                    continue
 
             time.sleep(poll_interval)
 

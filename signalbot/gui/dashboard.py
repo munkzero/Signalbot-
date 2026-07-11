@@ -4,6 +4,7 @@ Main seller dashboard GUI
 
 import sys
 import os
+import json
 import time
 import threading
 from PyQt5.QtWidgets import (
@@ -2746,8 +2747,15 @@ class OrdersTab(QWidget):
         # Delivery address (shipping_info) — always show when available
         row_idx = 6
         if order.shipping_info:
+            # Parse JSON shipping info if possible, fall back to raw text
+            try:
+                shipping_data = json.loads(order.shipping_info)
+                delivery_address = shipping_data.get('address', '')
+            except (ValueError, TypeError):
+                delivery_address = order.shipping_info
+
             info_layout.addWidget(QLabel("<b>Delivery Address:</b>"), row_idx, 0)
-            address_label = QLabel(order.shipping_info)
+            address_label = QLabel(delivery_address)
             address_label.setWordWrap(True)
             info_layout.addWidget(address_label, row_idx, 1)
             row_idx += 1
@@ -5862,6 +5870,34 @@ class DashboardWindow(QMainWindow):
                             # RPC is already started and connected by setup_wallet()
                             # No need to call connect() again - just start the monitor
                             print("✓ RPC already started and ready")
+                            
+                            # Start payment monitoring using JSON-RPC directly
+                            try:
+                                from ..core.payments import PaymentProcessor
+                                from ..core.commission import CommissionManager
+                                from ..core.monero_wallet import MoneroWallet
+                                # The wallet RPC is always started locally by WalletSetupManager
+                                rpc_wallet = MoneroWallet(
+                                    wallet_type='rpc',
+                                    rpc_host='127.0.0.1',
+                                    rpc_port=self.wallet.rpc_port
+                                )
+                                commission_manager = CommissionManager()
+                                self.payment_processor = PaymentProcessor(
+                                    rpc_wallet,
+                                    commission_manager,
+                                    self.order_manager,
+                                    self.signal_handler
+                                )
+                                self.payment_processor.start_monitoring()
+                                print("✓ Payment monitoring started")
+                            except Exception as pm_err:
+                                print(f"WARNING: Could not start payment monitoring: {pm_err}")
+
+                            # Give buyer handler access to wallet for subaddress generation
+                            if hasattr(self, 'buyer_handler') and self.buyer_handler:
+                                self.buyer_handler.wallet = self.wallet
+                                print("✓ Wallet linked to buyer handler (real payment addresses enabled)")
                             
                             # Start node health monitor (setup_wallet already connected)
                             self.node_monitor = NodeHealthMonitor(self.wallet.setup_manager)
