@@ -872,6 +872,56 @@ Thank you for your purchase!
             print(f"Failed to list groups: {exc}")
             return []
 
+    def join_group(self, invite_link: str) -> bool:
+        """
+        Join a Signal group using an invite link.
+
+        Args:
+            invite_link: signal.group invite URL
+
+        Returns:
+            True when join command succeeds
+        """
+        if not self.phone_number:
+            return False
+        invite = (invite_link or "").strip()
+        if not invite:
+            return False
+        try:
+            result = self._run_signal_cli(['joinGroup', '--uri', invite], timeout=30)
+            if result.returncode == 0:
+                return True
+            logger.warning("Failed to join group: %s", (result.stderr or result.stdout or "").strip()[:250])
+            return False
+        except Exception as exc:
+            logger.warning("Failed to join group: %s", exc)
+            return False
+
+    def leave_group(self, group_id: str) -> bool:
+        """
+        Leave a Signal group by group id.
+
+        Args:
+            group_id: Signal group identifier
+
+        Returns:
+            True when leave command succeeds
+        """
+        if not self.phone_number:
+            return False
+        target_group = (group_id or "").strip()
+        if not target_group:
+            return False
+        try:
+            result = self._run_signal_cli(['quitGroup', '--group-id', target_group], timeout=30)
+            if result.returncode == 0:
+                return True
+            logger.warning("Failed to leave group: %s", (result.stderr or result.stdout or "").strip()[:250])
+            return False
+        except Exception as exc:
+            logger.warning("Failed to leave group: %s", exc)
+            return False
+
     def _record_live_message(self, contact_id: str, message_text: str, timestamp: int, is_outgoing: bool):
         """Store live messages in memory for UI display without database writes."""
         if not contact_id:

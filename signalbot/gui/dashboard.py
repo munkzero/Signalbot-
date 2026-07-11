@@ -38,6 +38,7 @@ from ..config.settings import (
 )
 from ..core.signal_handler import SignalHandler
 from ..core.cleanup_manager import CleanupManager
+from ..core.group_ad_manager import GroupAdManager
 from ..utils.image_tools import image_processor
 from ..core.monero_wallet import InHouseWallet
 from ..models.node import NodeManager, MoneroNodeConfig
@@ -4042,6 +4043,215 @@ class MessagesTab(QWidget):
             QMessageBox.information(self, "Success", "Local message cache cleared")
 
 
+class GroupsTab(QWidget):
+    """Group advertisement management UI."""
+
+    def __init__(self, signal_handler: SignalHandler, group_ad_manager: GroupAdManager):
+        super().__init__()
+        self.signal_handler = signal_handler
+        self.group_ad_manager = group_ad_manager
+        self._build_ui()
+        self.refresh_groups()
+
+    def _build_ui(self):
+        layout = QVBoxLayout()
+
+        header = QLabel("🛍️ GROUP ADVERTISING MANAGER")
+        header.setFont(QFont("Arial", 14, QFont.Bold))
+        layout.addWidget(header)
+
+        status_row = QHBoxLayout()
+        status_row.addWidget(QLabel("Status:"))
+        self.status_label = QLabel("⏸ PAUSED")
+        status_row.addWidget(self.status_label)
+        status_row.addStretch()
+
+        self.start_btn = QPushButton("Start Scheduler")
+        self.start_btn.clicked.connect(self.start_scheduler)
+        self.stop_btn = QPushButton("Pause Scheduler")
+        self.stop_btn.clicked.connect(self.stop_scheduler)
+        status_row.addWidget(self.start_btn)
+        status_row.addWidget(self.stop_btn)
+        layout.addLayout(status_row)
+
+        groups_box = QGroupBox("Managed Groups")
+        groups_layout = QVBoxLayout()
+        self.groups_table = QTableWidget()
+        self.groups_table.setColumnCount(4)
+        self.groups_table.setHorizontalHeaderLabels(["Group Name", "Frequency", "Status", "Group ID"])
+        self.groups_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.groups_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.groups_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.groups_table.horizontalHeader().setStretchLastSection(True)
+        groups_layout.addWidget(self.groups_table)
+
+        action_row = QHBoxLayout()
+        join_btn = QPushButton("Join New Group")
+        join_btn.clicked.connect(self.join_new_group)
+        edit_btn = QPushButton("Edit Frequency")
+        edit_btn.clicked.connect(self.edit_selected_group_frequency)
+        toggle_btn = QPushButton("Enable/Disable")
+        toggle_btn.clicked.connect(self.toggle_selected_group)
+        remove_btn = QPushButton("Remove Group")
+        remove_btn.clicked.connect(self.remove_selected_group)
+        post_btn = QPushButton("Post Ad Now")
+        post_btn.clicked.connect(self.post_selected_group_now)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self.refresh_groups)
+        for btn in [join_btn, edit_btn, toggle_btn, remove_btn, post_btn, refresh_btn]:
+            action_row.addWidget(btn)
+        action_row.addStretch()
+        groups_layout.addLayout(action_row)
+        groups_box.setLayout(groups_layout)
+        layout.addWidget(groups_box)
+
+        settings_box = QGroupBox("Advertisement Settings")
+        settings_layout = QVBoxLayout()
+        settings_layout.addWidget(QLabel("Current Message:"))
+        self.ad_message_input = QTextEdit()
+        self.ad_message_input.setMaximumHeight(140)
+        settings_layout.addWidget(self.ad_message_input)
+        ad_btn_row = QHBoxLayout()
+        customize_btn = QPushButton("Customize Message")
+        customize_btn.clicked.connect(self.save_ad_message)
+        reset_btn = QPushButton("Reset to Default")
+        reset_btn.clicked.connect(self.reset_ad_message)
+        ad_btn_row.addWidget(customize_btn)
+        ad_btn_row.addWidget(reset_btn)
+        ad_btn_row.addStretch()
+        settings_layout.addLayout(ad_btn_row)
+        settings_box.setLayout(settings_layout)
+        layout.addWidget(settings_box)
+
+        layout.addStretch()
+        self.setLayout(layout)
+
+    def refresh_groups(self):
+        status = self.group_ad_manager.get_status()
+        self.status_label.setText("✅ RUNNING" if status["running"] else "⏸ PAUSED")
+        self.ad_message_input.setPlainText(status["ad_message"])
+
+        groups = status["groups"]
+        self.groups_table.setRowCount(len(groups))
+        for row, group in enumerate(groups):
+            self.groups_table.setItem(row, 0, QTableWidgetItem(group["name"]))
+            self.groups_table.setItem(row, 1, QTableWidgetItem(f'{group["ads_per_day"]}/day'))
+            self.groups_table.setItem(row, 2, QTableWidgetItem("✅ Enabled" if group["enabled"] else "⏸ Disabled"))
+            self.groups_table.setItem(row, 3, QTableWidgetItem(group["group_id"]))
+        self.groups_table.resizeColumnsToContents()
+
+    def start_scheduler(self):
+        self.group_ad_manager.start()
+        self.refresh_groups()
+
+    def stop_scheduler(self):
+        self.group_ad_manager.stop()
+        self.refresh_groups()
+
+    def save_ad_message(self):
+        message = self.ad_message_input.toPlainText()
+        try:
+            self.group_ad_manager.set_ad_message(message)
+            QMessageBox.information(self, "Saved", "Advertisement message updated.")
+            self.refresh_groups()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Validation Error", str(exc))
+
+    def reset_ad_message(self):
+        self.group_ad_manager.set_ad_message(GroupAdManager.DEFAULT_AD_MESSAGE)
+        self.refresh_groups()
+
+    def join_new_group(self):
+        invite_link, ok = QInputDialog.getText(self, "Join Group", "Paste Signal invite link:")
+        if not ok:
+            return
+        invite_link = invite_link.strip()
+        if not invite_link:
+            QMessageBox.warning(self, "Validation Error", "Invite link is required.")
+            return
+
+        ads_per_day, ok = QInputDialog.getInt(self, "Ad Frequency", "Ads per day:", 1, 1, 24)
+        if not ok:
+            return
+
+        if not self.signal_handler.join_group(invite_link):
+            QMessageBox.warning(self, "Join Failed", "Could not join group. Verify the invite link.")
+            return
+
+        groups = self.signal_handler.list_groups()
+        if not groups:
+            QMessageBox.warning(self, "Joined", "Group joined, but no groups were returned yet. Refresh and add manually.")
+            return
+
+        options = [f'{group.get("name") or "Unknown"} ({group.get("id")})' for group in groups if group.get("id")]
+        if not options:
+            QMessageBox.warning(self, "Joined", "Group joined, but could not resolve group ID yet.")
+            return
+
+        selected, ok = QInputDialog.getItem(self, "Select Group", "Choose group to manage:", options, 0, False)
+        if not ok:
+            return
+        selected_index = options.index(selected)
+        selected_group = [group for group in groups if group.get("id")][selected_index]
+        self.group_ad_manager.add_group(selected_group.get("id"), selected_group.get("name", "Unknown"), ads_per_day)
+        self.group_ad_manager.post_ad_now(selected_group.get("id"))
+        self.refresh_groups()
+
+    def edit_selected_group_frequency(self):
+        group_id = self._selected_group_id()
+        if not group_id:
+            return
+        ads_per_day, ok = QInputDialog.getInt(self, "Edit Frequency", "Ads per day:", 1, 1, 24)
+        if not ok:
+            return
+        self.group_ad_manager.update_group_frequency(group_id, ads_per_day)
+        self.refresh_groups()
+
+    def toggle_selected_group(self):
+        group_id = self._selected_group_id()
+        if not group_id:
+            return
+        status = self.group_ad_manager.get_status()
+        group = next((item for item in status["groups"] if item["group_id"] == group_id), None)
+        if not group:
+            return
+        if group["enabled"]:
+            self.group_ad_manager.disable_group(group_id)
+        else:
+            self.group_ad_manager.enable_group(group_id)
+        self.refresh_groups()
+
+    def remove_selected_group(self):
+        group_id = self._selected_group_id()
+        if not group_id:
+            return
+        self.group_ad_manager.remove_group(group_id)
+        self.signal_handler.leave_group(group_id)
+        self.refresh_groups()
+
+    def post_selected_group_now(self):
+        group_id = self._selected_group_id()
+        if not group_id:
+            return
+        success = self.group_ad_manager.post_ad_now(group_id)
+        if success:
+            QMessageBox.information(self, "Success", "Advertisement sent.")
+        else:
+            QMessageBox.warning(self, "Send Failed", "Could not send advertisement.")
+        self.refresh_groups()
+
+    def _selected_group_id(self) -> Optional[str]:
+        selected_rows = self.groups_table.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.warning(self, "Select Group", "Select a group first.")
+            return None
+        row = selected_rows[0].row()
+        group_id_item = self.groups_table.item(row, 3)
+        if not group_id_item:
+            return None
+        return group_id_item.text()
+
+
 class SettingsTab(QWidget):
     """Settings tab with configuration options"""
     
@@ -5660,6 +5870,8 @@ class DashboardWindow(QMainWindow):
             self.signal_handler = SignalHandler(phone_number)
         else:
             self.signal_handler = signal_handler
+        self.group_ad_manager = GroupAdManager(self.signal_handler)
+        self.group_ad_manager.start()
         
         # Initialize buyer handler for automatic order processing
         from ..core.buyer_handler import BuyerHandler
@@ -5870,6 +6082,7 @@ class DashboardWindow(QMainWindow):
             (lambda: ProductsTab(self.product_manager), "Products"),
             (lambda: OrdersTab(self.order_manager, self.signal_handler), "Orders"),
             (lambda: MessagesTab(self.signal_handler, self.contact_manager, self.message_manager, self.seller_manager, self.product_manager), "Messages"),
+            (lambda: GroupsTab(self.signal_handler, self.group_ad_manager), "Groups"),
             (lambda: ContactsTab(self.contact_manager, self.message_manager, self.signal_handler), "Contacts"),
             (lambda: SettingsTab(
                 self.seller_manager,
@@ -5908,6 +6121,8 @@ class DashboardWindow(QMainWindow):
                 self.node_monitor.stop()
             if self.cleanup_manager:
                 self.cleanup_manager.stop()
+            if self.group_ad_manager:
+                self.group_ad_manager.stop()
             if self.signal_handler:
                 self.signal_handler.stop()
         finally:
