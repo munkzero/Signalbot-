@@ -3,6 +3,7 @@ Seller model and configuration
 """
 
 from typing import Optional, Dict
+from datetime import datetime
 import json
 from ..database.db import Seller as SellerModel, DatabaseManager
 from ..core.security import security_manager
@@ -20,7 +21,7 @@ class Seller:
         message_retention_days: int = 30,
         order_archive_days: int = 90,
         archive_retention_days: int = 365,
-        last_cleanup_at = None,
+        last_cleanup_at: Optional[datetime] = None,
         cleanup_status: Optional[str] = None
     ):
         self.id = id

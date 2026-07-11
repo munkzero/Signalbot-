@@ -80,7 +80,7 @@ class SignalHandler:
             'consecutive_errors': 0,
         }
 
-        print(f"DEBUG: SignalHandler initialized with phone_number={self.phone_number}")
+        print(f"DEBUG: SignalHandler initialized with phone_number={self._mask_identifier(self.phone_number)}")
 
         # Verify signal-cli is available for polling mode
         self.ensure_signal_cli_ready()
@@ -116,6 +116,15 @@ class SignalHandler:
             re.IGNORECASE
         )
         return bool(uuid_pattern.match(identifier))
+
+    @staticmethod
+    def _mask_identifier(identifier: str) -> str:
+        """Mask sensitive identifiers before logging."""
+        if not identifier:
+            return "<unset>"
+        if len(identifier) <= 4:
+            return "*" * len(identifier)
+        return f"{identifier[:2]}***{identifier[-2:]}"
 
     def ensure_signal_cli_ready(self):
         """
@@ -391,7 +400,7 @@ class SignalHandler:
             self.send_message_native(recipient, message, attachments)
 
         threading.Thread(target=_send, daemon=True, name=f"NativeSend-{recipient[:10]}").start()
-        logger.debug(f"⚡ Started native send thread for {recipient}")
+        logger.debug("⚡ Started native send thread for %s", self._mask_identifier(recipient))
         return True
 
     def start_listening(self):
@@ -402,7 +411,7 @@ class SignalHandler:
             print("DEBUG: start_listening() called but already listening")
             return
 
-        print(f"DEBUG: start_listening() called for {self.phone_number}")
+        print(f"DEBUG: start_listening() called for {self._mask_identifier(self.phone_number)}")
         self.listening = True
         self.listen_thread = threading.Thread(
             target=self._polling_loop, daemon=True, name="signal-polling"

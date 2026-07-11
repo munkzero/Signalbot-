@@ -4,7 +4,7 @@ Handles in-house wallet management and RPC connections
 """
 
 import requests
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple, Any
 import json
 import subprocess
 import time
@@ -857,7 +857,7 @@ class MoneroWallet:
 
         return False
 
-    def get_health_status(self) -> Dict[str, Optional[str]]:
+    def get_health_status(self) -> Dict[str, Any]:
         return dict(self._status)
     
     def get_balance(self) -> Tuple[float, float]:

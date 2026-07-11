@@ -4,7 +4,7 @@ Handles payment detection and commission forwarding
 """
 
 import time
-from typing import Optional, Dict, Callable, TYPE_CHECKING
+from typing import Optional, Dict, Callable, TYPE_CHECKING, Any
 from datetime import datetime
 from collections import deque
 from .monero_wallet import MoneroWallet
@@ -66,7 +66,7 @@ class PaymentProcessor:
         self,
         order: Order,
         xmr_amount: float
-    ) -> Dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         Create payment request for order
         
@@ -102,7 +102,7 @@ class PaymentProcessor:
             'order_id': order.order_id
         }
     
-    def check_order_payment(self, order: Order) -> Dict[str, any]:
+    def check_order_payment(self, order: Order) -> Dict[str, Any]:
         """
         Check payment status for order using subaddress monitoring
         
@@ -530,7 +530,7 @@ class PaymentProcessor:
         if order_id in self.payment_callbacks:
             del self.payment_callbacks[order_id]
 
-    def get_health_status(self) -> Dict[str, any]:
+    def get_health_status(self) -> Dict[str, Any]:
         status = dict(self._status)
         status['queued_retries'] = len(self.failed_payment_checks)
         return status

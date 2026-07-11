@@ -4321,7 +4321,7 @@ class SettingsTab(QWidget):
         queued_retries = payment_status.get('queued_retries', 0)
         payment_text = "Healthy" if payment_ok else (payment_status.get('last_error') or "Degraded")
         if queued_retries:
-            payment_text = f"{payment_text} ({queued_retries} retry queued)"
+            payment_text = f"{payment_text} ({queued_retries} retries queued)"
         self.payment_health_label.setText(f"{'✅' if payment_ok else '⚠️'} {payment_text}")
 
         cleanup_status = self.cleanup_manager.get_status() if self.cleanup_manager else {}
