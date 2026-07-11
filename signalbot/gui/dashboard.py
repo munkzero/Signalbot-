@@ -529,25 +529,6 @@ class ComposeMessageDialog(QDialog):
             success = self.signal_handler.send_message(recipient, message, attachments)
             
             if success:
-                # Save outgoing message to database
-                if self.my_signal_id and self.message_manager:
-                    try:
-                        self.message_manager.add_message(
-                            sender_signal_id=self.my_signal_id,
-                            recipient_signal_id=recipient,
-                            message_body=message,
-                            is_outgoing=True
-                        )
-                        
-                        # Create or update contact
-                        if self.contact_manager:
-                            self.contact_manager.get_or_create_contact(
-                                signal_id=recipient,
-                                name=recipient  # Default to signal_id as name
-                            )
-                    except Exception as e:
-                        print(f"Error saving message to database: {e}")
-                
                 QMessageBox.information(self, "Success", "Message sent successfully!")
                 self.accept()
             else:
@@ -2551,10 +2532,10 @@ class OrdersTab(QWidget):
         
         # Orders table
         self.table = QTableWidget()
-        self.table.setColumnCount(9)
+        self.table.setColumnCount(10)
         self.table.setHorizontalHeaderLabels([
             "Order ID", "Product", "Amount (XMR)", "Paid (XMR)", 
-            "Payment Status", "TX ID", "Order Status", "Date", "Actions"
+            "Payment Status", "TX ID", "Order Status", "Delivery Address", "Date", "Actions"
         ])
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -2565,7 +2546,8 @@ class OrdersTab(QWidget):
         self.table.setColumnWidth(4, 120)  # Payment Status
         self.table.setColumnWidth(5, 120)  # TX ID
         self.table.setColumnWidth(6, 100)  # Order Status
-        self.table.setColumnWidth(7, 140)  # Date
+        self.table.setColumnWidth(7, 260)  # Delivery Address
+        self.table.setColumnWidth(8, 140)  # Date
         self.table.itemSelectionChanged.connect(self.on_order_selected)
         splitter.addWidget(self.table)
         
@@ -2654,16 +2636,26 @@ class OrdersTab(QWidget):
             
             # Order Status
             self.table.setItem(row, 6, QTableWidgetItem(order.order_status))
+
+            # Delivery Address
+            delivery_address = "-"
+            if order.shipping_info:
+                try:
+                    shipping_data = json.loads(order.shipping_info)
+                    delivery_address = shipping_data.get('address', '-')
+                except (ValueError, TypeError):
+                    delivery_address = order.shipping_info
+            self.table.setItem(row, 7, QTableWidgetItem(delivery_address))
             
             # Date
             date_str = order.created_at.strftime("%Y-%m-%d %H:%M") if order.created_at else "N/A"
-            self.table.setItem(row, 7, QTableWidgetItem(date_str))
+            self.table.setItem(row, 8, QTableWidgetItem(date_str))
             
             # Actions column: Delete button for all orders
             delete_btn = QPushButton("🗑️ Delete")
             delete_btn.setStyleSheet("color: red;")
             delete_btn.clicked.connect(lambda checked, oid=order.order_id: self.delete_order(oid))
-            self.table.setCellWidget(row, 8, delete_btn)
+            self.table.setCellWidget(row, 9, delete_btn)
     
     def delete_order(self, order_id: str):
         """Delete a single order after confirmation"""
@@ -3179,69 +3171,6 @@ class MessageSendThread(QThread):
             self.finished.emit(False, f"Error: {str(e)}")
 
 
-class LoadConversationsWorker(QThread):
-    """Worker thread for loading conversation list without blocking the UI"""
-    finished = pyqtSignal(list)  # list of (contact_id, display_name, last_msg) tuples
-    error = pyqtSignal(str)
-
-    def __init__(self, message_manager, contact_manager, my_signal_id,
-                 contact_cache, contact_cache_lock):
-        super().__init__()
-        self.message_manager = message_manager
-        self.contact_manager = contact_manager
-        self.my_signal_id = my_signal_id
-        self.contact_cache = contact_cache
-        self.contact_cache_lock = contact_cache_lock
-
-    def run(self):
-        try:
-            conversations = self.message_manager.get_all_conversations(self.my_signal_id)
-            result = []
-            for contact_id, conv_data in conversations.items():
-                with self.contact_cache_lock:
-                    if contact_id not in self.contact_cache:
-                        contact = self.contact_manager.get_contact_by_signal_id(contact_id)
-                        self.contact_cache[contact_id] = (
-                            contact.name if contact else contact_id
-                        )
-                    display_name = self.contact_cache[contact_id]
-                last_msg = conv_data['last_message'][:30] if conv_data['last_message'] else ''
-                result.append((contact_id, display_name, last_msg))
-            self.finished.emit(result)
-        except Exception as e:
-            self.error.emit(str(e))
-
-
-class LoadConversationWorker(QThread):
-    """Worker thread for loading messages in a conversation without blocking the UI"""
-    finished = pyqtSignal(list, str)  # messages list, display_name
-    error = pyqtSignal(str)
-
-    def __init__(self, message_manager, contact_manager, recipient, my_signal_id,
-                 contact_cache, contact_cache_lock):
-        super().__init__()
-        self.message_manager = message_manager
-        self.contact_manager = contact_manager
-        self.recipient = recipient
-        self.my_signal_id = my_signal_id
-        self.contact_cache = contact_cache
-        self.contact_cache_lock = contact_cache_lock
-
-    def run(self):
-        try:
-            with self.contact_cache_lock:
-                if self.recipient not in self.contact_cache:
-                    contact = self.contact_manager.get_contact_by_signal_id(self.recipient)
-                    self.contact_cache[self.recipient] = (
-                        contact.name if contact else self.recipient
-                    )
-                display_name = self.contact_cache[self.recipient]
-            messages = self.message_manager.get_conversation(self.recipient, self.my_signal_id)
-            self.finished.emit(messages, display_name)
-        except Exception as e:
-            self.error.emit(str(e))
-
-
 class SendCatalogWorker(QThread):
     """Worker thread for sending a product catalog without blocking the UI"""
     progress = pyqtSignal(int, int, str)   # current index, total, label text
@@ -3322,16 +3251,6 @@ class SendCatalogWorker(QThread):
                     if result:
                         sent_count += 1
                         success = True
-                        if self.my_signal_id:
-                            try:
-                                self.message_manager.add_message(
-                                    sender_signal_id=self.my_signal_id,
-                                    recipient_signal_id=self.recipient,
-                                    message_body=message.strip(),
-                                    is_outgoing=True
-                                )
-                            except Exception as e:
-                                print(f"Failed to save message to history: {e}")
                         break
                     else:
                         print(f"Attempt {attempt} for {product.name} failed")
@@ -3357,16 +3276,6 @@ class SendCatalogWorker(QThread):
                             print(f"  ✅ Text-only version sent successfully for {product.name}")
                             sent_count += 1
                             success = True
-                            if self.my_signal_id:
-                                try:
-                                    self.message_manager.add_message(
-                                        sender_signal_id=self.my_signal_id,
-                                        recipient_signal_id=self.recipient,
-                                        message_body=message.strip(),
-                                        is_outgoing=True
-                                    )
-                                except Exception as e:
-                                    print(f"Failed to save message to history: {e}")
                         else:
                             print(f"  ✗ Text-only fallback also failed for {product.name}")
                             failed_count += 1
@@ -3427,16 +3336,6 @@ class SendProductWorker(QThread):
                 if success:
                     sent_count += 1
                     messages_sent.append(message)
-                    if self.my_signal_id:
-                        try:
-                            self.message_manager.add_message(
-                                sender_signal_id=self.my_signal_id,
-                                recipient_signal_id=self.recipient,
-                                message_body=message,
-                                is_outgoing=True
-                            )
-                        except Exception as e:
-                            print(f"Error saving product message: {e}")
             except Exception as e:
                 print(f"Error sending product {product.name}: {e}")
 
@@ -3458,12 +3357,10 @@ class MessagesTab(QWidget):
         self.current_recipient = None
         self.my_signal_id = None
         self.current_messages = []  # Store message objects for current conversation
-        self._contact_name_cache = {}  # Cache for contact name lookups to reduce DB queries
+        self._contact_name_cache = {}  # Cache for contact names resolved from Signal
         self._contact_name_lock = threading.Lock()  # Protects concurrent cache writes
 
-        # Background worker references (kept to allow cleanup and prevent duplicates)
-        self._load_conv_worker = None
-        self._load_msg_worker = None
+        # Background worker references
         self._catalog_worker = None
         self._catalog_progress = None
         self._product_worker = None
@@ -3701,17 +3598,26 @@ class MessagesTab(QWidget):
         Returns:
             Formatted message string
         """
-        timestamp = msg.sent_at.strftime("%H:%M") if msg.sent_at else "??:??"
-        sender_name = "You" if msg.is_outgoing else display_name
-        text = msg.message_body or "[Attachment]"
+        if isinstance(msg, dict):
+            raw_ts = msg.get('timestamp')
+            if raw_ts:
+                try:
+                    timestamp = datetime.fromtimestamp(raw_ts / 1000).strftime("%H:%M")
+                except (ValueError, OSError, OverflowError):
+                    timestamp = "??:??"
+            else:
+                timestamp = "??:??"
+            is_outgoing = bool(msg.get('is_outgoing'))
+            text = msg.get('text') or "[Attachment]"
+        else:
+            timestamp = msg.sent_at.strftime("%H:%M") if msg.sent_at else "??:??"
+            is_outgoing = msg.is_outgoing
+            text = msg.message_body or "[Attachment]"
+        sender_name = "You" if is_outgoing else display_name
         return f"[{timestamp}] {sender_name}: {text}\n"
     
     def load_conversations(self):
-        """Load conversation list from database using a background thread.
-
-        Each call always fetches fresh data from the database via a background
-        worker so the list is never stale.
-        """
+        """Load conversation list directly from Signal (no database message queries)."""
         if not self.my_signal_id:
             self.conversations_list.clear()
             item = QListWidgetItem("No Signal ID configured")
@@ -3719,87 +3625,40 @@ class MessagesTab(QWidget):
             self.conversations_list.addItem(item)
             return
 
-        # Skip if a load is already in progress
-        if self._load_conv_worker and self._load_conv_worker.isRunning():
-            return
-
-        # Show loading placeholder while the worker fetches data
         self.conversations_list.clear()
-        loading_item = QListWidgetItem("Loading...")
-        loading_item.setFlags(loading_item.flags() & ~Qt.ItemIsSelectable)
-        self.conversations_list.addItem(loading_item)
+        live_conversations = self.signal_handler.get_live_conversations() if self.signal_handler else []
+        live_lookup = {c['contact_id']: c for c in live_conversations}
+        contact_ids = [c['contact_id'] for c in live_conversations]
+        contact_id_set = set(contact_ids)
 
-        self._load_conv_worker = LoadConversationsWorker(
-            self.message_manager, self.contact_manager,
-            self.my_signal_id, self._contact_name_cache, self._contact_name_lock
-        )
-        self._load_conv_worker.finished.connect(self._on_conversations_loaded)
-        self._load_conv_worker.error.connect(self._on_conversations_error)
-        self._load_conv_worker.start()
+        if self.signal_handler:
+            for contact in self.signal_handler.list_contacts():
+                contact_id = contact.get('id')
+                if not contact_id:
+                    continue
+                with self._contact_name_lock:
+                    self._contact_name_cache[contact_id] = contact.get('name') or contact_id
+                if contact_id not in contact_id_set:
+                    contact_ids.append(contact_id)
+                    contact_id_set.add(contact_id)
 
-    def _on_conversations_loaded(self, conversation_data):
-        """Handle conversations loaded in background thread"""
-        self.conversations_list.clear()
-        if not conversation_data:
+        if not contact_ids:
             item = QListWidgetItem("No conversations yet")
             item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
             self.conversations_list.addItem(item)
-        else:
-            for contact_id, display_name, last_msg in conversation_data:
-                item = QListWidgetItem(f"{display_name} - {last_msg}...")
-                item.setData(Qt.UserRole, contact_id)
-                self.conversations_list.addItem(item)
-        if self._load_conv_worker:
-            self._load_conv_worker.deleteLater()
-            self._load_conv_worker = None
+            return
 
-    def _on_conversations_error(self, error_msg):
-        """Handle error loading conversations"""
-        self.conversations_list.clear()
-        item = QListWidgetItem("Error loading conversations")
-        item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
-        self.conversations_list.addItem(item)
-        print(f"Error loading conversations: {error_msg}")
-        if self._load_conv_worker:
-            self._load_conv_worker.deleteLater()
-            self._load_conv_worker = None
-
-    def filter_conversations(self, text):
-        """Filter conversations based on search text"""
-        search_text = text.lower()
-        for i in range(self.conversations_list.count()):
-            item = self.conversations_list.item(i)
-            if search_text in item.text().lower():
-                item.setHidden(False)
-            else:
-                item.setHidden(True)
-
-    def _start_load_msg_worker(self, recipient):
-        """Cancel any running message loader and start a new one for ``recipient``."""
-        if self._load_msg_worker and self._load_msg_worker.isRunning():
-            try:
-                self._load_msg_worker.finished.disconnect(self._on_conversation_loaded)
-            except TypeError:
-                pass
-            try:
-                self._load_msg_worker.error.disconnect(self._on_conversation_error)
-            except TypeError:
-                pass
-            self._load_msg_worker.quit()
-            if not self._load_msg_worker.wait(_WORKER_STOP_TIMEOUT_MS):
-                print("Warning: previous message-load worker did not stop in time; "
-                      "proceeding with new worker anyway")
-                self._load_msg_worker.terminate()
-
-        self._load_msg_worker = LoadConversationWorker(
-            self.message_manager, self.contact_manager,
-            recipient, self.my_signal_id,
-            self._contact_name_cache, self._contact_name_lock
-        )
-        return self._load_msg_worker
+        for contact_id in contact_ids:
+            with self._contact_name_lock:
+                display_name = self._contact_name_cache.get(contact_id, contact_id)
+            last_msg = (live_lookup.get(contact_id, {}).get('last_message') or "").strip()
+            item_text = f"{display_name} - {last_msg[:30]}..." if last_msg else display_name
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.UserRole, contact_id)
+            self.conversations_list.addItem(item)
 
     def load_conversation(self, item):
-        """Load selected conversation from database using a background thread"""
+        """Load selected conversation from live Signal data."""
         if not item or not item.flags() & Qt.ItemIsSelectable:
             return
 
@@ -3808,13 +3667,27 @@ class MessagesTab(QWidget):
             return
 
         self.current_recipient = recipient
-        self.chat_header.setText("Loading...")
-        self.message_history.clear()
+        self._render_conversation(recipient)
 
-        worker = self._start_load_msg_worker(recipient)
-        worker.finished.connect(self._on_conversation_loaded)
-        worker.error.connect(self._on_conversation_error)
-        worker.start()
+    def filter_conversations(self, text):
+        """Filter conversations based on search text."""
+        search_text = text.lower()
+        for i in range(self.conversations_list.count()):
+            item = self.conversations_list.item(i)
+            # Hide items that do not contain the search text.
+            item.setHidden(search_text not in item.text().lower())
+
+    def _resolve_display_name(self, recipient):
+        with self._contact_name_lock:
+            if recipient in self._contact_name_cache:
+                return self._contact_name_cache[recipient]
+        return recipient
+
+    def _render_conversation(self, recipient):
+        """Render a conversation from live in-memory Signal data."""
+        display_name = self._resolve_display_name(recipient)
+        messages = self.signal_handler.get_live_conversation(recipient) if self.signal_handler else []
+        self._on_conversation_loaded(messages, display_name)
 
     def _on_conversation_loaded(self, messages, display_name):
         """Handle conversation messages loaded in background thread"""
@@ -3830,26 +3703,10 @@ class MessagesTab(QWidget):
         # Auto-scroll to the latest message only when the user was already at the bottom
         if was_at_bottom:
             scrollbar.setValue(scrollbar.maximum())
-        if self._load_msg_worker:
-            self._load_msg_worker.deleteLater()
-            self._load_msg_worker = None
-
-    def _on_conversation_refresh_loaded(self, messages, display_name):
-        """Handle messages reloaded after an in-conversation change (e.g. delete).
-
-        Same as ``_on_conversation_loaded`` but also refreshes the conversation
-        list sidebar so preview text and ordering stay current.
-        """
-        self._on_conversation_loaded(messages, display_name)
-        self.load_conversations()
-
     def _on_conversation_error(self, error_msg):
         """Handle error loading conversation messages"""
         self.chat_header.setText("Error loading conversation")
         print(f"Error loading conversation: {error_msg}")
-        if self._load_msg_worker:
-            self._load_msg_worker.deleteLater()
-            self._load_msg_worker = None
 
     def compose_message(self):
         """Open compose message dialog"""
@@ -3870,19 +3727,10 @@ class MessagesTab(QWidget):
             contact = dialog.get_selected_contact()
             if contact:
                 self.current_recipient = contact.signal_id
-                # Pre-populate cache with the known contact name so the worker
-                # doesn't need a DB round-trip for this contact
+                # Pre-populate cache with the known contact name
                 with self._contact_name_lock:
                     self._contact_name_cache[contact.signal_id] = contact.name
-                self.chat_header.setText("Loading...")
-                self.message_history.clear()
-
-                worker = self._start_load_msg_worker(contact.signal_id)
-                worker.finished.connect(self._on_conversation_loaded)
-                worker.error.connect(self._on_conversation_error)
-                worker.start()
-
-                # Focus on message input immediately while messages load in background
+                self._render_conversation(contact.signal_id)
                 self.message_input.setFocus()
     
     def send_message(self):
@@ -3920,15 +3768,10 @@ class MessagesTab(QWidget):
         self.send_btn.setText("Send")
         
         if success:
-            # Add to message history immediately (UI update)
-            timestamp = datetime.now().strftime("%H:%M")
-            self.message_history.append(f"[{timestamp}] You: {message_text}\n")
             self.message_input.clear()
             self.attachment_path = None
-            
-            # Save to database in background (non-blocking)
-            if self.my_signal_id:
-                QTimer.singleShot(0, lambda: self._save_message_to_db(message_text))
+            self.load_conversation_refresh()
+            self.load_conversations()
         else:
             QMessageBox.warning(self, "Send Failed", status_message)
         
@@ -3937,28 +3780,6 @@ class MessagesTab(QWidget):
             self.send_thread.finished.disconnect()
             self.send_thread.deleteLater()
             self.send_thread = None
-    
-    def _save_message_to_db(self, message_text):
-        """Save message to database asynchronously"""
-        try:
-            self.message_manager.add_message(
-                sender_signal_id=self.my_signal_id,
-                recipient_signal_id=self.current_recipient,
-                message_body=message_text,
-                is_outgoing=True
-            )
-            # Ensure contact exists
-            self.contact_manager.get_or_create_contact(self.current_recipient)
-            # Refresh conversations list
-            self.load_conversations()
-        except Exception as e:
-            print(f"Error saving message to database: {e}")
-            # Show warning to user if database save fails
-            QMessageBox.warning(
-                self, 
-                "Database Error", 
-                "Message was sent but could not be saved to history."
-            )
     
     def send_product(self):
         """Open product picker and send product info using a background thread"""
@@ -4110,31 +3931,16 @@ class MessagesTab(QWidget):
     def handle_incoming_message(self, message):
         """Handle incoming message from Signal"""
         sender = message.get('sender', '')
-        text = message.get('text', '')
-        timestamp = datetime.fromtimestamp(message.get('timestamp', 0) / 1000).strftime("%H:%M")
-        
-        # Save to database
-        if self.my_signal_id and sender:
-            self.message_manager.add_message(
-                sender_signal_id=sender,
-                recipient_signal_id=self.my_signal_id,
-                message_body=text,
-                is_outgoing=False
-            )
-            # Ensure contact exists
-            self.contact_manager.get_or_create_contact(sender)
-        
-        # Add to conversations
-        if sender not in self.conversations:
-            self.conversations[sender] = []
-            # Reload conversations to show new one
-            self.load_conversations()
-        
-        self.conversations[sender].append(message)
-        
-        # Update current conversation if it's the active one
+        if not sender:
+            return
+
+        if sender not in self._contact_name_cache:
+            with self._contact_name_lock:
+                self._contact_name_cache.setdefault(sender, sender)
+
+        self.load_conversations()
         if self.current_recipient == sender:
-            self.message_history.append(f"[{timestamp}] {sender}: {text}\n")
+            self.load_conversation_refresh()
     
     def show_conversation_context_menu(self, position):
         """Show context menu for conversation list"""
@@ -4154,28 +3960,24 @@ class MessagesTab(QWidget):
         menu.exec_(self.conversations_list.mapToGlobal(position))
     
     def delete_conversation(self, contact_id):
-        """Delete a conversation"""
+        """Clear locally cached live messages for a conversation."""
         reply = QMessageBox.question(
             self,
             "Delete Conversation",
-            f"Are you sure you want to delete this conversation?\nThis action cannot be undone.",
+            "This clears local in-app message cache only.\nSignal remains the source of truth.\nContinue?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
         
         if reply == QMessageBox.Yes:
-            if self.message_manager.delete_conversation(contact_id, self.my_signal_id):
-                # Clear chat if this was the active conversation
-                if self.current_recipient == contact_id:
-                    self.current_recipient = None
-                    self.chat_header.setText("Select a conversation")
-                    self.message_history.clear()
-                
-                # Reload conversations
-                self.load_conversations()
-                QMessageBox.information(self, "Success", "Conversation deleted")
-            else:
-                QMessageBox.warning(self, "Error", "Failed to delete conversation")
+            if self.signal_handler:
+                self.signal_handler.clear_live_conversation(contact_id)
+            if self.current_recipient == contact_id:
+                self.current_recipient = None
+                self.chat_header.setText("Select a conversation")
+                self.message_history.clear()
+            self.load_conversations()
+            QMessageBox.information(self, "Success", "Local conversation cache cleared")
     
     def show_message_context_menu(self, position):
         """Show context menu for message history"""
@@ -4210,95 +4012,39 @@ class MessagesTab(QWidget):
             QApplication.clipboard().setText(selected_text)
     
     def delete_selected_message(self):
-        """Delete individual message at cursor position"""
-        if not self.current_recipient or not self.current_messages:
-            return
-        
-        # Get cursor position and block text
-        text_cursor = self.message_history.textCursor()
-        text_cursor.select(text_cursor.BlockUnderCursor)
-        block_text = text_cursor.selectedText().strip()
-        
-        if not block_text:
-            QMessageBox.warning(self, "No Message", "No message selected")
-            return
-        
-        # Find matching message in current_messages
-        # Get contact name for formatting
-        contact = self.contact_manager.get_contact_by_signal_id(self.current_recipient)
-        display_name = contact.name if contact else self.current_recipient
-        
-        message_to_delete = None
-        for msg in self.current_messages:
-            # Use helper method to format message text
-            expected_text = self._format_message_display(msg, display_name).strip()
-            
-            if expected_text in block_text:
-                message_to_delete = msg
-                break
-                break
-        
-        if not message_to_delete:
-            QMessageBox.warning(self, "Error", "Could not identify message")
-            return
-        
-        # Only allow deleting outgoing messages (seller's messages)
-        if not message_to_delete.is_outgoing:
-            QMessageBox.warning(
-                self, 
-                "Cannot Delete", 
-                "You can only delete messages you sent, not received messages."
-            )
-            return
-        
-        # Confirm deletion
-        reply = QMessageBox.question(
+        """Signal is source of truth; individual DB-backed deletion is disabled."""
+        QMessageBox.information(
             self,
-            "Delete Message",
-            "Are you sure you want to delete this message?\nThis action cannot be undone.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
+            "Not Supported",
+            "Messages are loaded from Signal live and are no longer deleted from local database history."
         )
-        
-        if reply == QMessageBox.Yes:
-            if self.message_manager.delete_message(message_to_delete.id):
-                # Reload conversation to show updated message list
-                self.load_conversation_refresh()
-                QMessageBox.information(self, "Success", "Message deleted")
-            else:
-                QMessageBox.warning(self, "Error", "Failed to delete message")
     
     def load_conversation_refresh(self):
-        """Reload current conversation without changing selection using a background thread"""
+        """Reload current conversation from in-memory live Signal data."""
         if not self.current_recipient or not self.my_signal_id:
             return
 
-        worker = self._start_load_msg_worker(self.current_recipient)
-        # Use the dedicated refresh handler so the conversations sidebar is also updated
-        worker.finished.connect(self._on_conversation_refresh_loaded)
-        worker.error.connect(self._on_conversation_error)
-        worker.start()
+        self._render_conversation(self.current_recipient)
 
     def clear_all_messages(self):
-        """Clear all messages in current conversation"""
+        """Clear local in-app cache for the current conversation."""
         if not self.current_recipient:
             return
         
         reply = QMessageBox.question(
             self,
             "Clear All Messages",
-            "Are you sure you want to clear all messages in this conversation?\nThis action cannot be undone.",
+            "Clear local in-app cache for this conversation?\nSignal history is not deleted.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
         
         if reply == QMessageBox.Yes:
-            if self.message_manager.delete_conversation(self.current_recipient, self.my_signal_id):
-                self.message_history.clear()
-                self.load_conversations()
-                QMessageBox.information(self, "Success", "All messages cleared")
-            else:
-                QMessageBox.warning(self, "Error", "Failed to clear messages")
+            if self.signal_handler:
+                self.signal_handler.clear_live_conversation(self.current_recipient)
+            self.message_history.clear()
+            self.load_conversations()
+            QMessageBox.information(self, "Success", "Local message cache cleared")
 
 
 class SettingsTab(QWidget):
