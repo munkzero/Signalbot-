@@ -30,6 +30,9 @@ class SignalHandler:
     _MAX_CONSECUTIVE_POLL_ERRORS = 12
     # Seconds to sleep after hitting _MAX_CONSECUTIVE_POLL_ERRORS.
     _BACKOFF_SLEEP_SECONDS = 60
+    _MAX_CACHED_MESSAGES = 500
+    _MIN_PHONE_DIGITS = 7
+    _MAX_PHONE_DIGITS = 15
 
     def __init__(self, phone_number: Optional[str] = None):
         """
@@ -64,6 +67,8 @@ class SignalHandler:
         # Bounded pool for processing incoming messages (prevents resource exhaustion
         # if many messages arrive in quick succession).
         self._msg_handler_pool = ThreadPoolExecutor(max_workers=10, thread_name_prefix="MsgHandler")
+        self._conversation_cache: Dict[str, List[Dict]] = {}
+        self._conversation_cache_lock = threading.Lock()
 
         print(f"DEBUG: SignalHandler initialized with phone_number={self.phone_number}")
 
@@ -311,11 +316,23 @@ class SignalHandler:
 
             if result.returncode == 0:
                 logger.debug(f"✅ Native send to {recipient} completed")
+                self._record_live_message(
+                    recipient,
+                    message or ("[Attachment]" if attachments else ""),
+                    int(time.time() * 1000),
+                    is_outgoing=True,
+                )
                 return True
             else:
                 error = result.stderr.decode('utf-8', errors='ignore')
                 logger.warning(f"⚠️ Native send warning: {error[:100]}")
                 # Return True anyway - signal-cli often returns non-zero but message sends
+                self._record_live_message(
+                    recipient,
+                    message or ("[Attachment]" if attachments else ""),
+                    int(time.time() * 1000),
+                    is_outgoing=True,
+                )
                 return True
 
         except subprocess.TimeoutExpired:
@@ -405,6 +422,7 @@ class SignalHandler:
             'group_id': None,
             'recipient_identity': self.phone_number,
         }
+        self._record_live_message(sender, message_text, timestamp, is_outgoing=False)
 
         if self.buyer_handler and message_text:
             try:
@@ -799,6 +817,102 @@ Thank you for your purchase!
         except Exception as exc:
             print(f"Failed to list groups: {exc}")
             return []
+
+    def _record_live_message(self, contact_id: str, message_text: str, timestamp: int, is_outgoing: bool):
+        """Store live messages in memory for UI display without database writes."""
+        if not contact_id:
+            return
+        with self._conversation_cache_lock:
+            messages = self._conversation_cache.setdefault(contact_id, [])
+            messages.append({
+                'sender': self.phone_number if is_outgoing else contact_id,
+                'text': message_text,
+                'timestamp': timestamp,
+                'is_outgoing': is_outgoing,
+            })
+            if len(messages) > self._MAX_CACHED_MESSAGES:
+                messages[:] = messages[-self._MAX_CACHED_MESSAGES:]
+
+    def get_live_conversation(self, contact_id: str) -> List[Dict]:
+        """Return cached live messages for a contact."""
+        with self._conversation_cache_lock:
+            return list(self._conversation_cache.get(contact_id, []))
+
+    def get_live_conversations(self) -> List[Dict]:
+        """Return conversation summaries from in-memory live Signal messages."""
+        conversations = []
+        with self._conversation_cache_lock:
+            for contact_id, messages in self._conversation_cache.items():
+                if not messages:
+                    continue
+                last_message = messages[-1]
+                conversations.append({
+                    'contact_id': contact_id,
+                    'last_message': last_message.get('text') or '[Attachment]',
+                    'timestamp': last_message.get('timestamp') or 0,
+                })
+        conversations.sort(key=lambda c: c['timestamp'], reverse=True)
+        return conversations
+
+    def clear_live_conversation(self, contact_id: str):
+        """Clear cached in-memory messages for a contact."""
+        if not contact_id:
+            return
+        with self._conversation_cache_lock:
+            self._conversation_cache.pop(contact_id, None)
+
+    def list_contacts(self) -> List[Dict]:
+        """List contacts from signal-cli for live message browsing."""
+        if not self.phone_number:
+            return []
+        contacts = []
+        seen = set()
+        try:
+            result = subprocess.run(
+                ['signal-cli', '-a', self.phone_number, 'listContacts'],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            output = result.stdout or ""
+            for line in output.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+
+                contact_id = ""
+                display_name = ""
+
+                try:
+                    parsed = json.loads(line)
+                    contact_id = (
+                        parsed.get('number')
+                        or parsed.get('id')
+                        or parsed.get('recipient')
+                        or ""
+                    ).strip()
+                    display_name = (parsed.get('name') or contact_id).strip()
+                except json.JSONDecodeError:
+                    phone_pattern = rf'\+\d{{{self._MIN_PHONE_DIGITS},{self._MAX_PHONE_DIGITS}}}'
+                    number_match = re.search(phone_pattern, line)
+                    if number_match:
+                        contact_id = number_match.group(0)
+                        split_parts = line.split(contact_id, 1)
+                        if len(split_parts) > 1:
+                            display_name = split_parts[0].strip(" -:") or contact_id
+                        else:
+                            display_name = contact_id
+
+                if contact_id and contact_id not in seen:
+                    contacts.append({'id': contact_id, 'name': display_name or contact_id})
+                    seen.add(contact_id)
+
+        except Exception as exc:
+            logger.debug(f"Failed to list contacts from signal-cli: {exc}")
+            return []
+
+        return contacts
 
     def _verify_auto_trust_config(self):
         """Verify that auto-trust configuration is active (reads local config file)."""
