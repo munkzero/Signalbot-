@@ -5,6 +5,7 @@ Buyer Handler - Processes buyer commands and order creation
 import os
 import re
 import time
+import threading
 import logging
 from typing import Optional, Tuple
 from datetime import datetime, timedelta
@@ -32,13 +33,13 @@ COMMON_IMAGE_SEARCH_DIRS = [
 class ProductCache:
     """Cache for product data to reduce database queries"""
     
-    def __init__(self, product_manager, cache_duration: int = 300):
+    def __init__(self, product_manager, cache_duration: int = 60):
         """
         Initialize product cache
         
         Args:
             product_manager: ProductManager instance
-            cache_duration: Cache lifetime in seconds (default 5 minutes)
+            cache_duration: Cache lifetime in seconds (default 1 minute)
         """
         self.product_manager = product_manager
         self.cache = None
@@ -91,8 +92,8 @@ class BuyerHandler:
         self.seller_signal_id = seller_signal_id
         self.wallet = wallet  # Used to generate real payment subaddresses
         
-        # Add product cache
-        self.product_cache = ProductCache(product_manager, cache_duration=300)
+        # Add product cache (1-minute cache for fresher stock data)
+        self.product_cache = ProductCache(product_manager, cache_duration=60)
         
         # Conversation state tracking for order flow
         # Format: {buyer_signal_id: {
@@ -100,21 +101,29 @@ class BuyerHandler:
         #     'product_id': str,
         #     'quantity': int,
         #     'recipient_identity': str,
+        #     'started_at': float,  # time.time() when state was created
         #     'address': str (only after address collected)
         # }}
         self.conversation_states = {}
         
-        # Pre-optimize all product images at startup for fast delivery
-        print("🔧 Pre-optimizing product images for fast delivery...")
-        from ..utils.image_optimizer import optimize_image
-        products = self.product_cache.get_products(active_only=True)
-        optimized_count = 0
-        for product in products:
-            if product.image_path and os.path.exists(product.image_path):
-                optimize_image(product.image_path)
-                optimized_count += 1
-        print(f"✓ {optimized_count} product images optimized and ready")
+        # Pre-optimize all product images in background so bot starts immediately
+        threading.Thread(target=self._optimize_images_background, daemon=True).start()
     
+    def _optimize_images_background(self):
+        """Optimize product images in a background thread so bot starts immediately."""
+        try:
+            print("🔧 Pre-optimizing product images in background...")
+            from ..utils.image_optimizer import optimize_image
+            products = self.product_cache.get_products(active_only=True)
+            optimized_count = 0
+            for product in products:
+                if product.image_path and os.path.exists(product.image_path):
+                    optimize_image(product.image_path)
+                    optimized_count += 1
+            print(f"✓ {optimized_count} product images optimized and ready")
+        except Exception as e:
+            print(f"⚠️ Background image optimization error: {e}")
+
     @staticmethod
     def _format_product_id(product_id: Optional[str]) -> str:
         """
@@ -271,6 +280,16 @@ class BuyerHandler:
         
         # Check if user is in a conversation flow (collecting shipping info)
         if buyer_signal_id in self.conversation_states:
+            state_info = self.conversation_states[buyer_signal_id]
+            # Enforce 10-minute timeout on pending conversation states
+            if time.time() - state_info.get('started_at', 0) > 600:
+                del self.conversation_states[buyer_signal_id]
+                self.signal_handler.send_message(
+                    recipient=buyer_signal_id,
+                    message="⏰ Your order request has expired. Please start a new order.",
+                    sender_identity=recipient_identity
+                )
+                return
             self._handle_conversation_state(buyer_signal_id, message_text, recipient_identity)
             return
         
@@ -306,6 +325,12 @@ class BuyerHandler:
             print(f"DEBUG: Sending help to {buyer_signal_id}")
             self.send_help(buyer_signal_id, recipient_identity)
             return
+        
+        # Command: "status"
+        if 'status' in message_lower:
+            print(f"DEBUG: Sending order status to {buyer_signal_id}")
+            self.send_order_status(buyer_signal_id, recipient_identity)
+            return
     
     def _initiate_order_conversation(self, buyer_signal_id: str, product_id: str, quantity: int, recipient_identity: Optional[str] = None):
         """
@@ -322,7 +347,8 @@ class BuyerHandler:
             'state': 'awaiting_address',
             'product_id': product_id,
             'quantity': quantity,
-            'recipient_identity': recipient_identity
+            'recipient_identity': recipient_identity,
+            'started_at': time.time()
         }
         
         # Ask for delivery address directly
@@ -345,9 +371,36 @@ class BuyerHandler:
         state_info = self.conversation_states[buyer_signal_id]
         current_state = state_info['state']
         
+        # Check 10-minute timeout
+        if time.time() - state_info.get('started_at', 0) > 600:
+            del self.conversation_states[buyer_signal_id]
+            self.signal_handler.send_message(
+                recipient=buyer_signal_id,
+                message="⏰ Your order request has expired. Please start a new order.",
+                sender_identity=recipient_identity
+            )
+            return
+        
         if current_state == 'awaiting_address':
-            # Store the address and create the order
-            state_info['address'] = message_text.strip()
+            address = message_text.strip()
+            
+            # Validate address before accepting
+            if not self._validate_address(address):
+                self.signal_handler.send_message(
+                    recipient=buyer_signal_id,
+                    message="❌ Please provide a complete address (street, city, postal code)",
+                    sender_identity=recipient_identity
+                )
+                return
+            
+            state_info['address'] = address
+            
+            # Acknowledge receipt before creating order
+            self.signal_handler.send_message(
+                recipient=buyer_signal_id,
+                message="✅ Address received! Creating order...",
+                sender_identity=recipient_identity
+            )
             
             # Create the order with shipping info
             self._create_order_with_shipping_info(
@@ -361,7 +414,25 @@ class BuyerHandler:
             # Clear conversation state
             del self.conversation_states[buyer_signal_id]
             print(f"DEBUG: Order creation completed for {buyer_signal_id}")
-    
+
+    def _validate_address(self, address: str) -> bool:
+        """
+        Validate a shipping address.
+
+        Args:
+            address: Address string provided by the buyer
+
+        Returns:
+            True if the address looks valid, False otherwise
+        """
+        stripped = address.strip()
+        if len(stripped) < 10:
+            return False
+        invalid_words = {'ok', 'yes', 'no', 'test', 'hi', 'hello', 'thanks'}
+        if stripped.lower() in invalid_words:
+            return False
+        return True
+
     def _create_order_with_shipping_info(self, buyer_signal_id: str, product_id: str, quantity: int, 
                                          address: str, recipient_identity: Optional[str] = None):
         """
@@ -454,9 +525,10 @@ class BuyerHandler:
         # Send catalog header immediately
         header = f"🛍️ PRODUCT CATALOG ({total_products} items)\n\n"
         try:
-            self.signal_handler.send_message_native(
+            self.signal_handler.send_message(
                 recipient=buyer_signal_id,
-                message=header
+                message=header,
+                sender_identity=recipient_identity
             )
             print(f"✓ Catalog header sent\n")
         except Exception as e:
@@ -558,9 +630,10 @@ Reply: "status" to see your order info
 Need help? Reply: help"""
         try:
             print(f"\n📝 Sending order instructions...")
-            self.signal_handler.send_message_native(
+            self.signal_handler.send_message(
                 recipient=buyer_signal_id,
-                message=instructions.strip()
+                message=instructions.strip(),
+                sender_identity=recipient_identity
             )
             print(f"✅ Instructions sent\n")
         except Exception as e:
@@ -842,6 +915,58 @@ Order #{order.order_id}
             "Please configure and connect your Monero wallet in the Wallet tab."
         )
     
+    def send_order_status(self, buyer_signal_id: str, recipient_identity: Optional[str] = None):
+        """
+        Send order status summary to buyer.
+
+        Args:
+            buyer_signal_id: Buyer's Signal ID
+            recipient_identity: Identity to send from (phone or username)
+        """
+        try:
+            orders = self.order_manager.get_orders_by_customer(buyer_signal_id)
+        except Exception as e:
+            print(f"ERROR: Failed to fetch orders for {buyer_signal_id}: {e}")
+            self.signal_handler.send_message(
+                recipient=buyer_signal_id,
+                message="❌ Unable to retrieve your orders. Please try again later.",
+                sender_identity=recipient_identity
+            )
+            return
+
+        if not orders:
+            self.signal_handler.send_message(
+                recipient=buyer_signal_id,
+                message="📭 No orders found for your account.",
+                sender_identity=recipient_identity
+            )
+            return
+
+        status_badges = {
+            'pending': '🟡',
+            'processing': '🟡',
+            'shipped': '🟢',
+            'cancelled': '🔴',
+            'completed': '✅',
+            'expired': '⌛',
+        }
+
+        lines = ["📋 YOUR ORDERS\n"]
+        for order in orders:
+            badge = status_badges.get(order.order_status, '❓')
+            lines.append(
+                f"{badge} Order #{order.order_id}\n"
+                f"   📦 {order.product_name} × {order.quantity}\n"
+                f"   💰 {order.price_xmr:.6f} XMR\n"
+                f"   Status: {order.order_status.capitalize()}\n"
+            )
+
+        self.signal_handler.send_message(
+            recipient=buyer_signal_id,
+            message="\n".join(lines).strip(),
+            sender_identity=recipient_identity
+        )
+
     def send_help(self, buyer_signal_id: str, recipient_identity: Optional[str] = None):
         """
         Send help message to buyer
@@ -859,6 +984,9 @@ Order #{order.order_id}
   • "order #1 qty 5" - Order 5 units of product #1
   • "buy #2" - Order 1 unit of product #2
   • "order SKU-001 qty 3" - Order using SKU
+
+📊 Check Orders:
+  • "status" - See your current orders and their status
 
 ❓ Get Help:
   • "help" - Show this message

@@ -292,6 +292,27 @@ class OrderManager:
             return Order.from_db_model(db_order, self.db)
         return None
     
+    def get_orders_by_customer(self, customer_signal_id: str) -> List['Order']:
+        """
+        Get all orders for a specific customer.
+
+        Because ``customer_signal_id`` is stored encrypted in the database,
+        this method fetches all orders and filters by the decrypted value.
+
+        Args:
+            customer_signal_id: The buyer's Signal ID
+
+        Returns:
+            List of orders belonging to this customer (newest first)
+        """
+        db_orders = self.db.session.query(OrderModel).order_by(OrderModel.created_at.desc()).all()
+        result = []
+        for db_order in db_orders:
+            order = Order.from_db_model(db_order, self.db)
+            if order.customer_signal_id == customer_signal_id:
+                result.append(order)
+        return result
+
     def list_orders(
         self,
         payment_status: Optional[str] = None,
