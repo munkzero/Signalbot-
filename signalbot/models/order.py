@@ -292,6 +292,34 @@ class OrderManager:
             return Order.from_db_model(db_order, self.db)
         return None
     
+    def get_orders_by_customer(self, customer_signal_id: str, limit: int = 500) -> List['Order']:
+        """
+        Get orders for a specific customer.
+
+        Because ``customer_signal_id`` is stored encrypted in the database,
+        this method fetches recent orders (up to ``limit``) and filters by the
+        decrypted value to avoid loading the entire order history into memory.
+
+        Args:
+            customer_signal_id: The buyer's Signal ID
+            limit: Maximum number of recent orders to scan (default 500)
+
+        Returns:
+            List of orders belonging to this customer (newest first)
+        """
+        db_orders = (
+            self.db.session.query(OrderModel)
+            .order_by(OrderModel.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        result = []
+        for db_order in db_orders:
+            order = Order.from_db_model(db_order, self.db)
+            if order.customer_signal_id == customer_signal_id:
+                result.append(order)
+        return result
+
     def list_orders(
         self,
         payment_status: Optional[str] = None,
