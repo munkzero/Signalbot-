@@ -8,6 +8,8 @@ import secrets
 from ..database.db import Order as OrderModel, OrderArchive as OrderArchiveModel, DatabaseManager, Seller as SellerModel
 from ..config.settings import ORDER_EXPIRATION_MINUTES
 
+DEFAULT_SELLER_ID = 1
+
 
 class ShippingNotificationError(Exception):
     """Raised when shipping notification fails to send"""
@@ -209,7 +211,7 @@ class OrderManager:
         self.db = db_manager
 
     def _get_archive_settings(self) -> tuple[int, int]:
-        seller = self.db.session.query(SellerModel).filter_by(id=1).first()
+        seller = self.db.session.query(SellerModel).filter_by(id=DEFAULT_SELLER_ID).first()
         archive_days = getattr(seller, 'order_archive_days', 90) if seller else 90
         purge_days = getattr(seller, 'archive_retention_days', 365) if seller else 365
         return max(1, int(archive_days or 90)), max(1, int(purge_days or 365))
@@ -399,6 +401,8 @@ class OrderManager:
         purge_after_days = max(1, int(purge_after_days or default_purge_days))
         cutoff = datetime.utcnow() - timedelta(days=purge_after_days)
 
+        # Purge when either an explicit purge deadline has passed or the archive
+        # record has outlived the configured retention window.
         candidates = (
             self.db.session.query(OrderArchiveModel)
             .filter(

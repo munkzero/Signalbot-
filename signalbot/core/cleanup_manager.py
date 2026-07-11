@@ -17,6 +17,7 @@ from ..models.seller import SellerManager
 
 
 logger = logging.getLogger(__name__)
+DEFAULT_SELLER_ID = 1
 
 
 class CleanupManager:
@@ -69,14 +70,14 @@ class CleanupManager:
             time.sleep(self.check_interval_seconds)
 
     def _should_run_cleanup(self) -> bool:
-        seller = self.seller_manager.get_seller(1)
+        seller = self.seller_manager.get_seller(DEFAULT_SELLER_ID)
         if not seller:
             return False
         last_cleanup_at = seller.last_cleanup_at
         return not last_cleanup_at or last_cleanup_at.date() < datetime.utcnow().date()
 
     def run_scheduled_cleanup(self) -> Dict[str, int]:
-        seller = self.seller_manager.get_seller(1)
+        seller = self.seller_manager.get_seller(DEFAULT_SELLER_ID)
         if not seller:
             raise ValueError("Seller configuration not found")
 
@@ -115,7 +116,7 @@ class CleanupManager:
         message_result = self.message_manager.delete_all_messages()
         order_result = self.order_manager.delete_all_orders_and_archives()
 
-        seller = self.seller_manager.get_seller(1)
+        seller = self.seller_manager.get_seller(DEFAULT_SELLER_ID)
         if seller:
             seller.last_cleanup_at = datetime.utcnow()
             seller.cleanup_status = "Full cleanup completed"

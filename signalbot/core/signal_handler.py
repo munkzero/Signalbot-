@@ -80,7 +80,7 @@ class SignalHandler:
             'consecutive_errors': 0,
         }
 
-        print(f"DEBUG: SignalHandler initialized with phone_number={self._mask_identifier(self.phone_number)}")
+        print("DEBUG: SignalHandler initialized")
 
         # Verify signal-cli is available for polling mode
         self.ensure_signal_cli_ready()
@@ -91,7 +91,7 @@ class SignalHandler:
     def _run_signal_cli(self, args: List[str], timeout: int = 10) -> subprocess.CompletedProcess:
         """Run signal-cli with consistent diagnostics."""
         cmd = ['signal-cli', '-a', self.phone_number, *args]
-        logger.debug("Running signal-cli command: %s", " ".join(cmd))
+        logger.debug("Running signal-cli command: %s", " ".join(['signal-cli', '-a', '<configured-account>', *args]))
         return subprocess.run(
             cmd,
             capture_output=True,
@@ -411,7 +411,7 @@ class SignalHandler:
             print("DEBUG: start_listening() called but already listening")
             return
 
-        print(f"DEBUG: start_listening() called for {self._mask_identifier(self.phone_number)}")
+        print("DEBUG: start_listening() called")
         self.listening = True
         self.listen_thread = threading.Thread(
             target=self._polling_loop, daemon=True, name="signal-polling"

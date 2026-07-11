@@ -4062,6 +4062,7 @@ class SettingsTab(QWidget):
         self.cleanup_manager = cleanup_manager
         self.wallet = wallet
         self.payment_processor = payment_processor
+        self.current_seller_id = 1
         
         # Main layout with scroll
         scroll = QScrollArea()
@@ -4078,7 +4079,7 @@ class SettingsTab(QWidget):
         signal_group = QGroupBox("Signal Account")
         signal_layout = QVBoxLayout()
         
-        seller = self.seller_manager.get_seller(1)
+        seller = self.seller_manager.get_seller(self.current_seller_id)
         
         # Display current number
         current_number_layout = QHBoxLayout()
@@ -4285,7 +4286,7 @@ class SettingsTab(QWidget):
     def save_settings(self):
         """Save settings changes"""
         try:
-            seller = self.seller_manager.get_seller(1)
+            seller = self.seller_manager.get_seller(self.current_seller_id)
             if seller:
                 seller.default_currency = self.currency_combo.currentText()
                 seller.message_retention_days = self.message_retention_spin.value()
@@ -4325,7 +4326,7 @@ class SettingsTab(QWidget):
         self.payment_health_label.setText(f"{'✅' if payment_ok else '⚠️'} {payment_text}")
 
         cleanup_status = self.cleanup_manager.get_status() if self.cleanup_manager else {}
-        cleanup_text = cleanup_status.get('last_result') or getattr(self.seller_manager.get_seller(1), 'cleanup_status', None) or "Not run yet"
+        cleanup_text = cleanup_status.get('last_result') or getattr(self.seller_manager.get_seller(self.current_seller_id), 'cleanup_status', None) or "Not run yet"
         self.cleanup_health_label.setText(cleanup_text)
 
     def refresh_storage_usage(self):
@@ -4355,7 +4356,7 @@ class SettingsTab(QWidget):
         if pin_dialog.exec_() != QDialog.Accepted:
             return
 
-        if not self.seller_manager.verify_pin(1, pin_dialog.get_pin()):
+        if not self.seller_manager.verify_pin(self.current_seller_id, pin_dialog.get_pin()):
             QMessageBox.critical(self, "Access Denied", "Incorrect PIN")
             return
 

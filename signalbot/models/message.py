@@ -9,6 +9,8 @@ from pathlib import Path
 from ..database.db import Message as MessageModel, MessageArchive as MessageArchiveModel, DatabaseManager, Seller as SellerModel
 from ..config.settings import DATABASE_FILE
 
+DEFAULT_SELLER_ID = 1
+
 
 class Message:
     """Message entity"""
@@ -126,7 +128,7 @@ class MessageManager:
         self.db = db_manager
 
     def _get_message_retention_days(self) -> int:
-        seller = self.db.session.query(SellerModel).filter_by(id=1).first()
+        seller = self.db.session.query(SellerModel).filter_by(id=DEFAULT_SELLER_ID).first()
         retention_days = getattr(seller, 'message_retention_days', 30) if seller else 30
         return max(1, int(retention_days or 30))
     
@@ -354,6 +356,8 @@ class MessageManager:
 
     def purge_archived_messages(self, purge_after_days: int) -> int:
         cutoff = datetime.utcnow() - timedelta(days=max(1, purge_after_days))
+        # Purge when either an explicit purge deadline has passed or the archive
+        # record is older than the configured retention window.
         candidates = (
             self.db.session.query(MessageArchiveModel)
             .filter(
