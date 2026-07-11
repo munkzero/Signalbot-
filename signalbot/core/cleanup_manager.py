@@ -74,7 +74,7 @@ class CleanupManager:
         if not seller:
             return False
         last_cleanup_at = seller.last_cleanup_at
-        return not last_cleanup_at or last_cleanup_at.date() < datetime.utcnow().date()
+        return last_cleanup_at is None or last_cleanup_at.date() < datetime.utcnow().date()
 
     def run_scheduled_cleanup(self) -> Dict[str, int]:
         seller = self.seller_manager.get_seller(DEFAULT_SELLER_ID)

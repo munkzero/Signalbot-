@@ -2,7 +2,7 @@
 Order model and management
 """
 
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from datetime import datetime, timedelta
 import secrets
 from ..database.db import Order as OrderModel, OrderArchive as OrderArchiveModel, DatabaseManager, Seller as SellerModel
@@ -209,9 +209,9 @@ class OrderManager:
     
     def __init__(self, db_manager: DatabaseManager):
         self.db = db_manager
-        self._cached_archive_settings: Optional[tuple[int, int]] = None
+        self._cached_archive_settings: Optional[Tuple[int, int]] = None
 
-    def _get_archive_settings(self) -> tuple[int, int]:
+    def _get_archive_settings(self) -> Tuple[int, int]:
         if self._cached_archive_settings is None:
             seller = self.db.session.query(SellerModel).filter_by(id=DEFAULT_SELLER_ID).first()
             archive_days = getattr(seller, 'order_archive_days', 90) if seller else 90

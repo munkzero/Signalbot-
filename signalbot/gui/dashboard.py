@@ -4331,7 +4331,10 @@ class SettingsTab(QWidget):
         self.payment_health_label.setText(f"{'✅' if payment_ok else '⚠️'} {payment_text}")
 
         cleanup_status = self.cleanup_manager.get_status() if self.cleanup_manager else {}
-        cleanup_text = cleanup_status.get('last_result') or getattr(self.seller_manager.get_seller(self.current_seller_id), 'cleanup_status', None) or "Not run yet"
+        cleanup_text = cleanup_status.get('last_result')
+        if not cleanup_text:
+            seller = self.seller_manager.get_seller(self.current_seller_id)
+            cleanup_text = getattr(seller, 'cleanup_status', None) or "Not run yet"
         self.cleanup_health_label.setText(cleanup_text)
 
     def refresh_storage_usage(self):

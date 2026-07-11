@@ -61,9 +61,9 @@ class Seller:
             signal_id=signal_id,
             wallet_path=db_seller.wallet_path,
             default_currency=db_seller.default_currency,
-            message_retention_days=getattr(db_seller, 'message_retention_days', 30) or 30,
-            order_archive_days=getattr(db_seller, 'order_archive_days', 90) or 90,
-            archive_retention_days=getattr(db_seller, 'archive_retention_days', 365) or 365,
+            message_retention_days=30 if getattr(db_seller, 'message_retention_days', None) is None else db_seller.message_retention_days,
+            order_archive_days=90 if getattr(db_seller, 'order_archive_days', None) is None else db_seller.order_archive_days,
+            archive_retention_days=365 if getattr(db_seller, 'archive_retention_days', None) is None else db_seller.archive_retention_days,
             last_cleanup_at=getattr(db_seller, 'last_cleanup_at', None),
             cleanup_status=getattr(db_seller, 'cleanup_status', None)
         )
