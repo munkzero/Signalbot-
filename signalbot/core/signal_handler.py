@@ -91,7 +91,8 @@ class SignalHandler:
     def _run_signal_cli(self, args: List[str], timeout: int = 10) -> subprocess.CompletedProcess:
         """Run signal-cli with consistent diagnostics."""
         cmd = ['signal-cli', '-a', self.phone_number, *args]
-        logger.debug("Running signal-cli command: %s", " ".join(['signal-cli', '-a', '<configured-account>', *args]))
+        masked_cmd = ['signal-cli', '-a', '<configured-account>', *args]
+        logger.debug("Running signal-cli command: %s", " ".join(masked_cmd))
         return subprocess.run(
             cmd,
             capture_output=True,

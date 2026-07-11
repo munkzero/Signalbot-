@@ -209,12 +209,21 @@ class OrderManager:
     
     def __init__(self, db_manager: DatabaseManager):
         self.db = db_manager
+        self._cached_archive_settings: Optional[tuple[int, int]] = None
 
     def _get_archive_settings(self) -> tuple[int, int]:
-        seller = self.db.session.query(SellerModel).filter_by(id=DEFAULT_SELLER_ID).first()
-        archive_days = getattr(seller, 'order_archive_days', 90) if seller else 90
-        purge_days = getattr(seller, 'archive_retention_days', 365) if seller else 365
-        return max(1, int(archive_days or 90)), max(1, int(purge_days or 365))
+        if self._cached_archive_settings is None:
+            seller = self.db.session.query(SellerModel).filter_by(id=DEFAULT_SELLER_ID).first()
+            archive_days = getattr(seller, 'order_archive_days', 90) if seller else 90
+            purge_days = getattr(seller, 'archive_retention_days', 365) if seller else 365
+            self._cached_archive_settings = (
+                max(1, int(archive_days or 90)),
+                max(1, int(purge_days or 365)),
+            )
+        return self._cached_archive_settings
+
+    def invalidate_archive_settings_cache(self) -> None:
+        self._cached_archive_settings = None
     
     def create_order(self, order: Order) -> Order:
         """

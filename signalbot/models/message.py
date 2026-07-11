@@ -126,11 +126,17 @@ class MessageManager:
     
     def __init__(self, db_manager: DatabaseManager):
         self.db = db_manager
+        self._cached_retention_days: Optional[int] = None
 
     def _get_message_retention_days(self) -> int:
-        seller = self.db.session.query(SellerModel).filter_by(id=DEFAULT_SELLER_ID).first()
-        retention_days = getattr(seller, 'message_retention_days', 30) if seller else 30
-        return max(1, int(retention_days or 30))
+        if self._cached_retention_days is None:
+            seller = self.db.session.query(SellerModel).filter_by(id=DEFAULT_SELLER_ID).first()
+            retention_days = getattr(seller, 'message_retention_days', 30) if seller else 30
+            self._cached_retention_days = max(1, int(retention_days or 30))
+        return self._cached_retention_days
+
+    def invalidate_retention_cache(self) -> None:
+        self._cached_retention_days = None
     
     def add_message(
         self,

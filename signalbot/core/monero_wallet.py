@@ -27,6 +27,7 @@ from ..config.settings import (
 )
 
 logger = logging.getLogger(__name__)
+RPC_RETRY_ATTEMPTS = 3
 
 
 class InHouseWallet:
@@ -687,7 +688,7 @@ class MoneroWallet:
         
         elif wallet_type == 'file':
             if not wallet_file or wallet_password is None:
-                raise ValueError("Wallet file is required for file mode and wallet_password may be empty but cannot be None")
+                raise ValueError("Wallet file is required and wallet_password must be provided (use empty string for no password)")
             
             self.wallet_file = wallet_file
             self.wallet_password = wallet_password
@@ -737,7 +738,7 @@ class MoneroWallet:
     def _rpc_call_with_payload(self, payload: Dict) -> Dict:
         """Execute an RPC payload with retry/reconnect support."""
         last_error = None
-        for attempt in range(1, 4):
+        for attempt in range(1, RPC_RETRY_ATTEMPTS + 1):
             try:
                 response = requests.post(
                     self.rpc_url,
@@ -768,7 +769,7 @@ class MoneroWallet:
             self._status['connected'] = False
             self._status['last_error'] = last_error
             self._status['retry_count'] = attempt
-            logger.warning("Wallet RPC call failed (attempt %s/3): %s", attempt, last_error)
+            logger.warning("Wallet RPC call failed (attempt %s/%s): %s", attempt, RPC_RETRY_ATTEMPTS, last_error)
 
             if self.wallet_type == 'rpc' and self.ensure_connection():
                 continue

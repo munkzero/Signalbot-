@@ -58,6 +58,7 @@ _CATALOG_INTER_PRODUCT_DELAY_SECONDS = 2.5  # Pause between sending successive p
 
 # Background worker shutdown timeout
 _WORKER_STOP_TIMEOUT_MS = 500  # Maximum milliseconds to wait for a worker thread to stop
+DEFAULT_SELLER_ID = 1
 
 
 def _format_product_id(product_id: Optional[str]) -> str:
@@ -4062,7 +4063,7 @@ class SettingsTab(QWidget):
         self.cleanup_manager = cleanup_manager
         self.wallet = wallet
         self.payment_processor = payment_processor
-        self.current_seller_id = 1
+        self.current_seller_id = DEFAULT_SELLER_ID
         
         # Main layout with scroll
         scroll = QScrollArea()
@@ -4293,6 +4294,10 @@ class SettingsTab(QWidget):
                 seller.order_archive_days = self.order_archive_spin.value()
                 seller.archive_retention_days = self.archive_retention_spin.value()
                 self.seller_manager.update_seller(seller)
+                if self.message_manager and hasattr(self.message_manager, 'invalidate_retention_cache'):
+                    self.message_manager.invalidate_retention_cache()
+                if self.order_manager and hasattr(self.order_manager, 'invalidate_archive_settings_cache'):
+                    self.order_manager.invalidate_archive_settings_cache()
                 QMessageBox.information(self, "Success", "Settings saved successfully!")
                 self.refresh_storage_usage()
             else:
