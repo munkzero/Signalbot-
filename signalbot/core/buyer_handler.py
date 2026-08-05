@@ -28,11 +28,11 @@ INVALID_ADDRESS_WORDS = frozenset({'ok', 'yes', 'no', 'test', 'hi', 'hello', 'th
 
 # Common image directories to search for product images (in order of priority)
 COMMON_IMAGE_SEARCH_DIRS = [
-    'data/products/images',
-    'data/images',
-    'data/product_images',
-    'images',
-    '.',
+    'data/products/images',      # Expected location
+    'data/images',                # Alternative location
+    'data/product_images',        # Another common location
+    'images',                     # Simple location
+    '.',                          # Current directory
 ]
 
 
@@ -96,12 +96,20 @@ class BuyerHandler:
         self.order_manager = order_manager
         self.signal_handler = signal_handler
         self.seller_signal_id = seller_signal_id
-        self.wallet = wallet
+        self.wallet = wallet  # Used to generate real payment subaddresses
         
         # Add product cache (1-minute cache for fresher stock data)
         self.product_cache = ProductCache(product_manager, cache_duration=60)
         
         # Conversation state tracking for order flow
+        # Format: {buyer_signal_id: {
+        #     'state': 'awaiting_address',
+        #     'product_id': str,
+        #     'quantity': int,
+        #     'recipient_identity': str,
+        #     'started_at': float,  # time.time() when state was created
+        #     'address': str (only after address collected)
+        # }}
         self.conversation_states = {}
         
         # Pre-optimize all product images in background so bot starts immediately
@@ -124,18 +132,39 @@ class BuyerHandler:
 
     @staticmethod
     def _format_product_id(product_id: Optional[str]) -> str:
-        """Format product ID consistently"""
+        """
+        Format product ID consistently
+        
+        Args:
+            product_id: Product ID to format
+            
+        Returns:
+            Formatted product ID string
+        """
         if not product_id:
             return "N/A"
+        
+        # Add # prefix if not already present
         if not product_id.startswith('#'):
             return f"#{product_id}"
+        
         return product_id
     
     def _resolve_image_path(self, image_path: str) -> Optional[str]:
-        """Resolve image path by checking multiple common locations."""
+        """
+        Resolve image path by checking multiple common locations.
+        Handles both relative and absolute paths.
+        
+        Args:
+            image_path: Image path from database (may be relative)
+            
+        Returns:
+            Absolute path if file found, None otherwise
+        """
         if not image_path:
             return None
         
+        # If already absolute and exists, return it
         if os.path.isabs(image_path):
             if os.path.exists(image_path) and os.path.isfile(image_path):
                 return image_path
@@ -143,36 +172,53 @@ class BuyerHandler:
                 print(f"  Absolute path doesn't exist: {image_path}")
                 return None
         
+        # Relative path - search common directories
         base_dir = os.getcwd()
         
+        # Try each directory
         for search_dir in COMMON_IMAGE_SEARCH_DIRS:
             full_path = os.path.join(base_dir, search_dir, image_path)
             
             if os.path.exists(full_path) and os.path.isfile(full_path):
                 print(f"  ✓ Found image: {full_path}")
                 return full_path
+            else:
+                print(f"  ✗ Not found: {full_path}")
         
         print(f"  ✗ Image not found in any common directory: {image_path}")
         print(f"    Searched: {', '.join(COMMON_IMAGE_SEARCH_DIRS)}")
         return None
     
     def _optimize_image_for_signal(self, image_path: str, max_size_kb: int = 800) -> str:
-        """Optimize image for Signal sending - compress and resize if needed."""
+        """
+        Optimize image for Signal sending - compress and resize if needed.
+        
+        Args:
+            image_path: Path to original image
+            max_size_kb: Maximum file size in KB (default 800KB)
+            
+        Returns:
+            Path to optimized image (or original if already optimal)
+        """
         try:
             from PIL import Image
             import tempfile
             
+            # Check current size
             file_size_kb = os.path.getsize(image_path) / 1024
             file_ext = os.path.splitext(image_path)[1].lower()
             
             print(f"  📊 Original: {file_size_kb:.1f}KB, Format: {file_ext}")
             
+            # If already small and JPG, use as-is
             if file_size_kb <= max_size_kb and file_ext in ['.jpg', '.jpeg']:
                 print(f"  ✓ Image already optimized")
                 return image_path
             
+            # Open and optimize
             img = Image.open(image_path)
             
+            # Convert RGBA to RGB if needed (for PNG with transparency)
             if img.mode in ('RGBA', 'LA', 'P'):
                 background = Image.new('RGB', img.size, (255, 255, 255))
                 if img.mode == 'P':
@@ -180,6 +226,7 @@ class BuyerHandler:
                 background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
                 img = background
             
+            # Resize if too large (max 1920px on longest side)
             max_dimension = 1920
             if img.width > max_dimension or img.height > max_dimension:
                 ratio = max_dimension / max(img.width, img.height)
@@ -187,11 +234,13 @@ class BuyerHandler:
                 img = img.resize(new_size, Image.Resampling.LANCZOS)
                 print(f"  📐 Resized to: {new_size[0]}x{new_size[1]}")
             
+            # Save as optimized JPG
             optimized_path = os.path.join(
                 tempfile.gettempdir(),
                 f"signal_opt_{os.path.basename(image_path).rsplit('.', 1)[0]}.jpg"
             )
             
+            # Start with quality 85, reduce if still too large
             quality = 85
             while quality >= 60:
                 img.save(optimized_path, 'JPEG', quality=quality, optimize=True)
@@ -207,24 +256,35 @@ class BuyerHandler:
             
         except ImportError:
             print(f"  ⚠️  PIL/Pillow not installed - cannot optimize images")
+            print(f"     Install with: pip install Pillow")
             return image_path
         except Exception as e:
             print(f"  ⚠️  Image optimization failed: {e}")
+            print(f"     Using original image")
             return image_path
     
     def handle_buyer_message(self, buyer_signal_id: str, message_text: str, recipient_identity: Optional[str] = None):
-        """Parse buyer commands and execute actions"""
+        """
+        Parse buyer commands and execute actions
+        
+        Args:
+            buyer_signal_id: Buyer's Signal ID
+            message_text: Message content
+            recipient_identity: Identity that received the message (phone or username)
+        """
         print(f"BUYER_HANDLER: Received message from {buyer_signal_id}")
         if not message_text:
             return
         
+        # Use seller_signal_id as fallback if no recipient_identity provided
         if not recipient_identity:
             recipient_identity = self.seller_signal_id
         
         message_lower = message_text.lower().strip()
+        
         print(f"DEBUG: Processing buyer command: {message_text[:50]}")
         
-        # Check if user is in a conversation flow
+        # Check if user is in a conversation flow (collecting shipping info)
         if buyer_signal_id in self.conversation_states:
             state_info = self.conversation_states[buyer_signal_id]
             # Enforce 10-minute timeout on pending conversation states
@@ -239,9 +299,12 @@ class BuyerHandler:
             self._handle_conversation_state(buyer_signal_id, message_text, recipient_identity)
             return
         
-        # Catalog command
+        # Command: "catalog" or "show products" - improved matching to avoid false positives
+        # Match specific keywords or common phrases
         catalog_keywords = ['catalog', 'catalogue', 'menu']
         catalog_phrases = ['show products', 'show catalog', 'show catalogue', 'show menu', 'view products', 'view catalog']
+        
+        # Also check if message is a simple request like "products" or "items"
         simple_requests = ['products', 'items', 'list']
         
         is_catalog_request = (
@@ -255,7 +318,7 @@ class BuyerHandler:
             self.send_catalog(buyer_signal_id, recipient_identity)
             return
         
-        # Order command
+        # Command: "order #1 qty 5" or "buy #2 qty 3"
         order_match = self._parse_order_command(message_text)
         if order_match:
             product_id, quantity = order_match
@@ -263,20 +326,29 @@ class BuyerHandler:
             self._initiate_order_conversation(buyer_signal_id, product_id, quantity, recipient_identity)
             return
         
-        # Help command
+        # Command: "help"
         if 'help' in message_lower:
             print(f"DEBUG: Sending help to {buyer_signal_id}")
             self.send_help(buyer_signal_id, recipient_identity)
             return
         
-        # Status command
+        # Command: "status"
         if 'status' in message_lower:
             print(f"DEBUG: Sending order status to {buyer_signal_id}")
             self.send_order_status(buyer_signal_id, recipient_identity)
             return
     
     def _initiate_order_conversation(self, buyer_signal_id: str, product_id: str, quantity: int, recipient_identity: Optional[str] = None):
-        """Start the order conversation flow by asking for delivery address."""
+        """
+        Start the order conversation flow by asking for delivery address.
+        
+        Args:
+            buyer_signal_id: Buyer's Signal ID
+            product_id: Product ID to order
+            quantity: Quantity to order
+            recipient_identity: Identity that received the message
+        """
+        # Store conversation state — go straight to address collection
         self.conversation_states[buyer_signal_id] = {
             'state': 'awaiting_address',
             'product_id': product_id,
@@ -285,6 +357,7 @@ class BuyerHandler:
             'started_at': time.time()
         }
         
+        # Ask for delivery address directly
         self.signal_handler.send_message(
             recipient=buyer_signal_id,
             message="📍 Please send your delivery address:\n(Include full address with street, city, and postal code)",
@@ -293,7 +366,14 @@ class BuyerHandler:
         print(f"DEBUG: Waiting for delivery address from {buyer_signal_id}")
     
     def _handle_conversation_state(self, buyer_signal_id: str, message_text: str, recipient_identity: Optional[str] = None):
-        """Handle conversation state for collecting shipping information"""
+        """
+        Handle conversation state for collecting shipping information
+        
+        Args:
+            buyer_signal_id: Buyer's Signal ID
+            message_text: Message content
+            recipient_identity: Identity that received the message
+        """
         state_info = self.conversation_states[buyer_signal_id]
         current_state = state_info['state']
         
@@ -342,7 +422,15 @@ class BuyerHandler:
             print(f"DEBUG: Order creation completed for {buyer_signal_id}")
 
     def _validate_address(self, address: str) -> bool:
-        """Validate a shipping address."""
+        """
+        Validate a shipping address.
+
+        Args:
+            address: Address string provided by the buyer
+
+        Returns:
+            True if the address looks valid, False otherwise
+        """
         stripped = address.strip()
         if len(stripped) < MIN_ADDRESS_LENGTH:
             return False
@@ -352,14 +440,41 @@ class BuyerHandler:
 
     def _create_order_with_shipping_info(self, buyer_signal_id: str, product_id: str, quantity: int, 
                                          address: str, recipient_identity: Optional[str] = None):
-        """Create order with collected shipping information"""
+        """
+        Create order with collected shipping information
+        
+        Args:
+            buyer_signal_id: Buyer's Signal ID
+            product_id: Product ID
+            quantity: Quantity
+            address: Delivery address
+            recipient_identity: Identity that received the message
+        """
         import json
         
-        shipping_info = json.dumps({'address': address})
+        # Create shipping info as JSON
+        shipping_info = json.dumps({
+            'address': address
+        })
+        
+        # Call the existing create_order but with shipping_info parameter
         self.create_order(buyer_signal_id, product_id, quantity, recipient_identity, shipping_info=shipping_info)
     
     def _parse_order_command(self, message: str) -> Optional[Tuple[str, int]]:
-        """Parse order commands"""
+        """
+        Parse order commands:
+        - "order #1 qty 5"
+        - "buy #2 qty 3"
+        - "I want #3"
+        - "order SKU-001 qty 10"
+        
+        Args:
+            message: Message text to parse
+            
+        Returns:
+            Tuple of (product_id, quantity) or None
+        """
+        # Pattern: "order/buy [product_id] qty [number]"
         pattern = r'(order|buy)\s+(#?[\w-]+)\s+qty\s+(\d+)'
         match = re.search(pattern, message.lower())
         
@@ -370,6 +485,7 @@ class BuyerHandler:
             quantity = int(match.group(3))
             return (product_id, quantity)
         
+        # Pattern: "order/buy [product_id]" (quantity defaults to 1)
         pattern = r'(order|buy)\s+(#?[\w-]+)'
         match = re.search(pattern, message.lower())
         
@@ -382,7 +498,17 @@ class BuyerHandler:
         return None
     
     def send_catalog(self, buyer_signal_id: str, recipient_identity: Optional[str] = None):
-        """Send catalog to buyer using parallel native sends for speed."""
+        """
+        Send catalog to buyer using parallel native sends for speed.
+
+        Uses ThreadPoolExecutor to send all product messages concurrently,
+        targeting <10 seconds total for the full catalog. Falls back to a
+        text-only send if the image attachment cannot be sent.
+
+        Args:
+            buyer_signal_id: Buyer's Signal ID
+            recipient_identity: Identity to send from (phone or username)
+        """
         from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
         from ..utils.image_optimizer import optimize_image
 
@@ -415,14 +541,17 @@ class BuyerHandler:
 
         # Prepare and submit all product sends in parallel
         send_tasks = []
-        task_meta = []
+        product_id_str = None  # track last product_id for footer
+        task_meta = []  # (message, attachments) per task for fallback
 
         executor = ThreadPoolExecutor(max_workers=5)
         try:
             for index, product in enumerate(products, 1):
                 product_id_str = self._format_product_id(product.product_id)
+
                 print(f"📦 Queuing product {index}/{total_products}: {product.name} ({product_id_str})")
 
+                # Build full product description
                 full_message = (
                     f"━━━━━━━━━━━━━━━━━\n"
                     f"{product_id_str} - {product.name}\n"
@@ -434,6 +563,7 @@ class BuyerHandler:
                     f"To order: \"order {product_id_str} qty [amount]\""
                 )
 
+                # Resolve and optimize image
                 attachments = []
                 if product.image_path:
                     resolved_path = self._resolve_image_path(product.image_path)
@@ -454,9 +584,11 @@ class BuyerHandler:
             print(f"\n⚡ Waiting for {len(send_tasks)} parallel sends (max 30s)...")
             futures_wait(send_tasks, timeout=30)
         finally:
+            # Shut down without waiting for timed-out tasks so we don't block.
+            # cancel_futures requires Python 3.9+; this project targets 3.9+.
             executor.shutdown(wait=False, cancel_futures=True)
 
-        # Retry failed tasks as text-only fallback
+        # Retry failed tasks as text-only fallback (no image)
         sent_count = 0
         for task, (msg, att) in zip(send_tasks, task_meta):
             succeeded = False
@@ -469,6 +601,7 @@ class BuyerHandler:
             if succeeded:
                 sent_count += 1
             else:
+                # Text-only fallback for products whose send failed (with or without image)
                 print(f"  📝 Attempting text-only fallback (no image)...")
                 try:
                     result = self.signal_handler.send_message_native(
@@ -484,7 +617,7 @@ class BuyerHandler:
 
         failed_count = total_products - sent_count
 
-        # ===== SEND INSTRUCTIONS FOOTER WITH COMPREHENSIVE ERROR HANDLING =====
+        # ===== SEND INSTRUCTIONS FOOTER WITH RETRY LOGIC =====
         instructions = """✨ CATALOG COMPLETE ✨
 
 📋 HOW TO ORDER:
@@ -500,88 +633,51 @@ Reply with: order #1 qty 2
 Reply: "status" to see your order info
 
 Need help? Reply: help"""
-        
+
         sent_footer = False
-        footer_error = None
-        
-        print(f"\n📝 Attempting to send order instructions (footer)...")
-        
-        # Attempt #1: Direct send_message_native with error details
+        print(f"\n📝 Sending order instructions (footer)...")
+
+        # Attempt 1: Normal send_message
         try:
-            print(f"   [Attempt 1] Using send_message_native()...")
-            result = self.signal_handler.send_message_native(
+            result = self.signal_handler.send_message(
                 recipient=buyer_signal_id,
-                message=instructions.strip()
+                message=instructions.strip(),
+                sender_identity=recipient_identity
             )
             if result:
-                print(f"✅ Footer sent successfully (send_message_native)\n")
+                print(f"✅ Footer sent successfully\n")
                 sent_footer = True
-            else:
-                footer_error = "send_message_native() returned False/None"
-                print(f"   [Attempt 1 FAILED] {footer_error}\n")
-        except Exception as e1:
-            footer_error = str(e1)
-            print(f"   [Attempt 1 FAILED] Exception: {e1}\n")
-        
-        # Attempt #2: Try again with explicit recipient handling
+        except Exception as e:
+            print(f"   [Attempt 1 FAILED] {e}")
+
+        # Attempt 2: send_message_native fallback
         if not sent_footer:
             try:
-                print(f"   [Attempt 2] Retry with explicit recipient: {buyer_signal_id}")
-                recipient = buyer_signal_id if buyer_signal_id.startswith(('+', '@')) else buyer_signal_id
                 result = self.signal_handler.send_message_native(
-                    recipient=recipient,
+                    recipient=buyer_signal_id,
                     message=instructions.strip()
                 )
                 if result:
-                    print(f"✅ Footer sent successfully (retry with explicit recipient)\n")
+                    print(f"✅ Footer sent (native fallback)\n")
                     sent_footer = True
-                else:
-                    print(f"   [Attempt 2 FAILED] send_message_native() returned False/None\n")
-            except Exception as e2:
-                print(f"   [Attempt 2 FAILED] Exception: {e2}\n")
-        
-        # Attempt #3: Try sending in smaller chunks
+            except Exception as e:
+                print(f"   [Attempt 2 FAILED] {e}")
+
+        # Attempt 3: Minimal message as last resort
         if not sent_footer:
             try:
-                print(f"   [Attempt 3] Sending in two chunks (might be too long)...")
-                
-                chunk1 = "✨ CATALOG COMPLETE ✨\n\n📋 HOW TO ORDER:\nReply with: order #1 qty 2"
-                chunk2 = "💳 AFTER YOU ORDER:\n• You get payment address & QR code\n• Send XMR amount to address\n• We'll ship when paid\n\n❓ CHECK ORDER STATUS:\nReply: \"status\"\n\nNeed help? Reply: help"
-                
-                result1 = self.signal_handler.send_message_native(
-                    recipient=buyer_signal_id,
-                    message=chunk1
-                )
-                time.sleep(0.5)
-                result2 = self.signal_handler.send_message_native(
-                    recipient=buyer_signal_id,
-                    message=chunk2
-                )
-                
-                if result1 and result2:
-                    print(f"✅ Footer sent successfully (as two chunks)\n")
-                    sent_footer = True
-                else:
-                    print(f"   [Attempt 3 FAILED] One or both chunks failed\n")
-            except Exception as e3:
-                print(f"   [Attempt 3 FAILED] Exception: {e3}\n")
-        
-        # Attempt #4: Emergency fallback
-        if not sent_footer:
-            try:
-                print(f"   [Attempt 4] Emergency fallback - essentials only...")
                 minimal = "✨ CATALOG COMPLETE ✨\nReply: order #1 qty 2\nReply: status\nReply: help"
                 result = self.signal_handler.send_message_native(
                     recipient=buyer_signal_id,
                     message=minimal
                 )
                 if result:
-                    print(f"✅ Footer sent successfully (emergency fallback)\n")
+                    print(f"✅ Footer sent (minimal fallback)\n")
                     sent_footer = True
                 else:
-                    print(f"   [Attempt 4 FAILED] Emergency fallback also failed\n")
-            except Exception as e4:
-                print(f"   [Attempt 4 FAILED] Exception: {e4}\n")
+                    print(f"   [All footer attempts FAILED]\n")
+            except Exception as e:
+                print(f"   [Attempt 3 FAILED] {e}\n")
 
         # Summary report
         print(f"\n{'='*60}")
@@ -590,16 +686,23 @@ Need help? Reply: help"""
         print(f"✅ Products sent: {sent_count}/{total_products}")
         if failed_count:
             print(f"⚠️ Failed: {failed_count}")
-        print(f"✅ Footer sent: {'YES' if sent_footer else 'NO - ALL ATTEMPTS FAILED'}")
-        if not sent_footer and footer_error:
-            print(f"❌ Last error: {footer_error}")
         print(f"{'='*60}\n")
     
     def create_order(self, buyer_signal_id: str, product_id: str, quantity: int, recipient_identity: Optional[str] = None, shipping_info: Optional[str] = None):
-        """Create order with stock validation and payment info"""
+        """
+        Create order with stock validation and payment info
+        
+        Args:
+            buyer_signal_id: Buyer's Signal ID
+            product_id: Product ID to order
+            quantity: Quantity to order
+            recipient_identity: Identity to send from (phone or username)
+            shipping_info: JSON string with shipping information (name, address)
+        """
         try:
             print(f"DEBUG: Creating order for {buyer_signal_id}, product {product_id}, qty {quantity}")
             
+            # Find product
             product = self.product_manager.get_product_by_product_id(product_id)
             
             if not product:
@@ -611,6 +714,7 @@ Need help? Reply: help"""
                 )
                 return
             
+            # Check stock
             if product.stock < quantity:
                 if product.stock == 0:
                     print(f"DEBUG: Product {product.name} out of stock")
@@ -635,11 +739,13 @@ Reply "order {product_id} qty {product.stock}" to proceed.
                     )
                 return
             
+            # Calculate totals with 7% commission
             unit_price = float(product.price)
             subtotal = unit_price * quantity
-            commission = subtotal * 0.07
+            commission = subtotal * 0.07  # 7% commission
             total = subtotal + commission
             
+            # Get XMR conversion using SECURE LIVE API
             try:
                 total_xmr = currency_converter.fiat_to_xmr(total, product.currency)
                 current_rate = currency_converter.get_xmr_price(product.currency)
@@ -647,8 +753,10 @@ Reply "order {product_id} qty {product.stock}" to proceed.
                 print(f"DEBUG: Order total: {total} {product.currency} = {total_xmr:.6f} XMR")
                 
             except ExchangeRateUnavailableError as e:
+                # Exchange rate APIs are down - reject order
                 print(f"ERROR: Exchange rate unavailable: {e}")
                 
+                # Alert seller immediately
                 self.signal_handler.send_message(
                     recipient=self.seller_signal_id,
                     message=f"""🚨 CRITICAL ALERT 🚨
@@ -671,6 +779,7 @@ The bot will NOT process orders until APIs are working.
 """
                 )
                 
+                # Inform customer
                 self.signal_handler.send_message(
                     recipient=buyer_signal_id,
                     message="""❌ Service Temporarily Unavailable
@@ -684,8 +793,11 @@ We apologize for the inconvenience and appreciate your patience.
                     sender_identity=recipient_identity
                 )
                 
-                return
+                return  # Do not create order
             
+            # Generate payment address from wallet (real subaddress)
+            # Generate the order ID upfront so it can be used as the subaddress label.
+            # Reuse the model's static method to ensure consistent ID format.
             order_id = Order._generate_order_id()
             try:
                 payment_address = self._generate_payment_address(product.id, buyer_signal_id, order_id=order_id)
@@ -702,6 +814,7 @@ We apologize for the inconvenience and appreciate your patience.
                 )
                 return
             
+            # Create order in database (use the pre-generated order_id so it matches the subaddress label)
             order = Order(
                 order_id=order_id,
                 customer_signal_id=buyer_signal_id,
@@ -714,18 +827,20 @@ We apologize for the inconvenience and appreciate your patience.
                 payment_address=payment_address,
                 payment_status='pending',
                 order_status='processing',
-                commission_amount=commission * total_xmr / total,
-                seller_amount=subtotal * total_xmr / total,
-                shipping_info=shipping_info,
+                commission_amount=commission * total_xmr / total,  # Commission in XMR
+                seller_amount=subtotal * total_xmr / total,  # Seller amount in XMR
+                shipping_info=shipping_info,  # Add shipping info
                 expires_at=datetime.utcnow() + timedelta(minutes=ORDER_EXPIRATION_MINUTES)
             )
             
             created_order = self.order_manager.create_order(order)
             print(f"DEBUG: Order #{created_order.order_id} created successfully")
             
+            # Reduce stock (will be restored if order expires)
             product.stock -= quantity
             self.product_manager.update_product(product)
             
+            # Send order confirmation with payment info
             self.send_order_confirmation(buyer_signal_id, created_order, product, payment_address, recipient_identity)
             
         except Exception as e:
@@ -739,7 +854,16 @@ We apologize for the inconvenience and appreciate your patience.
             )
     
     def send_order_confirmation(self, buyer_signal_id: str, order: Order, product, payment_address: str, recipient_identity: Optional[str] = None):
-        """Send order summary with payment QR code"""
+        """
+        Send order summary with payment QR code
+        
+        Args:
+            buyer_signal_id: Buyer's Signal ID
+            order: Order object
+            product: Product object
+            payment_address: Monero payment address
+            recipient_identity: Identity to send from (phone or username)
+        """
         try:
             print(f"DEBUG: Sending order confirmation to {buyer_signal_id} for order #{order.order_id}")
             
@@ -764,6 +888,7 @@ Order #{order.order_id}
 {payment_address}
 """
             
+            # Generate payment QR code
             try:
                 qr_data = qr_generator.generate_payment_qr(payment_address, order.price_xmr)
                 qr_path = f"/tmp/order_{order.order_id}_qr.png"
@@ -773,6 +898,7 @@ Order #{order.order_id}
                 
                 print(f"DEBUG: QR code generated at {qr_path}")
                 
+                # Send message with QR code
                 self.signal_handler.send_message(
                     recipient=buyer_signal_id,
                     message=message.strip(),
@@ -781,6 +907,7 @@ Order #{order.order_id}
                 )
             except Exception as e:
                 print(f"ERROR: Error generating QR code: {e}")
+                # Send without QR code
                 self.signal_handler.send_message(
                     recipient=buyer_signal_id,
                     message=message.strip(),
@@ -795,7 +922,20 @@ Order #{order.order_id}
             )
     
     def _generate_payment_address(self, product_id: int, buyer_signal_id: str, order_id: str = None) -> str:
-        """Generate a unique Monero sub-address for an order using the connected wallet."""
+        """
+        Generate a unique Monero sub-address for an order using the connected wallet.
+
+        Args:
+            product_id: Product ID
+            buyer_signal_id: Buyer's Signal ID
+            order_id: Order ID for the subaddress label
+            
+        Returns:
+            Monero payment address
+            
+        Raises:
+            RuntimeError: If the wallet is not connected or subaddress creation fails
+        """
         if self.wallet:
             label = f"Order-{order_id}" if order_id else f"Product-{product_id}"
             try:
@@ -805,6 +945,7 @@ Order #{order.order_id}
                     print(f"DEBUG: Generated payment subaddress for order {order_id}: {address[:20]}...")
                     return address
                 else:
+                    # Subaddress creation returned a dict without an 'address' key — unexpected
                     print(f"ERROR: create_subaddress() returned no address for order {order_id}: {subaddr_info}")
             except Exception as subaddr_err:
                 print(f"ERROR: Could not create subaddress for order {order_id} ({subaddr_err}); wallet may not be ready")
@@ -815,7 +956,13 @@ Order #{order.order_id}
         )
     
     def send_order_status(self, buyer_signal_id: str, recipient_identity: Optional[str] = None):
-        """Send order status summary to buyer."""
+        """
+        Send order status summary to buyer.
+
+        Args:
+            buyer_signal_id: Buyer's Signal ID
+            recipient_identity: Identity to send from (phone or username)
+        """
         try:
             orders = self.order_manager.get_orders_by_customer(buyer_signal_id)
         except Exception as e:
@@ -861,7 +1008,13 @@ Order #{order.order_id}
         )
 
     def send_help(self, buyer_signal_id: str, recipient_identity: Optional[str] = None):
-        """Send help message to buyer"""
+        """
+        Send help message to buyer
+        
+        Args:
+            buyer_signal_id: Buyer's Signal ID
+            recipient_identity: Identity to send from (phone or username)
+        """
         help_message = """🤖 BUYER COMMANDS
 
 📋 View Products:
