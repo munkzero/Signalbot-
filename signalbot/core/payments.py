@@ -413,7 +413,12 @@ class PaymentProcessor:
                 
                 for order in pending_orders:
                     # Check if expired
-                    if order.expires_at < datetime.utcnow():
+                    if order.expires_at and order.expires_at < datetime.utcnow():
+                        # Mark expired orders so they don't stay pending forever
+                        order.payment_status = 'expired'
+                        order.order_status = 'cancelled'
+                        self.orders.update_order(order)
+                        print(f"⏰ Order #{order.order_id} expired (no payment received)")
                         continue
                     
                     print(f"DEBUG: Checking payment for order #{order.order_id}")
